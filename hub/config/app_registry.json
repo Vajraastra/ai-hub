@@ -1,0 +1,138 @@
+{
+    "apps": {
+        "sd-webui-forge-neo": {
+            "id": "sd-webui-forge-neo",
+            "name": "Stable Diffusion WebUI Forge Neo",
+            "description": "The good ol' Forge WebUI, now updated with new features",
+            "repo": "https://github.com/Haoming02/sd-webui-forge-classic",
+            "branch": "neo",
+            "python_version": "3.13",
+            "use_uv": true,
+            "install_deps": false,
+            "launch_type": "python",
+            "launch_script": "launch.py",
+            "launch_script_win": "webui-user.bat",
+            "model_map": {
+                "checkpoints": {
+                    "flag": "--ckpt-dirs",
+                    "type": "append"
+                },
+                "loras": {
+                    "flag": "--lora-dirs",
+                    "type": "append"
+                },
+                "vae": {
+                    "flag": "--vae-dirs",
+                    "type": "append"
+                },
+                "text_encoders": {
+                    "flag": "--text-encoder-dirs",
+                    "type": "append"
+                },
+                "embeddings": {
+                    "flag": "--embeddings-dir",
+                    "type": "replace"
+                },
+                "upscalers": {
+                    "flag": "--esrgan-models-path",
+                    "type": "replace"
+                }
+            },
+            "output_map": {
+                "method": "config_json",
+                "settings": {
+                    "outdir_txt2img_samples": "txt2img",
+                    "outdir_img2img_samples": "img2img",
+                    "outdir_extras_samples": "extras",
+                    "outdir_txt2img_grids": "grids/txt2img",
+                    "outdir_img2img_grids": "grids/img2img",
+                    "outdir_save": "saved",
+                    "outdir_videos": "videos"
+                }
+            },
+            "cuda_env_vars": {
+                "torch_index": "TORCH_INDEX_URL",
+                "torch_command": "TORCH_COMMAND"
+            },
+            "default_port": 7860,
+            "extra_args": [
+                "--uv"
+            ]
+        },
+        "ai-toolkit": {
+            "id": "ai-toolkit",
+            "name": "AI Toolkit (Ostris)",
+            "description": "LoRA trainer for Flux, SDXL, and SD models",
+            "repo": "https://github.com/ostris/ai-toolkit",
+            "branch": "main",
+            "python_version": "3.13",
+            "use_uv": true,
+            "install_deps": true,
+            "launch_type": "npm",
+            "launch_script": "build_and_start",
+            "launch_subdir": "ui",
+            "config_dir": "config",
+            "config_examples_dir": "config/examples",
+            "pre_install_commands": [
+                "{uv} pip install --no-cache-dir torch=={torch_version} torchvision=={torchvision_version} torchaudio=={torchaudio_version} --index-url https://download.pytorch.org/whl/{cuda_tag}"
+            ],
+            "pip_overrides": [
+                "scipy>=1.14.1",
+                "numpy>=2.1.0",
+                "gradio<6.0"
+            ],
+            "output_map": {
+                "method": "none",
+                "note": "Output dir is per-config YAML (training_folder field)"
+            },
+            "cuda_env_vars": {
+                "torch_index": "PIP_EXTRA_INDEX_URL"
+            },
+            "default_port": 8675,
+            "extra_args": []
+        },
+        "comfyui": {
+            "id": "comfyui",
+            "name": "ComfyUI",
+            "description": "The most powerful and modular stable diffusion GUI with a node/graph interface.",
+            "repo": "https://github.com/comfyanonymous/ComfyUI.git",
+            "branch": "master",
+            "python_version": "3.12",
+            "use_uv": true,
+            "install_deps": true,
+            "launch_type": "python",
+            "launch_script": "main.py",
+            "pre_install_commands": [
+                "{uv} pip install --no-cache-dir torch=={torch_version} torchvision=={torchvision_version} torchaudio=={torchaudio_version} --index-url https://download.pytorch.org/whl/{cuda_tag}"
+            ],
+            "model_map": {
+                "method": "yaml",
+                "filename": "extra_model_paths.yaml",
+                "mappings": {
+                    "checkpoints": "checkpoints",
+                    "loras": "loras",
+                    "vae": "vae",
+                    "controlnet": "controlnet",
+                    "embeddings": "embeddings",
+                    "upscalers": "upscale_models",
+                    "clip_vision": "clip_vision",
+                    "ipadapter": "ipadapter",
+                    "diffusion_models": "unet"
+                }
+            },
+            "output_map": {
+                "method": "cli",
+                "args": [
+                    "--output-directory"
+                ]
+            },
+            "cuda_env_vars": {
+                "torch_index": "PIP_EXTRA_INDEX_URL"
+            },
+            "default_port": 8188,
+            "extra_args": [
+                "--use-pytorch-cross-attention"
+            ]
+        }
+    }
+}

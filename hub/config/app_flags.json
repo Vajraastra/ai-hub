@@ -1,0 +1,146 @@
+{
+    "sd-webui-forge-neo": {
+        "flags": [
+            {
+                "flag": "--cuda-malloc",
+                "label": "CUDA Malloc Async",
+                "description": "Usa cudaMallocAsync de PyTorch para asignación de VRAM. Reduce fragmentación y mejora la gestión de memoria en GPUs modernas.",
+                "risk": "medium",
+                "risk_note": "El propio Forge lo documenta como 'use at your own risk'. Puede causar crashes en GPUs antiguas (< RTX 20xx). En RTX modernas generalmente da +5-15% de velocidad.",
+                "requires_arg": false,
+                "arg_placeholder": null,
+                "default": false
+            },
+            {
+                "flag": "--xformers",
+                "label": "xFormers Attention",
+                "description": "Algoritmo de atención alternativo de Facebook AI. Reduce uso de VRAM y puede acelerar la generación de imágenes.",
+                "risk": "low",
+                "risk_note": "Puede producir resultados levemente no-deterministas con el mismo seed en batch > 1. Forge ya incluye optimizaciones internas similares — puede ser redundante.",
+                "requires_arg": false,
+                "arg_placeholder": null,
+                "default": false
+            },
+            {
+                "flag": "--api",
+                "label": "Habilitar API REST",
+                "description": "Expone una API REST en el puerto de la app. Permite que otros programas y scripts controlen Forge de forma programática.",
+                "risk": "low",
+                "risk_note": "En uso local (localhost) no representa riesgo. Si usas --listen junto a --api, cualquiera en la red puede acceder sin autenticación.",
+                "requires_arg": false,
+                "arg_placeholder": null,
+                "default": false
+            },
+            {
+                "flag": "--listen",
+                "label": "Aceptar Conexiones Externas",
+                "description": "Hace que la app acepte conexiones desde otras máquinas en la red local, no sólo desde localhost.",
+                "risk": "high",
+                "risk_note": "⚠️ Sin autenticación. Cualquier equipo en tu red puede acceder a la UI y generar imágenes usando tu GPU. Usar sólo en redes de confianza.",
+                "requires_arg": false,
+                "arg_placeholder": null,
+                "default": false
+            },
+            {
+                "flag": "--no-half",
+                "label": "Deshabilitar FP16 (no-half)",
+                "description": "Fuerza el uso de precisión FP32 en lugar de FP16. Puede resolver problemas de compatibilidad con ciertos modelos o imágenes negras.",
+                "risk": "low",
+                "risk_note": "Reduce significativamente la velocidad de generación y aumenta el uso de VRAM. Sólo usar si tienes problemas de compatibilidad.",
+                "requires_arg": false,
+                "arg_placeholder": null,
+                "default": false
+            }
+        ]
+    },
+    "comfyui": {
+        "flags": [
+            {
+                "flag": "--cuda-malloc",
+                "label": "CUDA Malloc Async",
+                "description": "Habilita cudaMallocAsync para asignación de VRAM. Reportado con hasta 5x mejora en Flux en algunos sistemas.",
+                "risk": "low",
+                "risk_note": "En GPUs modernas (RTX 20xx+) generalmente es seguro y beneficioso. En GPUs antiguas puede causar errores. Usar --disable-cuda-malloc para revertir.",
+                "requires_arg": false,
+                "arg_placeholder": null,
+                "default": false
+            },
+            {
+                "flag": "--cuda-stream",
+                "label": "CUDA Streams Async",
+                "description": "Habilita streams CUDA asíncronos para solapar operaciones de GPU y transferencias de datos, manteniendo la GPU ocupada.",
+                "risk": "medium",
+                "risk_note": "Funcionalidad experimental en ComfyUI. Su implementación no está completamente documentada y el comportamiento puede variar entre sistemas.",
+                "requires_arg": false,
+                "arg_placeholder": null,
+                "default": false
+            },
+            {
+                "flag": "--pin-shared-memory",
+                "label": "Memoria Compartida Fija",
+                "description": "Usa memoria del sistema 'pinned' (bloqueada) para transferencias más rápidas entre CPU y GPU. Útil con workflows que superan la VRAM.",
+                "risk": "low",
+                "risk_note": "Consume más RAM del sistema. Recomendado si tienes 32GB+ de RAM. Combinar con --async-offload para mejor resultado.",
+                "requires_arg": false,
+                "arg_placeholder": null,
+                "default": false
+            },
+            {
+                "flag": "--highvram",
+                "label": "Modo High VRAM",
+                "description": "Mantiene los modelos en VRAM el máximo tiempo posible. Maximiza velocidad en GPUs con suficiente VRAM.",
+                "risk": "low",
+                "risk_note": "Si los modelos superan tu VRAM disponible causará errores OOM. Con 16GB de VRAM es seguro para la mayoría de modelos.",
+                "requires_arg": false,
+                "arg_placeholder": null,
+                "default": false,
+                "exclusive_group": "vram_mode"
+            },
+            {
+                "flag": "--normalvram",
+                "label": "Modo Normal VRAM",
+                "description": "Comportamiento por defecto de ComfyUI. Balance entre velocidad y uso de VRAM.",
+                "risk": "low",
+                "risk_note": "Es el comportamiento por defecto, habilitarlo explícitamente no tiene efecto adicional.",
+                "requires_arg": false,
+                "arg_placeholder": null,
+                "default": false,
+                "exclusive_group": "vram_mode"
+            },
+            {
+                "flag": "--lowvram",
+                "label": "Modo Low VRAM",
+                "description": "Divide el modelo y carga sólo partes en VRAM. Permite correr en GPUs con poca VRAM a costa de velocidad.",
+                "risk": "low",
+                "risk_note": "Reduce significativamente la velocidad. Innecesario con 16GB de VRAM.",
+                "requires_arg": false,
+                "arg_placeholder": null,
+                "default": false,
+                "exclusive_group": "vram_mode"
+            },
+            {
+                "flag": "--listen",
+                "label": "Aceptar Conexiones Externas",
+                "description": "Hace que ComfyUI acepte conexiones desde otras máquinas en la red local.",
+                "risk": "high",
+                "risk_note": "⚠️ Sin autenticación. Cualquier equipo en tu red puede usar tu ComfyUI. Sólo en redes de total confianza.",
+                "requires_arg": false,
+                "arg_placeholder": null,
+                "default": false
+            },
+            {
+                "flag": "--preview-method",
+                "label": "Método de Preview",
+                "description": "Define cómo se generan los previews durante la generación. 'taesd' es rápido y de buena calidad. 'none' deshabilita previews.",
+                "risk": "low",
+                "risk_note": "taesd requiere descargar un modelo pequeño (~10MB) la primera vez. Opciones: auto, latent2rgb, taesd, none.",
+                "requires_arg": true,
+                "arg_placeholder": "taesd",
+                "default": false
+            }
+        ]
+    },
+    "ai-toolkit": {
+        "flags": []
+    }
+}

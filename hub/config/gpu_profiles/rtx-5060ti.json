@@ -1,0 +1,54 @@
+{
+    "gpu_id": "rtx-5060ti",
+    "names_match": [
+        "RTX 5060 Ti",
+        "GeForce RTX 5060 Ti",
+        "NVIDIA GeForce RTX 5060 Ti"
+    ],
+    "vram_gb": 16,
+    "architecture": "Blackwell",
+    "cuda_compute": "12.0",
+    "notes": "RTX 5060 Ti Blackwell con 16GB GDDR7. Excelente para modelos grandes. cudaMallocAsync verificado como beneficioso en esta arquitectura.",
+    "app_flags": {
+        "sd-webui-forge-neo": {
+            "recommended": [
+                "--cuda-malloc",
+                "--api"
+            ],
+            "optional": [
+                "--xformers"
+            ],
+            "experimental": [],
+            "not_recommended": [],
+            "warn_before_enable": [
+                "--listen"
+            ]
+        },
+        "comfyui": {
+            "recommended": [
+                "--cuda-malloc",
+                "--highvram"
+            ],
+            "optional": [
+                "--pin-shared-memory",
+                "--preview-method"
+            ],
+            "experimental": [
+                "--cuda-stream"
+            ],
+            "not_recommended": [
+                "--lowvram"
+            ],
+            "warn_before_enable": [
+                "--listen"
+            ]
+        },
+        "ai-toolkit": {
+            "recommended": [],
+            "optional": [],
+            "experimental": [],
+            "not_recommended": [],
+            "warn_before_enable": []
+        }
+    }
+}

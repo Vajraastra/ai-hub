@@ -1,0 +1,48 @@
+{
+    "gpu_id": "default",
+    "names_match": [],
+    "vram_gb": null,
+    "architecture": "unknown",
+    "notes": "Perfil base para GPUs no reconocidas. Sólo habilita flags comprobadamente seguras.",
+    "app_flags": {
+        "sd-webui-forge-neo": {
+            "recommended": [
+                "--api"
+            ],
+            "optional": [
+                "--xformers"
+            ],
+            "experimental": [
+                "--cuda-malloc"
+            ],
+            "not_recommended": [],
+            "warn_before_enable": [
+                "--listen",
+                "--cuda-malloc"
+            ]
+        },
+        "comfyui": {
+            "recommended": [],
+            "optional": [
+                "--preview-method"
+            ],
+            "experimental": [
+                "--cuda-malloc",
+                "--cuda-stream",
+                "--pin-shared-memory"
+            ],
+            "not_recommended": [],
+            "warn_before_enable": [
+                "--listen",
+                "--cuda-malloc"
+            ]
+        },
+        "ai-toolkit": {
+            "recommended": [],
+            "optional": [],
+            "experimental": [],
+            "not_recommended": [],
+            "warn_before_enable": []
+        }
+    }
+}

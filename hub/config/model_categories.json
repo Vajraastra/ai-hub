@@ -1,0 +1,100 @@
+{
+    "categories": {
+        "checkpoints": {
+            "description": "Base diffusion models (.safetensors, .ckpt)",
+            "aliases": [
+                "checkpoints",
+                "StableDiffusion",
+                "Stable-diffusion",
+                "ckpt"
+            ]
+        },
+        "loras": {
+            "description": "LoRA & LyCORIS adapters",
+            "aliases": [
+                "loras",
+                "Lora",
+                "LyCORIS",
+                "lora",
+                "locon",
+                "trained",
+                "trained_loras"
+            ]
+        },
+        "vae": {
+            "description": "VAE models",
+            "aliases": [
+                "vae",
+                "VAE"
+            ]
+        },
+        "text_encoders": {
+            "description": "Text encoder models (CLIP, T5)",
+            "aliases": [
+                "text_encoders",
+                "TextEncoders",
+                "text_encoder",
+                "clip"
+            ]
+        },
+        "embeddings": {
+            "description": "Textual Inversion embeddings",
+            "aliases": [
+                "embeddings",
+                "Embeddings"
+            ]
+        },
+        "controlnet": {
+            "description": "ControlNet & T2I Adapter models",
+            "aliases": [
+                "controlnet",
+                "ControlNet",
+                "t2i_adapter",
+                "T2IAdapter"
+            ]
+        },
+        "upscalers": {
+            "description": "Upscaler models (ESRGAN, RealESRGAN, SwinIR)",
+            "aliases": [
+                "upscalers",
+                "ESRGAN",
+                "RealESRGAN",
+                "SwinIR",
+                "BSRGAN",
+                "upscale_models"
+            ]
+        },
+        "clip_vision": {
+            "description": "CLIP Vision models",
+            "aliases": [
+                "clip_vision",
+                "ClipVision"
+            ]
+        },
+        "ipadapter": {
+            "description": "IP-Adapter models",
+            "aliases": [
+                "ipadapter",
+                "IpAdapter",
+                "IpAdapters15",
+                "IpAdaptersXl"
+            ]
+        },
+        "diffusion_models": {
+            "description": "Standalone diffusion / UNET models",
+            "aliases": [
+                "diffusion_models",
+                "DiffusionModels",
+                "unet",
+                "diffusers",
+                "Diffusers"
+            ]
+        },
+        "style_models": {
+            "description": "Style models",
+            "aliases": [
+                "style_models"
+            ]
+        }
+    }
+}
