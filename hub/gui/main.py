@@ -196,7 +196,8 @@ class AIHubMainWindow(QMainWindow):
 
         # Model Vault Button
         vault_btn = QPushButton("📦 Gestionar Modelos")
-        vault_btn.setToolTip("Abrir Model Vault (Standalone)")
+        vault_btn.setObjectName("outline_btn")
+        vault_btn.setToolTip("Abrir Model Vault")
         vault_btn.clicked.connect(self._launch_model_vault)
         topbar_layout.addWidget(vault_btn)
 
@@ -208,6 +209,22 @@ class AIHubMainWindow(QMainWindow):
         root.addWidget(self.tabs)
 
         self.tabs.addTab(self._build_apps_tab(), "📦  Aplicaciones")
+        
+        # Integrate Model Vault
+        try:
+            # project_root is the parent of HUB_DIR
+            project_root = os.path.dirname(HUB_DIR)
+            if project_root not in sys.path:
+                sys.path.insert(0, project_root)
+            
+            from apps.model_vault.main import ModelVaultWidget
+            self.vault_tab = ModelVaultWidget()
+            self.tabs.addTab(self.vault_tab, "🔍  Model Vault")
+        except Exception as e:
+            # We already have a button as fallback, so only print the error
+            print(f"Nota: Model Vault no pudo integrarse como tab (usando modo ventana): {e}")
+            self.vault_tab = None
+
         self.tabs.addTab(HubSettings(),          "⚙️  Hub")
         self.tabs.addTab(EventLogViewer(),        "📋  Log")
 
@@ -251,6 +268,10 @@ class AIHubMainWindow(QMainWindow):
         # Combine regular apps and utilities
         all_apps = {**state.registry_apps, **state.registry_utilities}
         for app_id, app_cfg in all_apps.items():
+            # Skip Model Vault as it now has a primary dedicated button/tab
+            if app_id == "model-vault":
+                continue
+                
             app_status = state.get_app_status(app_id)
             card = AppCard(app_id, app_cfg, app_status, self.on_app_action,
                            any_running=any_running)
@@ -302,14 +323,20 @@ class AIHubMainWindow(QMainWindow):
         QMessageBox.critical(self, f"Error en {app_id}", message)
 
     def _launch_model_vault(self):
-        """Launches the Model Vault standalone script."""
+        """Switches to the integrated Model Vault tab."""
+        if hasattr(self, "tabs"):
+            for i in range(self.tabs.count()):
+                if "Model Vault" in self.tabs.tabText(i):
+                    self.tabs.setCurrentIndex(i)
+                    return
+        
+        # Fallback to standalone if tab not found for some reason
         import subprocess
         script_path = os.path.join(HUB_DIR, "..", "apps", "model_vault", "run_vault.sh")
         if sys.platform == "win32":
             script_path = os.path.join(HUB_DIR, "..", "apps", "model_vault", "run_vault.bat")
         
         try:
-            # Run detached
             subprocess.Popen([script_path], start_new_session=True)
         except Exception as e:
             self.show_error("Model Vault", f"No se pudo iniciar: {e}")

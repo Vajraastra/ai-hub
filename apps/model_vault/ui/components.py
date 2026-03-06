@@ -285,6 +285,10 @@ class ModelDetailsDialog(QDialog):
         action_layout = QHBoxLayout(action_bar)
         action_layout.setContentsMargins(25, 20, 25, 20)
         
+        self.update_btn = QPushButton("🔄 Buscar Actualización")
+        self.update_btn.setObjectName("actionBtn")
+        self.update_btn.clicked.connect(self._check_update)
+
         open_folder_btn = QPushButton("📁 Abrir Carpeta")
         open_folder_btn.setObjectName("actionBtn")
         open_folder_btn.clicked.connect(self._open_folder)
@@ -293,6 +297,7 @@ class ModelDetailsDialog(QDialog):
         web_btn.setObjectName("actionBtn")
         web_btn.clicked.connect(self._open_web)
         
+        action_layout.addWidget(self.update_btn)
         action_layout.addWidget(open_folder_btn)
         action_layout.addWidget(web_btn)
         action_layout.addStretch()
@@ -303,6 +308,44 @@ class ModelDetailsDialog(QDialog):
         action_layout.addWidget(close_btn)
         
         main_layout.addWidget(action_bar)
+
+    def _check_update(self):
+        """Initial feedback when clicking the update button."""
+        self.update_btn.setText("⏳ Buscando...")
+        self.update_btn.setEnabled(False)
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(100, self._perform_update_check)
+
+    def _perform_update_check(self):
+        """Logic to call the vault service and show results."""
+        try:
+            # The parent of this dialog is ModelVaultWidget which has the vault service
+            vault = self.parent().vault
+            result = vault.check_for_updates(self.data["hash"])
+            
+            if not result:
+                self.update_btn.setText("❓ No encontrado")
+                self.update_btn.setEnabled(True)
+            elif result.get("status") == "up_to_date":
+                self.update_btn.setText("✅ Al día")
+                self.update_btn.setStyleSheet("background-color: #2A5E2A; color: white;")
+                self.update_btn.setEnabled(True)
+            else:
+                new_name = result["new_version_name"]
+                self.update_btn.setText(f"✨ Nueva: {new_name}")
+                self.update_btn.setStyleSheet("background-color: #EC00F0; color: white;")
+                self.update_btn.setToolTip(f"Hay una nueva versión disponible en Civitai: {new_name}")
+                self.update_btn.setEnabled(True)
+                # If there's a new version, clicking it again could open the web
+                try:
+                    self.update_btn.clicked.disconnect()
+                except: pass
+                self.update_btn.clicked.connect(self._open_web)
+                
+        except Exception as e:
+            self.update_btn.setText("❌ Error")
+            self.update_btn.setEnabled(True)
+            print(f"Update check error: {e}")
 
     def _add_to_prompt(self, text):
         """Append a tag to the prompt display area with comma separation."""
@@ -378,7 +421,7 @@ class ModelCard(QFrame):
         super().__init__(parent)
         self.data = model_data
         self.setObjectName("card")
-        self.setFixedSize(240, 360) 
+        self.setFixedSize(200, 320) 
         self._setup_ui()
 
     def _setup_ui(self):
@@ -387,25 +430,25 @@ class ModelCard(QFrame):
         layout.setSpacing(0)
 
         container = QWidget()
-        container.setFixedSize(240, 240)
+        container.setFixedSize(200, 220)
         img_layout = QVBoxLayout(container)
         img_layout.setContentsMargins(0, 0, 0, 0)
 
         self.img_lbl = QLabel()
-        self.img_lbl.setFixedSize(240, 240)
+        self.img_lbl.setFixedSize(200, 220)
         self.img_lbl.setAlignment(Qt.AlignCenter)
         self.img_lbl.setStyleSheet("background-color: #1A0040; border-top-left-radius: 8px; border-top-right-radius: 8px;")
         
         preview_path = self.data.get("preview_path")
         if preview_path and os.path.exists(preview_path):
             pix = QPixmap(preview_path)
-            self.img_lbl.setPixmap(pix.scaled(240, 240, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation))
+            self.img_lbl.setPixmap(pix.scaled(200, 220, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation))
         else:
             self.img_lbl.setText("🖼️ Sin Preview")
             self.img_lbl.setStyleSheet("color: #444466; background-color: #1A0040;")
 
         img_layout.addWidget(self.img_lbl)
-        
+
         arch = self.data.get("base_model") or "Unknown"
         color = "#3D1B7B"
         for key, val in self.ARCH_COLORS.items():

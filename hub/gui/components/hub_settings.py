@@ -25,8 +25,61 @@ class HubSettings(QWidget):
         layout.setSpacing(20)
 
         layout.addWidget(self._build_paths_group())
+        layout.addWidget(self._build_vault_group())
         layout.addWidget(self._build_sysinfo_group())
         layout.addStretch()
+
+    def _build_vault_group(self) -> QGroupBox:
+        box = QGroupBox("📦 Model Vault Settings")
+        box.setStyleSheet("""
+            QGroupBox {
+                color: #54EFEA;
+                font-size: 14px;
+                font-weight: bold;
+                border: 1px solid #3D1B7B;
+                border-radius: 8px;
+                margin-top: 10px;
+                padding-top: 12px;
+            }
+            QGroupBox::title { subcontrol-origin: margin; padding: 0 6px; }
+        """)
+        layout = QVBoxLayout(box)
+        layout.setSpacing(12)
+
+        row = QHBoxLayout()
+        lbl = QLabel("Civitai API Key:")
+        lbl.setFixedWidth(100)
+        lbl.setStyleSheet("color: #e0e0ff;")
+        
+        self._civitai_key_edit = QLineEdit(state.get_civitai_key())
+        self._civitai_key_edit.setEchoMode(QLineEdit.Password)
+        self._civitai_key_edit.setPlaceholderText("Tu API Key de Civitai (opcional)")
+        self._civitai_key_edit.setStyleSheet("""
+            QLineEdit {
+                background: #1A0040;
+                color: #54EFEA;
+                border: 1px solid #3D1B7B;
+                border-radius: 4px;
+                padding: 4px 8px;
+            }
+        """)
+        
+        row.addWidget(lbl)
+        row.addWidget(self._civitai_key_edit)
+        layout.addLayout(row)
+
+        save_btn = QPushButton("💾 Guardar Ajustes Vault")
+        save_btn.setObjectName("install_btn")
+        save_btn.setFixedWidth(180)
+        save_btn.clicked.connect(self._save_vault_settings)
+        layout.addWidget(save_btn, alignment=Qt.AlignLeft)
+
+        return box
+
+    def _save_vault_settings(self):
+        key = self._civitai_key_edit.text().strip()
+        state.set_civitai_key(key)
+        QMessageBox.information(self, "Guardado", "✅ Ajustes del Model Vault guardados correctamente.")
 
     # ------------------------------------------------------------------ #
     # Paths group                                                          #

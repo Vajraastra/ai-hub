@@ -7,6 +7,11 @@ from PySide6.QtWidgets import (
     QFrame, QProgressBar, QMessageBox
 )
 from PySide6.QtCore import Qt, QTimer, Signal, QObject
+# Adjust path to find core and ui modules regardless of how it's launched
+VAULT_DIR = os.path.dirname(os.path.abspath(__file__))
+if VAULT_DIR not in sys.path:
+    sys.path.insert(0, VAULT_DIR)
+
 from core.vault_service import VaultService
 from ui.components import ModelCard, ModelDetailsDialog
 
@@ -15,11 +20,9 @@ class UIWorkerSignals(QObject):
     finished = Signal(int)
     error = Signal(str)
 
-class ModelVaultMainWindow(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("AI Hub — Model Vault")
-        self.resize(1100, 800)
+class ModelVaultWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
         
         # Paths
         self.script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -28,7 +31,21 @@ class ModelVaultMainWindow(QMainWindow):
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         
         # Service
-        self.vault = VaultService(self.db_path)
+        # Try to get API key from Hub State if available
+        
+        # Try to get API key from Hub State if available
+        api_key = None
+        try:
+            from gui.state import state
+            api_key = state.get_civitai_key()
+        except ImportError:
+            # Fallback if running standalone outside the hub structure
+            pass
+            
+        self.vault = VaultService(self.db_path, api_key=api_key)
+        self.ModelCard = ModelCard
+        self.ModelDetailsDialog = ModelDetailsDialog
+        
         self.signals = UIWorkerSignals()
         self.signals.progress.connect(self._on_progress)
         self.signals.finished.connect(self._on_finished)
@@ -37,12 +54,12 @@ class ModelVaultMainWindow(QMainWindow):
         self._apply_theme()
         self._build_ui()
         
-        # Initial scan (shallow)
-        self.run_scan(deep=False)
+        # Manual load from cache (don't auto-sync/index at start)
+        self._load_models()
 
     def _apply_theme(self):
         self.setStyleSheet("""
-            QMainWindow, QWidget#main_bg { background-color: #0F0023; color: #e0e0ff; }
+            QWidget#vault_root { background-color: #0F0023; color: #e0e0ff; }
             QLabel { color: #e0e0ff; }
             QLineEdit {
                 background: #1A0040; color: #54EFEA;
@@ -62,11 +79,9 @@ class ModelVaultMainWindow(QMainWindow):
         """)
 
     def _build_ui(self):
-        container = QWidget()
-        container.setObjectName("main_bg")
-        self.setCentralWidget(container)
-        root = QVBoxLayout(container)
-        root.setContentsMargins(0, 0, 0, 0) # Removed margins for full-height sidebar
+        self.setObjectName("vault_root")
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
         # Top Bar
@@ -87,14 +102,15 @@ class ModelVaultMainWindow(QMainWindow):
         self.search_box.textChanged.connect(self._filter_models)
         top_layout.addWidget(self.search_box)
         
-        refresh_btn = QPushButton("🔄 Sincronizar")
+        refresh_btn = QPushButton("🔄 Actualizar / Sync")
+        refresh_btn.setToolTip("Escanear archivos e indexar metadatos")
         refresh_btn.setObjectName("primary_btn")
         refresh_btn.clicked.connect(lambda: self.run_scan(deep=True))
         top_layout.addWidget(refresh_btn)
         
         root.addWidget(top_bar)
 
-        # Main Layout (Sidebar + Grid)
+        # Main Layout
         main_layout = QHBoxLayout()
         main_layout.setSpacing(0)
         
@@ -136,23 +152,50 @@ class ModelVaultMainWindow(QMainWindow):
         right_layout = QVBoxLayout(right_content)
         right_layout.setContentsMargins(20, 20, 20, 20)
 
-        # Progress bar
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
         right_layout.addWidget(self.progress_bar)
 
-        # Grid of models
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.grid_widget = QWidget()
         self.grid = QGridLayout(self.grid_widget)
-        self.grid.setSpacing(25) # Increased spacing
-        self.grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.grid.setSpacing(25)
+        # Centered alignment for a premium gallery look
+        self.grid.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
         self.scroll.setWidget(self.grid_widget)
         right_layout.addWidget(self.scroll)
         
         main_layout.addWidget(right_content)
         root.addLayout(main_layout)
+
+    def resizeEvent(self, event):
+        """Handle window resizing to adjust grid columns."""
+        super().resizeEvent(event)
+        # 200px card + 25px spacing = ~225px
+        available_width = self.scroll.width() - 40 
+        new_cols = max(2, available_width // 225)
+        
+        if hasattr(self, 'columns') and self.columns != new_cols:
+            self.columns = new_cols
+            self._rearrange_grid()
+
+    def _rearrange_grid(self):
+        """Redistribute existing widgets in the grid based on new column count."""
+        if not hasattr(self, 'columns'): return
+        
+        widgets = []
+        while self.grid.count():
+            item = self.grid.takeAt(0)
+            if item.widget():
+                widgets.append(item.widget())
+        
+        # Clear any manual stretches
+        for c in range(50):
+             self.grid.setColumnStretch(c, 0)
+
+        for i, w in enumerate(widgets):
+            self.grid.addWidget(w, i // self.columns, i % self.columns)
 
     def _on_progress(self, current, total, name):
         self.progress_bar.setVisible(True)
@@ -171,7 +214,6 @@ class ModelVaultMainWindow(QMainWindow):
     def run_scan(self, deep=False):
         def _target():
             try:
-                # ComfyUI and standard paths
                 scan_dirs = [
                     "/run/media/system/Kilaya/Models/Lora/",
                     "/run/media/system/Kilaya/Models/StableDiffusion/",
@@ -205,14 +247,11 @@ class ModelVaultMainWindow(QMainWindow):
         threading.Thread(target=_target, daemon=True).start()
 
     def _load_models(self, filter_cat="Todos", search_query=""):
-        # Stop any active batch loading
         if hasattr(self, 'batch_timer') and self.batch_timer.isActive():
             self.batch_timer.stop()
             
-        # Performance optimization
         self.scroll.setUpdatesEnabled(False)
         
-        # Clear grid safely
         while self.grid.count():
             item = self.grid.takeAt(0)
             widget = item.widget()
@@ -222,7 +261,6 @@ class ModelVaultMainWindow(QMainWindow):
 
         all_models = self.vault.db.get_all_models()
         
-        # Filtering logic
         filtered = []
         for m in all_models:
             m_type = (m.get("model_type") or "").lower()
@@ -244,20 +282,22 @@ class ModelVaultMainWindow(QMainWindow):
             
             filtered.append(m)
 
-        # Batch loading setup
         self.load_queue = filtered
         self.load_index = 0
-        self.columns = 3
+        
+        # Initial column calculation
+        available_width = self.scroll.width() - 40
+        self.columns = max(2, available_width // 225)
         
         if not hasattr(self, 'batch_timer'):
             self.batch_timer = QTimer()
             self.batch_timer.timeout.connect(self._add_cards_batch)
         
         self.scroll.setUpdatesEnabled(True)
-        self.batch_timer.start(10) # process batch every 10ms
+        self.batch_timer.start(10)
 
     def _add_cards_batch(self):
-        batch_size = 12 # Process 12 models at a time
+        batch_size = 12
         for _ in range(batch_size):
             if self.load_index >= len(self.load_queue):
                 self.batch_timer.stop()
@@ -267,23 +307,20 @@ class ModelVaultMainWindow(QMainWindow):
             base_name = os.path.splitext(m["file_path"])[0]
             m["preview_path"] = base_name + ".preview.jpeg"
             
-            card = ModelCard(m)
+            card = self.ModelCard(m)
             card.doubleClicked.connect(self._show_details)
             self.grid.addWidget(card, self.load_index // self.columns, self.load_index % self.columns)
             self.load_index += 1
 
     def _show_details(self, model_data):
-        dialog = ModelDetailsDialog(model_data, self)
+        dialog = self.ModelDetailsDialog(model_data, self)
         dialog.notes_saved.connect(self._save_notes)
         dialog.show()
 
     def _save_notes(self, model_hash, notes):
         self.vault.db.update_user_notes(model_hash, notes)
-        # We don't need to reload everything, just update the local cache if we want
-        # But since details dialog is already updated, we are good.
 
     def _filter_models(self):
-        # Determine active category
         active_cat = "Todos"
         for cat, btn in self.cat_buttons.items():
             if btn.isChecked():
@@ -292,6 +329,17 @@ class ModelVaultMainWindow(QMainWindow):
         
         search_text = self.search_box.text()
         self._load_models(filter_cat=active_cat, search_query=search_text)
+
+
+class ModelVaultMainWindow(QMainWindow):
+    """Standalone window wrapper for the widget."""
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("AI Hub — Model Vault")
+        # Adjusting default size to comfortably fit 3 columns + sidebar
+        self.resize(1200, 850)
+        self.widget = ModelVaultWidget(self)
+        self.setCentralWidget(self.widget)
 
 def main():
     app = QApplication(sys.argv)

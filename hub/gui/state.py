@@ -188,6 +188,30 @@ class HubState:
         except Exception as e:
             print(f"[state] Error saving paths: {e}")
 
+    def get_civitai_key(self) -> str:
+        """Returns the stored Civitai API key."""
+        try:
+            if os.path.isfile(self.config_file):
+                with open(self.config_file, "r") as f:
+                    return json.load(f).get("settings", {}).get("civitai_key", "")
+        except Exception:
+            pass
+        return ""
+
+    def set_civitai_key(self, key: str):
+        """Persists the Civitai API key."""
+        try:
+            config = {}
+            if os.path.isfile(self.config_file):
+                with open(self.config_file, "r") as f:
+                    config = json.load(f)
+            settings = config.setdefault("settings", {})
+            settings["civitai_key"] = key
+            with open(self.config_file, "w") as f:
+                json.dump(config, f, indent=2)
+        except Exception as e:
+            print(f"[state] Error saving civitai key: {e}")
+
     # ------------------------------------------------------------------ #
     # User extra args + port override (per-app settings)                  #
     # ------------------------------------------------------------------ #

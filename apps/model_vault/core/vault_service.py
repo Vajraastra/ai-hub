@@ -117,3 +117,27 @@ class VaultService:
                     # Attempt to download, download_image already filters for videos/formats
                     if self.client.download_image(image_url, preview_path):
                         break # Found a valid one
+    def check_for_updates(self, model_hash):
+        """
+        Compares local version with the latest available on Civitai
+        for the same model and architecture.
+        """
+        model = self.db.get_model_by_hash(model_hash)
+        if not model or not model.get("model_id"):
+            return None
+
+        latest = self.client.get_latest_version_for_arch(model["model_id"], model["base_model"])
+        if not latest:
+            return None
+
+        # Compare version IDs
+        if latest["id"] != model["version_id"]:
+            return {
+                "new_version_id": latest["id"],
+                "new_version_name": latest["name"],
+                "download_url": latest.get("downloadUrl"),
+                "release_date": latest.get("createdAt"),
+                "description": latest.get("description")
+            }
+        
+        return {"status": "up_to_date"}
