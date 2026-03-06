@@ -355,17 +355,17 @@ if [ "$GUI_MODE" = true ]; then
         fi
     fi
 
-    # Check if PySide6 is installed
-    "$UI_PYTHON" -c "import PySide6" 2>/dev/null
+    # Check if PySide6 and requests are installed
+    "$UI_PYTHON" -c "import PySide6, requests" 2>/dev/null
     if [ $? -ne 0 ]; then
-        log_info "Instalando dependencias graficas (PySide6)..."
-        "$UV_BIN" pip install --python "$UI_PYTHON" PySide6 2>/dev/null
+        log_info "Instalando dependencias graficas y de red (PySide6, requests)..."
+        "$UV_BIN" pip install --python "$UI_PYTHON" PySide6 requests 2>/dev/null
         if [ $? -ne 0 ]; then
-            log_error "Error instalando PySide6"
+            log_error "Error instalando dependencias de la UI"
             log_info "Cayendo a modo terminal..."
             exec "$PYTHON_BIN" "$HUB_SCRIPT" "${REMAINING_ARGS[@]}"
         fi
-        log_ok "PySide6 instalado"
+        log_ok "Dependencias de la UI instaladas"
     fi
 
     exec "$UI_PYTHON" "$UI_SCRIPT" "${REMAINING_ARGS[@]}"

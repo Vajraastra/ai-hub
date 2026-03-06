@@ -12,13 +12,14 @@ if HUB_DIR not in sys.path:
     sys.path.insert(0, HUB_DIR)
 
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
-                               QLabel, QScrollArea, QFrame, QMessageBox, QTabWidget)
-from PySide6.QtCore import Qt
+                               QHBoxLayout, QLabel, QScrollArea, QFrame,
+                               QMessageBox, QTabWidget, QPushButton)
+from PySide6.QtCore import Qt, QTimer
 
 from gui.state import state
-from gui.components.system_card import SystemCard
 from gui.components.app_card import AppCard
 from gui.components.hub_settings import HubSettings
+from gui.components.event_log_viewer import EventLogViewer
 from gui.components.app_settings_dialog import AppSettingsDialog
 from gui.workers import HubWorkers
 
@@ -31,13 +32,13 @@ _STYLESHEET = """
 
     /* ── Tab widget ───────────────────────────── */
     QTabWidget::pane {
-        border: 1px solid #3D1B7B;
+        border: none;
         background-color: #0F0023;
     }
     QTabBar::tab {
-        background: #1F004B;
-        color: #aaaacc;
-        padding: 8px 22px;
+        background: #1A0040;
+        color: #888aaa;
+        padding: 8px 20px;
         border: 1px solid #3D1B7B;
         border-bottom: none;
         border-radius: 4px 4px 0 0;
@@ -54,7 +55,7 @@ _STYLESHEET = """
 
     /* ── Cards ───────────────────────────────── */
     QFrame#card {
-        background-color: #2A0A5E;
+        background-color: #1E004E;
         border-radius: 8px;
         border: 1px solid #3D1B7B;
     }
@@ -62,39 +63,47 @@ _STYLESHEET = """
     /* ── Labels ──────────────────────────────── */
     QLabel { color: #e0e0ff; }
 
-    /* ── Buttons — base ──────────────────────── */
+    /* ── Buttons ─────────────────────────────── */
     QPushButton {
-        padding: 6px 14px;
+        padding: 5px 14px;
         border-radius: 4px;
         font-weight: bold;
         border: none;
         font-size: 13px;
-    }
-    QPushButton:disabled {
-        background-color: #3D1B7B;
-        color: #555588;
-        border: 1px solid #2A0A5E;
+        min-width: 80px;
     }
 
-    /* Launch / Install — Grape accent */
-    QPushButton#success_btn  { background-color: #600DB5; color: #54EFEA; }
+    /* Disabled: grey, but keeps button shape */
+    QPushButton:disabled {
+        background-color: #2A1A4A;
+        color: #554466;
+        border: 1px solid #3D1B7B;
+    }
+
+    /* Launch / primary — violet */
+    QPushButton#success_btn  { background-color: #600DB5; color: #FFFFFF; }
     QPushButton#success_btn:hover  { background-color: #7B1FD4; }
-    QPushButton#install_btn  { background-color: #600DB5; color: #54EFEA; }
+    QPushButton#install_btn  { background-color: #600DB5; color: #FFFFFF; }
     QPushButton#install_btn:hover  { background-color: #7B1FD4; }
 
-    /* Update / outline — Robin egg blue */
+    /* Update / outline — cyan */
     QPushButton#outline_btn {
         background-color: transparent;
         border: 1px solid #51CCDC;
         color: #51CCDC;
     }
     QPushButton#outline_btn:hover { background-color: rgba(81,204,220,0.12); }
+    QPushButton#outline_btn:disabled {
+        border: 1px solid #3D1B7B;
+        color: #444466;
+        background: #1A0040;
+    }
 
-    /* Stop — Phlox solid */
+    /* Stop — phlox solid */
     QPushButton#stop_btn { background-color: #EC00F0; color: #0F0023; }
     QPushButton#stop_btn:hover { background-color: #FF33FF; }
 
-    /* Uninstall — Phlox outline */
+    /* Uninstall — phlox outline */
     QPushButton#danger_outline_btn {
         background-color: transparent;
         border: 1px solid #EC00F0;
@@ -104,15 +113,15 @@ _STYLESHEET = """
 
     /* ── Scrollbar ────────────────────────────── */
     QScrollBar:vertical {
-        border: none; background: #0F0023; width: 8px; margin: 0;
+        border: none; background: #0F0023; width: 6px; margin: 0;
     }
     QScrollBar::handle:vertical {
-        background: #600DB5; min-height: 20px; border-radius: 4px;
+        background: #3D1B7B; min-height: 20px; border-radius: 3px;
     }
-    QScrollBar::handle:vertical:hover { background: #7B1FD4; }
+    QScrollBar::handle:vertical:hover { background: #600DB5; }
     QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 
-    /* ── Message / Dialog boxes ───────────────── */
+    /* ── Dialogs ─────────────────────────────── */
     QMessageBox, QDialog { background-color: #1F004B; color: #e0e0ff; }
 """
 
@@ -121,13 +130,20 @@ class AIHubMainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("AI Hub — Panel de Control")
-        self.resize(960, 720)
+        self.resize(920, 680)
         self.setStyleSheet(_STYLESHEET)
 
-        # Background workers
-        self.workers = HubWorkers()
+        self.workers = HubWorkers(shared_state=state)
+        # Signal for immediate updates (best-effort from worker thread)
         self.workers.signals.app_state_changed.connect(self.refresh_apps_list)
         self.workers.signals.error_message.connect(self.show_error)
+
+        # Polling timer — runs in the main thread every 1s, guarantees UI
+        # reflects the real state regardless of cross-thread signal delivery.
+        self._poll_timer = QTimer(self)
+        self._poll_timer.setInterval(1000)
+        self._poll_timer.timeout.connect(self.refresh_apps_list)
+        self._poll_timer.start()
 
         self.build_ui()
 
@@ -144,34 +160,58 @@ class AIHubMainWindow(QMainWindow):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # ── Header ──────────────────────────────────────────────────────
-        header_widget = QWidget()
-        header_widget.setStyleSheet("background-color: #1F004B; padding: 14px 30px 10px;")
-        header_layout = QVBoxLayout(header_widget)
-        header_layout.setContentsMargins(30, 14, 30, 10)
+        # ── Compact top bar ───────────────────────────────────────────────
+        topbar = QWidget()
+        topbar.setStyleSheet("background-color: #1A0040; border-bottom: 1px solid #3D1B7B;")
+        topbar_layout = QHBoxLayout(topbar)
+        topbar_layout.setContentsMargins(20, 10, 20, 10)
+        topbar_layout.setSpacing(16)
 
-        header_lbl = QLabel("🤖 AI Hub")
-        header_lbl.setStyleSheet("font-size: 28px; font-weight: bold; color: #54EFEA;")
-        header_layout.addWidget(header_lbl)
+        # App name — compact
+        name_lbl = QLabel("🤖 <b>AI Hub</b>")
+        name_lbl.setStyleSheet("font-size: 18px; color: #54EFEA;")
+        topbar_layout.addWidget(name_lbl)
 
-        self.sys_card = SystemCard(state.sys_info)
-        header_layout.addWidget(self.sys_card)
+        # System info inline (compact)
+        info = state.sys_info
+        gpu_text = info.get("gpu_name", "GPU desconocida")
+        cuda_text = info.get("cuda_tag", "")
+        disk_text = info.get("disk_free", "")
 
-        root.addWidget(header_widget)
+        sep = QLabel("|")
+        sep.setStyleSheet("color: #3D1B7B;")
 
-        # ── Tab widget ───────────────────────────────────────────────────
+        info_lbl = QLabel(
+            f"<span style='color:#888aaa'>GPU:</span> <span style='color:#54EFEA'>{gpu_text}</span>"
+            f"  <span style='color:#3D1B7B'>|</span>"
+            f"  <span style='color:#888aaa'>CUDA:</span> <span style='color:#54EFEA'>{cuda_text}</span>"
+            f"  <span style='color:#3D1B7B'>|</span>"
+            f"  <span style='color:#888aaa'>Libre:</span> <span style='color:#51CCDC'>{disk_text}</span>"
+        )
+        info_lbl.setStyleSheet("font-size: 12px;")
+
+        topbar_layout.addWidget(sep)
+        topbar_layout.addWidget(info_lbl)
+        topbar_layout.addStretch()
+
+        # Model Vault Button
+        vault_btn = QPushButton("📦 Gestionar Modelos")
+        vault_btn.setToolTip("Abrir Model Vault (Standalone)")
+        vault_btn.clicked.connect(self._launch_model_vault)
+        topbar_layout.addWidget(vault_btn)
+
+        root.addWidget(topbar)
+
+        # ── Tab widget fills the rest ─────────────────────────────────────
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
         root.addWidget(self.tabs)
 
-        # Tab 1: Applications
         self.tabs.addTab(self._build_apps_tab(), "📦  Aplicaciones")
-
-        # Tab 2: Hub Settings
-        self.tabs.addTab(HubSettings(), "⚙️  Hub")
+        self.tabs.addTab(HubSettings(),          "⚙️  Hub")
+        self.tabs.addTab(EventLogViewer(),        "📋  Log")
 
     def _build_apps_tab(self) -> QWidget:
-        """Builds the scrollable app cards list."""
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setFrameShape(QFrame.NoFrame)
@@ -180,14 +220,13 @@ class AIHubMainWindow(QMainWindow):
         scroll_content = QWidget()
         scroll_content.setObjectName("main_bg")
         self.scroll_layout = QVBoxLayout(scroll_content)
-        self.scroll_layout.setContentsMargins(30, 24, 30, 24)
-        self.scroll_layout.setSpacing(12)
+        self.scroll_layout.setContentsMargins(20, 16, 20, 16)
+        self.scroll_layout.setSpacing(10)
 
-        # Apps container
         self.apps_container = QWidget()
         self.apps_layout = QVBoxLayout(self.apps_container)
         self.apps_layout.setContentsMargins(0, 0, 0, 0)
-        self.apps_layout.setSpacing(12)
+        self.apps_layout.setSpacing(10)
         self.scroll_layout.addWidget(self.apps_container)
         self.scroll_layout.addStretch()
 
@@ -200,7 +239,6 @@ class AIHubMainWindow(QMainWindow):
     # ------------------------------------------------------------------ #
 
     def refresh_apps_list(self, emitting_app_id=None):
-        # Clear existing cards
         while self.apps_layout.count():
             child = self.apps_layout.takeAt(0)
             if child.widget():
@@ -210,7 +248,9 @@ class AIHubMainWindow(QMainWindow):
             s == "stopping" for s in state.busy_apps.values()
         )
 
-        for app_id, app_cfg in state.registry_apps.items():
+        # Combine regular apps and utilities
+        all_apps = {**state.registry_apps, **state.registry_utilities}
+        for app_id, app_cfg in all_apps.items():
             app_status = state.get_app_status(app_id)
             card = AppCard(app_id, app_cfg, app_status, self.on_app_action,
                            any_running=any_running)
@@ -222,7 +262,11 @@ class AIHubMainWindow(QMainWindow):
 
     def on_app_action(self, action: str, app_id: str):
         if action == "launch":
-            self.workers.start_app(app_id)
+            if app_id in state.registry_utilities:
+                # Special handling for utilities (standalone launch)
+                self._launch_model_vault() if app_id == "model-vault" else None
+            else:
+                self.workers.start_app(app_id)
         elif action == "stop":
             self.workers.stop_app(app_id)
         elif action == "install":
@@ -233,13 +277,11 @@ class AIHubMainWindow(QMainWindow):
         elif action == "update":
             app_name = state.registry_apps.get(app_id, {}).get("name", app_id)
             reply = QMessageBox.question(
-                self,
-                f"Actualizar {app_name}",
+                self, f"Actualizar {app_name}",
                 f"¿Buscar y aplicar actualizaciones para <b>{app_name}</b>?<br><br>"
                 f"La app será detenida si está corriendo.<br>"
                 f"Los archivos locales no serán eliminados.",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
             )
             if reply == QMessageBox.Yes:
                 self.workers.update_app(app_id)
@@ -247,19 +289,30 @@ class AIHubMainWindow(QMainWindow):
             app_name = state.registry_apps.get(app_id, {}).get("name", app_id)
             app_dir  = state.installed_apps.get(app_id, {}).get("dir", "")
             reply = QMessageBox.warning(
-                self,
-                f"Desinstalar {app_name}",
+                self, f"Desinstalar {app_name}",
                 f"¿Desinstalar <b>{app_name}</b>?<br><br>"
                 f"<b>Se eliminará permanentemente:</b><br>{app_dir}<br><br>"
-                f"Los modelos y outputs en tu carpeta de modelos NO serán afectados.",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
+                f"Los modelos en tu carpeta configurada NO serán afectados.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
             )
             if reply == QMessageBox.Yes:
                 self.workers.uninstall_app(app_id)
 
     def show_error(self, app_id: str, message: str):
         QMessageBox.critical(self, f"Error en {app_id}", message)
+
+    def _launch_model_vault(self):
+        """Launches the Model Vault standalone script."""
+        import subprocess
+        script_path = os.path.join(HUB_DIR, "..", "apps", "model_vault", "run_vault.sh")
+        if sys.platform == "win32":
+            script_path = os.path.join(HUB_DIR, "..", "apps", "model_vault", "run_vault.bat")
+        
+        try:
+            # Run detached
+            subprocess.Popen([script_path], start_new_session=True)
+        except Exception as e:
+            self.show_error("Model Vault", f"No se pudo iniciar: {e}")
 
 
 def main():

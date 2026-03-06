@@ -12,7 +12,12 @@ HUB_DIR = os.path.dirname(GUI_DIR)
 if HUB_DIR not in sys.path:
     sys.path.insert(0, HUB_DIR)
 
-from gui.state import state
+# gui.state is imported here only as fallback; the preferred approach
+# is to pass the state object explicitly via HubWorkers(state)
+try:
+    from gui.state import state as _default_state
+except ImportError:
+    _default_state = None
 
 # Import required modules for launching
 try:
@@ -36,8 +41,11 @@ class WorkerSignals(QObject):
 class HubWorkers:
     """Manages background operations for the Hub GUI so the UI thread doesn't block."""
 
-    def __init__(self):
+    def __init__(self, shared_state=None):
         self.signals = WorkerSignals()
+        # Use the explicitly passed state object to guarantee it's the same
+        # instance as the one in main.py. Fallback to the imported singleton.
+        self._state = shared_state if shared_state is not None else _default_state
 
     # ------------------------------------------------------------------ #
     # Internal helpers                                                     #
@@ -49,24 +57,24 @@ class HubWorkers:
         If exclude_app_id is set, only stops other apps (not that one).
         Blocks until the process is dead.
         """
-        running_id = state.get_running_app()
+        running_id = self._state.get_running_app()
         if running_id is None or running_id == exclude_app_id:
             return
 
-        proc = state.running_apps.get(running_id)
+        proc = self._state.running_apps.get(running_id)
         if proc is None:
             # Stale entry — clean it up
-            state.running_apps.pop(running_id, None)
+            self._state.running_apps.pop(running_id, None)
             return
 
-        running_name = state.registry_apps.get(running_id, {}).get("name", running_id)
+        running_name = self._state.registry_apps.get(running_id, {}).get("name", running_id)
         print(f"[workers] Deteniendo '{running_name}' antes de lanzar otra app...")
         self.signals.log_message.emit(
             running_id,
             f"⏹️ Deteniendo {running_name} para liberar memoria..."
         )
         # Mark as busy so the card updates immediately
-        state.busy_apps[running_id] = "stopping"
+        self._state.busy_apps[running_id] = "stopping"
         self.signals.app_state_changed.emit(running_id)
 
         try:
@@ -79,8 +87,8 @@ class HubWorkers:
         except Exception as e:
             print(f"[workers] Error stopping {running_id}: {e}")
         finally:
-            state.running_apps.pop(running_id, None)
-            state.busy_apps.pop(running_id, None)
+            self._state.running_apps.pop(running_id, None)
+            self._state.busy_apps.pop(running_id, None)
             self.signals.log_message.emit(
                 running_id,
                 f"✅ {running_name} detenida correctamente."
@@ -104,11 +112,11 @@ class HubWorkers:
     def start_app(self, app_id: str):
         """Launches an app asynchronously. Stops any currently running app first."""
 
-        app_cfg = state.registry_apps.get(app_id)
+        app_cfg = self._state.registry_apps.get(app_id)
         if not app_cfg:
             return
 
-        app_dir = state.installed_apps.get(app_id, {}).get("dir")
+        app_dir = self._state.installed_apps.get(app_id, {}).get("dir")
         if not app_dir or not os.path.isdir(app_dir):
             err = f"Directorio de {app_id} no encontrado."
             print(f"❌ {err}")
@@ -116,12 +124,16 @@ class HubWorkers:
             return
 
         def _launch_thread():
+            # Mark as launching immediately so UI shows feedback
+            self._state.busy_apps[app_id] = "launching"
+            self.signals.app_state_changed.emit(app_id)
+
             # --- Single-app safeguard ---
             self._stop_running_app(exclude_app_id=app_id)
 
             try:
                 import json
-                with open(state.config_file, "r") as f:
+                with open(self._state.config_file, "r") as f:
                     hub_config = json.load(f)
 
                 cuda_env = build_env_overrides(hub_config.get("cuda", {}))
@@ -135,13 +147,10 @@ class HubWorkers:
                 outputs_dir = hub_config.get("paths", {}).get("outputs")
                 extra_args = app_cfg.get("extra_args", [])
 
-                # Merge user-configured extra args
-                user_args = state.get_user_extra_args(app_id)
+                user_args = self._state.get_user_extra_args(app_id)
 
-                # Apply port override if set
-                port_override = state.get_port_override(app_id)
+                port_override = self._state.get_port_override(app_id)
                 if port_override:
-                    # Remove any existing --port from extra_args and user_args, then add override
                     extra_args = [a for a in extra_args if not str(a).startswith("--port")]
                     user_args  = [a for a in user_args  if not str(a).startswith("--port")]
                     user_args.append(f"--port={port_override}")
@@ -153,8 +162,10 @@ class HubWorkers:
                 )
 
                 if isinstance(proc, subprocess.Popen):
-                    state.running_apps[app_id] = proc
-                    state.log_event("LAUNCH", app_id, f"Iniciada — PID {proc.pid}")
+                    # Clear launching state → now truly running
+                    self._state.busy_apps.pop(app_id, None)
+                    self._state.running_apps[app_id] = proc
+                    self._state.log_event("LAUNCH", app_id, f"Iniciada — PID {proc.pid}")
                     self.signals.app_state_changed.emit(app_id)
 
                     self.signals.log_message.emit(
@@ -164,16 +175,23 @@ class HubWorkers:
 
                     proc.wait()
 
-                    state.log_event("STOP", app_id, "Proceso terminado")
-                    state.running_apps.pop(app_id, None)
+                    self._state.log_event("STOP", app_id, "Proceso terminado")
+                    self._state.running_apps.pop(app_id, None)
+                    self.signals.app_state_changed.emit(app_id)
+                else:
+                    # launch_app returned 0 (cancelled) — clear launching
+                    self._state.busy_apps.pop(app_id, None)
                     self.signals.app_state_changed.emit(app_id)
 
             except Exception as e:
                 err = f"Error lanzando {app_id}: {e}"
                 print(f"❌ {err}")
-                state.log_event("ERROR", app_id, f"Error al lanzar: {e}")
+                import traceback
+                traceback.print_exc()
+                self._state.log_event("ERROR", app_id, f"Error al lanzar: {e}")
                 self.signals.error_message.emit(app_id, str(e))
-                state.running_apps.pop(app_id, None)
+                self._state.running_apps.pop(app_id, None)
+                self._state.busy_apps.pop(app_id, None)
                 self.signals.app_state_changed.emit(app_id)
 
         threading.Thread(target=_launch_thread, daemon=True).start()
@@ -184,7 +202,7 @@ class HubWorkers:
 
     def stop_app(self, app_id: str):
         """Stops a running app gracefully, then forcefully if needed."""
-        proc = state.running_apps.get(app_id)
+        proc = self._state.running_apps.get(app_id)
         if not proc:
             return
 
@@ -196,12 +214,12 @@ class HubWorkers:
                 except subprocess.TimeoutExpired:
                     proc.kill()
                     proc.wait(timeout=5)
-                state.log_event("STOP", app_id, "Detenida por usuario")
+                self._state.log_event("STOP", app_id, "Detenida por usuario")
             except Exception as e:
                 print(f"[workers] Error stopping {app_id}: {e}")
                 self.signals.error_message.emit(app_id, str(e))
             finally:
-                state.running_apps.pop(app_id, None)
+                self._state.running_apps.pop(app_id, None)
                 self.signals.app_state_changed.emit(app_id)
 
         threading.Thread(target=_stop_thread, daemon=True).start()
@@ -213,16 +231,16 @@ class HubWorkers:
     def install_app(self, app_id: str):
         """Runs app_installer in a background thread."""
 
-        if app_id in state.busy_apps:
+        if app_id in self._state.busy_apps:
             print(f"[workers] '{app_id}' ya tiene una operación en curso.")
             return
 
         def _install_thread():
-            state.busy_apps[app_id] = "installing"
+            self._state.busy_apps[app_id] = "installing"
             self.signals.app_state_changed.emit(app_id)
             try:
                 import json
-                with open(state.config_file, "r") as f:
+                with open(self._state.config_file, "r") as f:
                     hub_config = json.load(f)
 
                 hub_dir = HUB_DIR
@@ -258,23 +276,23 @@ class HubWorkers:
                 )
 
                 if result.get("success"):
-                    state.installed_apps[app_id] = {
+                    self._state.installed_apps[app_id] = {
                         "dir": os.path.join(apps_dir, app_id),
                         "installed": True,
                     }
-                    state.save_state()
-                    state.log_event("INSTALL", app_id, "Instalación exitosa")
+                    self._state.save_state()
+                    self._state.log_event("INSTALL", app_id, "Instalación exitosa")
                     print(f"✅ Instalación exitosa de {app_id}.")
                 else:
                     err = result.get("error", "Error desconocido")
-                    state.log_event("ERROR", app_id, f"Instalación fallida: {err}")
+                    self._state.log_event("ERROR", app_id, f"Instalación fallida: {err}")
                     print(f"❌ Falló instalación de {app_id}: {err}")
                     self.signals.error_message.emit(app_id, f"Error durante instalación: {err}")
 
             except Exception as e:
                 self.signals.error_message.emit(app_id, f"Error del instalador: {e}")
             finally:
-                state.busy_apps.pop(app_id, None)
+                self._state.busy_apps.pop(app_id, None)
                 self.signals.app_state_changed.emit(app_id)
 
         threading.Thread(target=_install_thread, daemon=True).start()
@@ -288,11 +306,11 @@ class HubWorkers:
         Runs git pull + CUDA verification via app_updater in a background thread.
         Stops the app first if it's currently running.
         """
-        if app_id in state.busy_apps:
+        if app_id in self._state.busy_apps:
             print(f"[workers] '{app_id}' ya tiene una operación en curso.")
             return
 
-        app_info = state.installed_apps.get(app_id)
+        app_info = self._state.installed_apps.get(app_id)
         if not app_info:
             self.signals.error_message.emit(app_id, f"'{app_id}' no está instalada.")
             return
@@ -304,18 +322,18 @@ class HubWorkers:
 
         def _update_thread():
             # Stop the app if it's running before updating
-            if app_id in state.running_apps:
+            if app_id in self._state.running_apps:
                 print(f"[workers] Deteniendo '{app_id}' antes de actualizar...")
                 self._stop_running_app(exclude_app_id=None)
 
-            state.busy_apps[app_id] = "updating"
+            self._state.busy_apps[app_id] = "updating"
             self.signals.app_state_changed.emit(app_id)
             try:
                 import json
-                with open(state.config_file, "r") as f:
+                with open(self._state.config_file, "r") as f:
                     hub_config = json.load(f)
 
-                app_cfg = state.registry_apps.get(app_id, {})
+                app_cfg = self._state.registry_apps.get(app_id, {})
                 branch = app_cfg.get("branch", "main")
                 cuda_tag = hub_config.get("cuda", {}).get("tag", "cpu")
                 cuda_env = build_env_overrides(hub_config.get("cuda", {}))
@@ -338,21 +356,21 @@ class HubWorkers:
                     if result.get("updated"):
                         old = (result.get("old_commit") or "")[:8]
                         new = (result.get("new_commit") or "")[:8]
-                        state.log_event("UPDATE", app_id, f"Actualizada: {old} → {new}")
+                        self._state.log_event("UPDATE", app_id, f"Actualizada: {old} → {new}")
                         print(f"✅ {app_id} actualizada: {old} → {new}")
                     else:
-                        state.log_event("UPDATE", app_id, "Ya estaba al día")
+                        self._state.log_event("UPDATE", app_id, "Ya estaba al día")
                         print(f"✅ {app_id} ya estaba al día.")
                 else:
                     err = result.get("error", "Error desconocido")
-                    state.log_event("ERROR", app_id, f"Error al actualizar: {err}")
+                    self._state.log_event("ERROR", app_id, f"Error al actualizar: {err}")
                     print(f"❌ Error actualizando {app_id}: {err}")
                     self.signals.error_message.emit(app_id, f"Error al actualizar: {err}")
 
             except Exception as e:
                 self.signals.error_message.emit(app_id, f"Error del actualizador: {e}")
             finally:
-                state.busy_apps.pop(app_id, None)
+                self._state.busy_apps.pop(app_id, None)
                 self.signals.app_state_changed.emit(app_id)
 
         threading.Thread(target=_update_thread, daemon=True).start()
@@ -366,11 +384,11 @@ class HubWorkers:
         Deletes the app directory and removes it from the config.
         Stops the app first if it's currently running.
         """
-        if app_id in state.busy_apps:
+        if app_id in self._state.busy_apps:
             print(f"[workers] '{app_id}' ya tiene una operación en curso.")
             return
 
-        app_info = state.installed_apps.get(app_id)
+        app_info = self._state.installed_apps.get(app_id)
         if not app_info:
             self.signals.error_message.emit(app_id, f"'{app_id}' no está instalada.")
             return
@@ -379,25 +397,25 @@ class HubWorkers:
 
         def _uninstall_thread():
             # Stop the app if it's running before uninstalling
-            if app_id in state.running_apps:
+            if app_id in self._state.running_apps:
                 print(f"[workers] Deteniendo '{app_id}' antes de desinstalar...")
                 self._stop_running_app(exclude_app_id=None)
 
-            state.busy_apps[app_id] = "uninstalling"
+            self._state.busy_apps[app_id] = "uninstalling"
             self.signals.app_state_changed.emit(app_id)
             try:
                 # Delete directory
                 if app_dir and os.path.isdir(app_dir):
                     print(f"[{app_id}] Eliminando {app_dir} ...")
                     shutil.rmtree(app_dir)
-                    state.log_event("UNINSTALL", app_id, f"Directorio eliminado: {app_dir}")
+                    self._state.log_event("UNINSTALL", app_id, f"Directorio eliminado: {app_dir}")
                     print(f"✅ Carpeta de {app_id} eliminada.")
                 else:
                     print(f"⚠️  Directorio de '{app_id}' no encontrado, sólo limpiando config.")
 
-                state.installed_apps.pop(app_id, None)
-                state.save_state()
-                state.log_event("UNINSTALL", app_id, "Desinstalación completada")
+                self._state.installed_apps.pop(app_id, None)
+                self._state.save_state()
+                self._state.log_event("UNINSTALL", app_id, "Desinstalación completada")
                 print(f"✅ {app_id} desinstalada correctamente.")
 
             except Exception as e:
@@ -405,7 +423,7 @@ class HubWorkers:
                 print(f"❌ {err}")
                 self.signals.error_message.emit(app_id, err)
             finally:
-                state.busy_apps.pop(app_id, None)
+                self._state.busy_apps.pop(app_id, None)
                 self.signals.app_state_changed.emit(app_id)
 
         threading.Thread(target=_uninstall_thread, daemon=True).start()

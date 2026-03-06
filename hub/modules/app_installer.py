@@ -284,11 +284,60 @@ def install_app(app_config: dict, apps_dir: str, cuda_env: dict,
             if logger:
                 logger.info("install", "Installing requirements.txt...")
 
-            # Build uv pip install command
-            cmd = [uv, "pip", "install", "-r", reqs_file]
+            # Handle pip_exclude_packages: filter out packages before install
+            # Useful for platform-specific packages (e.g., flash-attn on incompatible CUDA)
+            excludes = [p.lower() for p in app_config.get("pip_exclude_packages", [])]
+            active_reqs_file = reqs_file
+            filtered_reqs_file = None
+            if excludes:
+                filtered_reqs_file = os.path.join(app_dir, ".pip_filtered_reqs.txt")
+                try:
+                    with open(reqs_file, "r") as rf, open(filtered_reqs_file, "w") as wf:
+                        for line in rf:
+                            stripped = line.strip()
+                            skip = False
+                            for excl in excludes:
+                                excl_norm = excl.lower().replace("-", "_")
+                                stripped_low = stripped.lower()
+                                # Case 1: normal package spec line "flash-attn==2.8.3; ..."
+                                pkg_part = stripped_low.split(";")[0].strip()
+                                pkg_slug = pkg_part.split("==")[0].split(">=")[0].split("<=")[0].split("[")[0].strip()
+                                pkg_slug_norm = pkg_slug.replace("-", "_")
+                                if pkg_slug_norm == excl_norm:
+                                    skip = True
+                                    break
+                                # Case 2: URL wheel line that contains the package name
+                                # e.g. https://github.com/.../flash_attn-2.8.3+...-win_amd64.whl
+                                if stripped_low.startswith("http") and excl_norm in stripped_low.replace("-", "_"):
+                                    skip = True
+                                    break
+                            if skip:
+                                if logger:
+                                    logger.info("install", f"  Skipping excluded package: {stripped[:80]}")
+                                continue
+                            wf.write(line)
 
-            # Handle pip_overrides: force newer versions for Python compat
+                    active_reqs_file = filtered_reqs_file
+                    if logger:
+                        logger.info("install", f"  Excluded packages: {excludes}")
+                except (OSError, IOError) as e:
+                    if logger:
+                        logger.warn("install", f"  Could not filter requirements: {e} — using original")
+                    active_reqs_file = reqs_file
+
+            # Build uv pip install command
+            cmd = [uv, "pip", "install", "-r", active_reqs_file]
+
+            # Handle pip_overrides: force specific versions for Python/CUDA compat
             overrides = app_config.get("pip_overrides", [])
+            # Resolve template vars in overrides
+            if cuda_config:
+                overrides = [
+                    ov.replace("{torch_version}", cuda_config.get("torch_version", ""))
+                      .replace("{torchvision_version}", cuda_config.get("torchvision_version", ""))
+                      .replace("{torchaudio_version}", cuda_config.get("torchaudio_version", cuda_config.get("torch_version", "")))
+                    for ov in overrides
+                ]
             overrides_file = None
             if overrides:
                 overrides_file = os.path.join(app_dir, ".pip_overrides.txt")
@@ -306,9 +355,11 @@ def install_app(app_config: dict, apps_dir: str, cuda_env: dict,
                 )
                 returncode = proc.wait()
 
-                # Cleanup override file
+                # Cleanup temp files
                 if overrides_file and os.path.isfile(overrides_file):
                     os.remove(overrides_file)
+                if filtered_reqs_file and os.path.isfile(filtered_reqs_file):
+                    os.remove(filtered_reqs_file)
 
                 if returncode == 0:
                     if logger:
@@ -328,6 +379,49 @@ def install_app(app_config: dict, apps_dir: str, cuda_env: dict,
         if logger:
             logger.info("install", "App manages its own deps on first launch.")
 
+    # Step 6: Apply post-install patches (text substitution in source files)
+    # Useful for disabling content filters, hash checks, or other modifications
+    patches = app_config.get("post_install_patches", [])
+    if patches:
+        if logger:
+            logger.info("install", f"Applying {len(patches)} post-install patch(es)...")
+        for patch in patches:
+            patch_file = patch.get("file", "")
+            find_text = patch.get("find", "")
+            replace_text = patch.get("replace", "")
+            if not patch_file or not find_text:
+                if logger:
+                    logger.warn("install", f"  Skipping invalid patch (missing file or find): {patch}")
+                continue
+            target_path = os.path.join(app_dir, patch_file)
+            if not os.path.isfile(target_path):
+                if logger:
+                    logger.warn("install", f"  Patch target not found: {patch_file}")
+                continue
+            try:
+                with open(target_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                if find_text not in content:
+                    if logger:
+                        logger.warn("install", f"  Patch text not found in {patch_file} — already patched?")
+                    continue
+                patched = content.replace(find_text, replace_text, 1)
+                with open(target_path, "w", encoding="utf-8") as f:
+                    f.write(patched)
+                if logger:
+                    logger.success("install", f"  Patched: {patch_file}")
+                # Clear pycache for the patched module so Python recompiles it
+                module_dir = os.path.dirname(target_path)
+                pycache_dir = os.path.join(module_dir, "__pycache__")
+                if os.path.isdir(pycache_dir):
+                    import shutil as _shutil
+                    _shutil.rmtree(pycache_dir, ignore_errors=True)
+                    if logger:
+                        logger.info("install", f"  Cleared __pycache__ for {os.path.basename(module_dir)}")
+            except (OSError, IOError) as e:
+                if logger:
+                    logger.warn("install", f"  Could not apply patch to {patch_file}: {e}")
+
     if logger:
         for key, value in cuda_env.items():
             logger.info("cuda", f"  {key} = {value}")
@@ -339,6 +433,7 @@ def install_app(app_config: dict, apps_dir: str, cuda_env: dict,
         logger.success("install", f"{app_id} installation complete!")
 
     return result
+
 
 
 def _run_pre_install_commands(commands: list, app_dir: str,

@@ -148,6 +148,11 @@ def _get_launch_command(app_config: dict, app_dir: str) -> list:
         script = app_config.get("launch_script", "launch.py")
         cmd = [python, os.path.join(app_dir, script)]
 
+        # Append static launch_args from registry (e.g., ["run", "--open-browser"] for FaceFusion)
+        launch_args = app_config.get("launch_args", [])
+        if launch_args:
+            cmd.extend(launch_args)
+
         # For config_file style: append the selected config path
         if app_config.get("launch_args_style") == "config_file":
             config_path = _select_config_file(app_config, app_dir)
@@ -156,6 +161,7 @@ def _get_launch_command(app_config: dict, app_dir: str) -> list:
             cmd.append(config_path)
 
         return cmd
+
 
     elif launch_type == "npm":
         # Run via npm (e.g., Next.js UI)

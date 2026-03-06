@@ -10,10 +10,9 @@ import os
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QLineEdit, QTextEdit, QGroupBox, QFileDialog, QMessageBox, QFrame
+    QLineEdit, QGroupBox, QFileDialog, QMessageBox
 )
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QFont
+from PySide6.QtCore import Qt
 
 from gui.state import state
 
@@ -27,7 +26,6 @@ class HubSettings(QWidget):
 
         layout.addWidget(self._build_paths_group())
         layout.addWidget(self._build_sysinfo_group())
-        layout.addWidget(self._build_log_group())
         layout.addStretch()
 
     # ------------------------------------------------------------------ #
@@ -167,58 +165,3 @@ class HubSettings(QWidget):
 
         return box
 
-    # ------------------------------------------------------------------ #
-    # Event log group                                                      #
-    # ------------------------------------------------------------------ #
-
-    def _build_log_group(self) -> QGroupBox:
-        box = QGroupBox("📋 Log de Eventos")
-        box.setStyleSheet("""
-            QGroupBox {
-                color: #54EFEA;
-                font-size: 14px;
-                font-weight: bold;
-                border: 1px solid #3D1B7B;
-                border-radius: 8px;
-                margin-top: 10px;
-                padding-top: 12px;
-            }
-            QGroupBox::title { subcontrol-origin: margin; padding: 0 6px; }
-        """)
-        layout = QVBoxLayout(box)
-
-        self._log_view = QTextEdit()
-        self._log_view.setReadOnly(True)
-        self._log_view.setMinimumHeight(180)
-        self._log_view.setFont(QFont("Monospace", 10))
-        self._log_view.setStyleSheet("""
-            QTextEdit {
-                background: #0F0023;
-                color: #54EFEA;
-                border: 1px solid #3D1B7B;
-                border-radius: 4px;
-            }
-        """)
-        layout.addWidget(self._log_view)
-
-        refresh_btn = QPushButton("🔄 Actualizar")
-        refresh_btn.setObjectName("outline_btn")
-        refresh_btn.setFixedWidth(130)
-        refresh_btn.clicked.connect(self.refresh_log)
-        layout.addWidget(refresh_btn, alignment=Qt.AlignLeft)
-
-        # Auto-refresh every 10 seconds when visible
-        self._timer = QTimer(self)
-        self._timer.setInterval(10_000)
-        self._timer.timeout.connect(self.refresh_log)
-        self._timer.start()
-
-        self.refresh_log()
-        return box
-
-    def refresh_log(self):
-        content = state.read_event_log(max_lines=100)
-        self._log_view.setPlainText(content)
-        # Scroll to bottom
-        sb = self._log_view.verticalScrollBar()
-        sb.setValue(sb.maximum())

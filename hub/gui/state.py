@@ -30,6 +30,7 @@ class HubState:
 
         # Apps cache
         self.registry_apps  = {}
+        self.registry_utilities = {}  # Fixed: initialization
         self.installed_apps = {}
 
         # INVARIANT: Only ONE app can be running at a time.
@@ -91,9 +92,12 @@ class HubState:
             with open(self.registry_file, "r") as f:
                 registry = json.load(f)
             self.registry_apps = registry.get("apps", {})
+            # Merge utilities into registry_apps for display, or handle separately
+            self.registry_utilities = registry.get("utilities", {})
         except Exception as e:
             print(f"[state] Error loading registry: {e}")
             self.registry_apps = {}
+            self.registry_utilities = {}
 
         try:
             if os.path.isfile(self.config_file):
@@ -147,6 +151,8 @@ class HubState:
             return "running"
         if app_id in self.installed_apps:
             return "installed"
+        if app_id in self.registry_utilities:
+            return "installed"  # Utils are built-in
         return "not_installed"
 
     def get_running_app(self) -> "str | None":
