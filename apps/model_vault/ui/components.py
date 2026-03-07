@@ -2,7 +2,7 @@ import os
 from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QLabel, QWidget, QHBoxLayout, 
     QPushButton, QDialog, QScrollArea, QTextBrowser, 
-    QTextEdit, QSizePolicy, QApplication, QLayout
+    QTextEdit, QLineEdit, QSizePolicy, QApplication, QLayout
 )
 from PySide6.QtCore import Qt, Signal, QSize, QPoint, QRect, QUrl, QTimer
 from PySide6.QtGui import QPixmap, QDesktopServices
@@ -90,6 +90,10 @@ class ModelDetailsDialog(QDialog):
     Detailed view for a model using a single scrollable page layout.
     """
     notes_saved = Signal(str, str) # Emits hash, notes
+    tags_saved = Signal(str, str)  # Emits hash, tags
+    creator_clicked = Signal(str)  # Emits username
+    tag_clicked = Signal(str)      # Emits tag name
+    _tags_fetched = Signal(list)   # Internal: async civitai fetch result
 
     def __init__(self, model_data, parent=None):
         super().__init__(parent)
@@ -101,18 +105,18 @@ class ModelDetailsDialog(QDialog):
             QLabel { color: #E0E0FF; }
             QScrollArea { border: none; background-color: transparent; }
             QWidget#scrollContent { background-color: transparent; }
-            QTextBrowser { 
-                background-color: #1F004B; border: 1px solid #600DB5; 
-                border-radius: 8px; color: #FFFFFF; font-size: 15px; 
+            QTextBrowser {
+                background-color: #1F004B; border: 1px solid #600DB5;
+                border-radius: 8px; color: #FFFFFF; font-size: 15px;
                 padding: 15px; line-height: 1.6;
             }
-            QTextEdit { 
-                background-color: #1F004B; border: 1px solid #600DB5; 
-                border-radius: 8px; color: #54EFEA; font-size: 15px; 
+            QTextEdit {
+                background-color: #1F004B; border: 1px solid #600DB5;
+                border-radius: 8px; color: #54EFEA; font-size: 15px;
                 padding: 10px;
             }
             QPushButton#actionBtn {
-                background-color: #600DB5; border: 1px solid #EC00F0; 
+                background-color: #600DB5; border: 1px solid #EC00F0;
                 padding: 10px 25px; border-radius: 6px; font-weight: bold;
                 color: white;
             }
@@ -130,6 +134,11 @@ class ModelDetailsDialog(QDialog):
             }
         """)
         self._setup_ui()
+        self._tags_fetched.connect(self._populate_civitai_tag_chips)
+        # If no tags cached in DB but model is known on Civitai, fetch live
+        if not (self.data.get("custom_tags") or "").strip() and self.data.get("model_id"):
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(400, self._fetch_tags_async)
 
     def _setup_ui(self):
         main_layout = QVBoxLayout(self)
@@ -181,9 +190,59 @@ class ModelDetailsDialog(QDialog):
         add_info_mini("Arquitectura", self.data.get("base_model", "Unknown"))
         add_info_mini("Tipo", self.data.get("model_type", "Unknown"))
         add_info_mini("Versión", self.data.get("version_name", "Unknown"))
+        
+        creator_name = self.data.get("creator_name")
+        if creator_name and creator_name != "Unknown":
+            creator_btn = QPushButton(f"👤 Creador: {creator_name}")
+            creator_btn.setToolTip("Haz clic para explorar los modelos de este creador")
+            creator_btn.setStyleSheet("""
+                QPushButton {
+                    background: transparent; color: #54EFEA; 
+                    border: none; font-size: 15px; font-weight: bold;
+                    text-align: left;
+                }
+                QPushButton:hover { text-decoration: underline; color: white; }
+            """)
+            creator_btn.setCursor(Qt.PointingHandCursor)
+            creator_btn.clicked.connect(lambda: self.creator_clicked.emit(creator_name))
+            info_strip.addWidget(creator_btn)
+            
         info_strip.addStretch()
         id_section.addLayout(info_strip)
         inner_layout.addLayout(id_section)
+
+        # 2.5 Tags de Civitai (prominente, clickable → CivitaiBrowser)
+        civitai_tags_section = QVBoxLayout()
+        civitai_tags_h = QLabel("🏷️ Tags de Civitai")
+        civitai_tags_h.setObjectName("sectionHeader")
+        civitai_tags_section.addWidget(civitai_tags_h)
+
+        self._tags_loading_lbl = QLabel("Buscando tags en Civitai...")
+        self._tags_loading_lbl.setStyleSheet("color: #555577; font-style: italic; font-size: 12px;")
+
+        self.civitai_tags_widget = QWidget()
+        self.civitai_tags_flow = FlowLayout(self.civitai_tags_widget, margin=0, hspacing=6, vspacing=6)
+        self.civitai_tags_widget.hide()
+
+        raw_tags = (self.data.get("custom_tags") or "").strip()
+        if raw_tags:
+            # Tags already in DB — show immediately, no fetch needed
+            self._tags_loading_lbl.hide()
+            for t in [x.strip() for x in raw_tags.split(",") if x.strip()]:
+                btn = QPushButton(t)
+                btn.setObjectName("chip")
+                btn.setCursor(Qt.PointingHandCursor)
+                btn.clicked.connect(lambda checked=False, text=t: self.tag_clicked.emit(text))
+                self.civitai_tags_flow.addWidget(btn)
+            self.civitai_tags_widget.show()
+        else:
+            # Will fetch async if model_id is available (wired up in __init__)
+            if not self.data.get("model_id"):
+                self._tags_loading_lbl.setText("Sin tags disponibles")
+
+        civitai_tags_section.addWidget(self._tags_loading_lbl)
+        civitai_tags_section.addWidget(self.civitai_tags_widget)
+        inner_layout.addLayout(civitai_tags_section)
 
         # 3. Prompt Builder & Trigger Chips
         triggers = self.data.get("triggers", "")
@@ -205,7 +264,7 @@ class ModelDetailsDialog(QDialog):
                 btn = QPushButton(tag)
                 btn.setObjectName("chip")
                 btn.setCursor(Qt.PointingHandCursor)
-                btn.clicked.connect(lambda checked=False, text=tag: self._add_to_prompt(text))
+                btn.clicked.connect(lambda checked=False, text=tag, b=btn: self._add_to_prompt(text, b))
                 chips_layout.addWidget(btn)
             prompt_vbox.addWidget(chips_widget)
             
@@ -269,6 +328,24 @@ class ModelDetailsDialog(QDialog):
         save_btn.clicked.connect(self._save_notes)
         notes_section.addWidget(save_btn, 0, Qt.AlignRight)
         inner_layout.addLayout(notes_section)
+
+        # 5.5 Mis Etiquetas (user-editable, personal organization)
+        tags_section = QVBoxLayout()
+        tags_h = QLabel("✏️ Mis Etiquetas")
+        tags_h.setStyleSheet("color: #888aaa; font-weight: bold; font-size: 13px; margin-top: 10px;")
+        tags_section.addWidget(tags_h)
+
+        self.tags_edit = QLineEdit()
+        self.tags_edit.setObjectName("promptEdit")
+        self.tags_edit.setPlaceholderText("Ej: fav, anime, landscape (separadas por coma)")
+        self.tags_edit.setText(self.data.get("custom_tags", ""))
+        tags_section.addWidget(self.tags_edit)
+
+        save_tags_btn = QPushButton("💾 Guardar Etiquetas")
+        save_tags_btn.setObjectName("actionBtn")
+        save_tags_btn.clicked.connect(self._save_tags)
+        tags_section.addWidget(save_tags_btn, 0, Qt.AlignRight)
+        inner_layout.addLayout(tags_section)
 
         # 6. Tech Metadata Footer
         footer_info = QLabel(f"SHA256: {self.data.get('hash', 'Unknown')}")
@@ -347,21 +424,68 @@ class ModelDetailsDialog(QDialog):
             self.update_btn.setEnabled(True)
             print(f"Update check error: {e}")
 
-    def _add_to_prompt(self, text):
+    def _fetch_tags_async(self):
+        """Background fetch of Civitai tags when not cached in DB."""
+        model_id = self.data.get("model_id")
+        if not model_id:
+            return
+
+        def _target():
+            try:
+                vault = self.parent().vault
+                info = vault.client.get_model_info(model_id)
+                tags = info.get("tags", []) if info else []
+                self._tags_fetched.emit(tags)
+            except Exception as e:
+                print(f"[tags fetch] {e}")
+                self._tags_fetched.emit([])
+
+        import threading
+        threading.Thread(target=_target, daemon=True).start()
+
+    def _populate_civitai_tag_chips(self, tags):
+        """Populate the Civitai tags section with clickable chips (thread-safe via signal)."""
+        self._tags_loading_lbl.hide()
+
+        # Clear any existing chips
+        while self.civitai_tags_flow.count():
+            item = self.civitai_tags_flow.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        if not tags:
+            self._tags_loading_lbl.setText("Sin tags en Civitai")
+            self._tags_loading_lbl.show()
+            return
+
+        for t in tags:
+            btn = QPushButton(t)
+            btn.setObjectName("chip")
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.clicked.connect(lambda checked=False, text=t: self.tag_clicked.emit(text))
+            self.civitai_tags_flow.addWidget(btn)
+
+        self.civitai_tags_widget.show()
+        self.civitai_tags_widget.updateGeometry()
+
+    def _add_to_prompt(self, text, btn=None):
         """Append a tag to the prompt display area with comma separation."""
         current = self.prompt_display.toPlainText().strip()
         if not current:
             self.prompt_display.setPlainText(text)
         else:
-            # Check if tag already exists to avoid duplicates (optional, but nice)
+            # Check if tag already exists to avoid duplicates
             tags = [t.strip() for t in current.split(",")]
             if text not in tags:
                 self.prompt_display.setPlainText(f"{current}, {text}")
         
         # Visual feedback on the chip
-        btn = self.sender()
-        btn.setStyleSheet("background-color: #54EFEA; color: #1F004B; border: 2px solid white;")
-        QTimer.singleShot(400, lambda: btn.setStyleSheet(""))
+        if btn is None:
+            btn = self.sender()
+            
+        if btn:
+            btn.setStyleSheet("background-color: #54EFEA; color: #1F004B; border: 2px solid white;")
+            QTimer.singleShot(400, lambda: btn.setStyleSheet(""))
 
     def _copy_full_prompt(self):
         """Copy the entire built prompt to clipboard."""
@@ -376,6 +500,15 @@ class ModelDetailsDialog(QDialog):
         btn.setText("✅ Copiado!")
         btn.setStyleSheet("background-color: #54EFEA; color: #1F004B;")
         QTimer.singleShot(1000, lambda: (btn.setText(old_text), btn.setStyleSheet("")))
+
+    def _save_tags(self):
+        tags = self.tags_edit.text().strip()
+        self.tags_saved.emit(self.data.get("hash"), tags)
+        btn = self.sender()
+        old_text = btn.text()
+        btn.setText("✅ Etiquetas Guardadas")
+        btn.setEnabled(False)
+        QTimer.singleShot(1500, lambda: (btn.setText(old_text), btn.setEnabled(True)))
 
     def _save_notes(self):
         notes = self.notes_edit.toPlainText()
@@ -404,8 +537,9 @@ class ModelCard(QFrame):
     """
     A premium-looking card for a single model/LoRA.
     """
-    clicked = Signal(str) 
+    clicked = Signal(str)
     doubleClicked = Signal(dict)
+    tag_clicked = Signal(str)
 
     ARCH_COLORS = {
         "SDXL 1.0": "#6A5ACD",   
@@ -480,12 +614,33 @@ class ModelCard(QFrame):
         info_layout.addWidget(type_lbl)
         info_layout.setAlignment(type_lbl, Qt.AlignLeft)
 
-        name_lbl = QLabel(self.data.get("name", "Unknown"))
+        name_lbl = QLabel(self.data.get("display_name") or self.data.get("name", "Unknown"))
         name_lbl.setStyleSheet("font-weight: bold; color: #54EFEA; font-size: 14px;")
         name_lbl.setWordWrap(True)
         name_lbl.setMaximumHeight(40)
-        
         info_layout.addWidget(name_lbl)
+
+        # Tag chips (max 3, clickable → CivitaiBrowser)
+        tags_str = self.data.get("custom_tags") or ""
+        if tags_str.strip():
+            tags = [t.strip() for t in tags_str.split(",") if t.strip()][:3]
+            tags_widget = QWidget()
+            tags_layout = FlowLayout(tags_widget, margin=0, hspacing=3, vspacing=2)
+            for tag in tags:
+                btn = QPushButton(tag)
+                btn.setCursor(Qt.PointingHandCursor)
+                btn.setStyleSheet("""
+                    QPushButton {
+                        background: rgba(84,239,234,0.08); color: #54EFEA;
+                        border: 1px solid #3D1B7B; border-radius: 7px;
+                        padding: 1px 5px; font-size: 9px; font-weight: bold;
+                    }
+                    QPushButton:hover { background: #54EFEA; color: #1F004B; }
+                """)
+                btn.clicked.connect(lambda checked=False, t=tag: self.tag_clicked.emit(t))
+                tags_layout.addWidget(btn)
+            info_layout.addWidget(tags_widget)
+
         info_layout.addStretch()
 
         layout.addWidget(info_widget)

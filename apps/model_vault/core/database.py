@@ -21,13 +21,17 @@ class VaultDatabase:
                     file_path TEXT,
                     name TEXT,
                     base_model TEXT,
-                    model_type TEXT, -- New: LoRA, Checkpoint, etc.
+                    model_type TEXT,
                     version_id INTEGER,
                     model_id INTEGER,
                     version_name TEXT,
-                    triggers TEXT, -- Comma separated
+                    triggers TEXT,
                     description TEXT,
                     user_notes TEXT,
+                    creator_name TEXT, -- New
+                    custom_tags TEXT,  -- New
+                    display_name TEXT, -- New
+                    date_added TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- New
                     last_scan TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
@@ -46,6 +50,26 @@ class VaultDatabase:
             if "user_notes" not in columns:
                 print("[db] Migrando base de datos: Añadiendo columna 'user_notes'...")
                 conn.execute("ALTER TABLE models ADD COLUMN user_notes TEXT")
+
+            if "creator_name" not in columns:
+                print("[db] Migrando base de datos: Añadiendo columna 'creator_name'...")
+                conn.execute("ALTER TABLE models ADD COLUMN creator_name TEXT")
+
+            if "custom_tags" not in columns:
+                print("[db] Migrando base de datos: Añadiendo columna 'custom_tags'...")
+                conn.execute("ALTER TABLE models ADD COLUMN custom_tags TEXT")
+
+            if "display_name" not in columns:
+                print("[db] Migrando base de datos: Añadiendo columna 'display_name'...")
+                conn.execute("ALTER TABLE models ADD COLUMN display_name TEXT")
+                # Pre-fill display_name with name if it was null
+                conn.execute("UPDATE models SET display_name = name WHERE display_name IS NULL")
+
+            if "date_added" not in columns:
+                print("[db] Migrando base de datos: Añadiendo columna 'date_added'...")
+                conn.execute("ALTER TABLE models ADD COLUMN date_added TIMESTAMP DEFAULT '2020-01-01 00:00:00'")
+                # Update existing rows to current time immediately after adding the column
+                conn.execute("UPDATE models SET date_added = CURRENT_TIMESTAMP WHERE date_added = '2020-01-01 00:00:00'")
             
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS scan_folders (
@@ -56,12 +80,15 @@ class VaultDatabase:
 
     def upsert_model(self, model_data):
         """
-        model_data: dict with hash, file_path, name, base_model, model_type, version_id, model_id, version_name, triggers, description
+        model_data: dict with hash, file_path, name, base_model, model_type, version_id, 
+        model_id, version_name, triggers, description, creator_name, display_name
         """
         with self._get_conn() as conn:
             conn.execute("""
-                INSERT INTO models (hash, file_path, name, base_model, model_type, version_id, model_id, version_name, triggers, description)
-                VALUES (:hash, :file_path, :name, :base_model, :model_type, :version_id, :model_id, :version_name, :triggers, :description)
+                INSERT INTO models (hash, file_path, name, base_model, model_type, version_id, 
+                                  model_id, version_name, triggers, description, creator_name, display_name, custom_tags)
+                VALUES (:hash, :file_path, :name, :base_model, :model_type, :version_id, 
+                        :model_id, :version_name, :triggers, :description, :creator_name, :display_name, :custom_tags)
                 ON CONFLICT(hash) DO UPDATE SET
                     file_path=excluded.file_path,
                     name=excluded.name,
@@ -72,8 +99,15 @@ class VaultDatabase:
                     version_name=excluded.version_name,
                     triggers=excluded.triggers,
                     description=excluded.description,
+                    creator_name=excluded.creator_name,
+                    display_name=excluded.display_name,
+                    custom_tags=excluded.custom_tags,
                     last_scan=CURRENT_TIMESTAMP
             """, model_data)
+
+    def update_custom_tags(self, model_hash, tags):
+        with self._get_conn() as conn:
+            conn.execute("UPDATE models SET custom_tags = ? WHERE hash = ?", (tags, model_hash))
 
     def update_user_notes(self, model_hash, notes):
         with self._get_conn() as conn:

@@ -1,0 +1,17 @@
+{
+    "base_models": [
+        "Cualquiera",
+        "SD 1.5",
+        "SDXL 1.0",
+        "Pony",
+        "Illustrious",
+        "Z-image",
+        "NoobAI",
+        "Flux.1",
+        "SD 2.1",
+        "SDXL Turbo",
+        "SDXL Lightning",
+        "SD 1.4",
+        "SDXL 0.9"
+    ]
+}

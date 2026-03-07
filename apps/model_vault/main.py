@@ -19,6 +19,7 @@ class UIWorkerSignals(QObject):
     progress = Signal(int, int, str)
     finished = Signal(int)
     error = Signal(str)
+    api_checked = Signal(bool)
 
 class ModelVaultWidget(QWidget):
     def __init__(self, parent=None):
@@ -50,12 +51,31 @@ class ModelVaultWidget(QWidget):
         self.signals.progress.connect(self._on_progress)
         self.signals.finished.connect(self._on_finished)
         self.signals.error.connect(self._on_error)
+        self.signals.api_checked.connect(self._on_api_checked)
 
         self._apply_theme()
         self._build_ui()
         
         # Manual load from cache (don't auto-sync/index at start)
         self._load_models()
+
+        # API Check
+        QTimer.singleShot(2000, self._check_api_status)
+
+    def _check_api_status(self):
+        def _target():
+            is_ok = self.vault.client.verify_api_key()
+            self.signals.api_checked.emit(is_ok)
+            
+        threading.Thread(target=_target, daemon=True).start()
+
+    def _on_api_checked(self, is_ok):
+        if is_ok:
+            self.api_status_dot.setStyleSheet("color: #00FF00; font-size: 18px; margin-left: 10px;")
+            self.api_status_dot.setToolTip("Civitai API: Conectado (API Key Válida)")
+        else:
+            self.api_status_dot.setStyleSheet("color: #FF0000; font-size: 18px; margin-left: 10px;")
+            self.api_status_dot.setToolTip("Civitai API: Error de conexión o Key inválida")
 
     def _apply_theme(self):
         self.setStyleSheet("""
@@ -91,16 +111,38 @@ class ModelVaultWidget(QWidget):
         top_layout = QHBoxLayout(top_bar)
         top_layout.setContentsMargins(20, 0, 20, 0)
         
+        title_layout = QHBoxLayout()
         title = QLabel("📦 Model Vault")
         title.setStyleSheet("font-size: 20px; font-weight: bold; color: #54EFEA;")
-        top_layout.addWidget(title)
+        title_layout.addWidget(title)
+        
+        self.api_status_dot = QLabel("●")
+        self.api_status_dot.setToolTip("Civitai API Status: Verificando...")
+        self.api_status_dot.setStyleSheet("color: #666; font-size: 18px; margin-left: 10px;")
+        title_layout.addWidget(self.api_status_dot)
+        
+        top_layout.addLayout(title_layout)
         top_layout.addStretch()
         
         self.search_box = QLineEdit()
-        self.search_box.setPlaceholderText("Buscar modelos o LoRAs...")
-        self.search_box.setFixedWidth(300)
+        self.search_box.setPlaceholderText("Buscar por nombre, creador, tags o arquitectura...")
+        self.search_box.setFixedWidth(350)
         self.search_box.textChanged.connect(self._filter_models)
         top_layout.addWidget(self.search_box)
+
+        # Sort selector
+        self.sort_box = QLineEdit() # Temporary placeholder for a better widget if needed, or just use combo
+        from PySide6.QtWidgets import QComboBox
+        self.sort_selector = QComboBox()
+        self.sort_selector.addItems(["Más Reciente", "Nombre (A-Z)", "Arquitectura"])
+        self.sort_selector.setStyleSheet("""
+            QComboBox {
+                background: #1A0040; color: #51CCDC;
+                border: 1px solid #3D1B7B; border-radius: 4px; padding: 5px;
+            }
+        """)
+        self.sort_selector.currentIndexChanged.connect(self._filter_models)
+        top_layout.addWidget(self.sort_selector)
         
         refresh_btn = QPushButton("🔄 Actualizar / Sync")
         refresh_btn.setToolTip("Escanear archivos e indexar metadatos")
@@ -274,13 +316,25 @@ class ModelVaultWidget(QWidget):
             
             q = search_query.lower()
             if q:
-                name_match = q in m.get("name", "").lower()
+                name_match = q in (m.get("display_name") or "").lower() or q in m.get("name", "").lower()
                 arch_match = q in (m.get("base_model") or "").lower()
-                type_match = q in (m.get("model_type") or "").lower()
-                if not (name_match or arch_match or type_match):
+                creator_match = q in (m.get("creator_name") or "").lower()
+                triggers_match = q in (m.get("triggers") or "").lower()
+                tags_match = q in (m.get("custom_tags") or "").lower()
+                
+                if not (name_match or arch_match or creator_match or triggers_match or tags_match):
                     continue
             
             filtered.append(m)
+
+        # Apply sorting
+        sort_idx = self.sort_selector.currentIndex()
+        if sort_idx == 0: # Más Reciente
+            filtered.sort(key=lambda x: x.get("date_added") or "", reverse=True)
+        elif sort_idx == 1: # Nombre
+            filtered.sort(key=lambda x: (x.get("display_name") or x.get("name", "")).lower())
+        elif sort_idx == 2: # Arquitectura
+            filtered.sort(key=lambda x: (x.get("base_model") or "").lower())
 
         self.load_queue = filtered
         self.load_index = 0
@@ -309,13 +363,32 @@ class ModelVaultWidget(QWidget):
             
             card = self.ModelCard(m)
             card.doubleClicked.connect(self._show_details)
+            card.tag_clicked.connect(self._open_tag_browser)
             self.grid.addWidget(card, self.load_index // self.columns, self.load_index % self.columns)
             self.load_index += 1
 
     def _show_details(self, model_data):
         dialog = self.ModelDetailsDialog(model_data, self)
         dialog.notes_saved.connect(self._save_notes)
+        dialog.tags_saved.connect(self._save_tags)
+        dialog.creator_clicked.connect(self._open_creator_browser)
+        dialog.tag_clicked.connect(self._open_tag_browser)
         dialog.show()
+
+    def _open_creator_browser(self, username):
+        from ui.civitai_browser import CivitaiExplorerDialog
+        browser = CivitaiExplorerDialog(self.vault.client, self.vault, self, initial_username=username)
+        browser.exec()
+
+    def _open_tag_browser(self, tag):
+        from ui.civitai_browser import CivitaiExplorerDialog
+        browser = CivitaiExplorerDialog(self.vault.client, self.vault, self, initial_tag=tag)
+        browser.exec()
+
+    def _save_tags(self, model_hash, tags):
+        self.vault.db.update_custom_tags(model_hash, tags)
+        # Re-filter to update in-memory data and UI if necessary
+        # (Though tags are mostly for search, so no immediate refresh needed unless searching by tag)
 
     def _save_notes(self, model_hash, notes):
         self.vault.db.update_user_notes(model_hash, notes)

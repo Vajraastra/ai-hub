@@ -46,12 +46,15 @@ class VaultService:
                 # Sync with Civitai if needed
                 self.sync_model(model["path"], file_hash)
 
-    def sync_model(self, file_path, file_hash):
+    def sync_model(self, file_path, file_hash, version_data=None):
         """
         Fetches metadata from Civitai using hash and updates local sidecars + DB.
+        If version_data is provided, it skips the first API call.
         """
-        # 1. Try to find in Civitai
-        version_data = self.client.get_model_version_by_hash(file_hash)
+        # 1. Try to find in Civitai if not provided
+        if not version_data:
+            version_data = self.client.get_model_version_by_hash(file_hash)
+        
         if not version_data:
             # Not found or error
             return
@@ -59,17 +62,27 @@ class VaultService:
         # 2. Extract and clean metadata
         meta = self.client.extract_metadata(version_data)
         
+        # 2.5 Fetch full model data to get the creator's name (by-hash usually omits this)
+        model_id = version_data.get("modelId")
+        if model_id:
+            full_model_info = self.client.get_model_info(model_id)
+            if full_model_info and "creator" in full_model_info:
+                meta["creator"] = full_model_info["creator"].get("username", "Unknown")
+
         # 3. Update DB
         model_record = {
             "hash": file_hash,
             "file_path": file_path,
             "name": os.path.basename(file_path),
+            "display_name": meta.get("modelName") or os.path.basename(file_path),
+            "creator_name": meta.get("creator", "Unknown"),
             "base_model": meta["baseModel"],
             "model_type": meta["modelType"],
             "version_id": meta["modelVersionId"],
             "model_id": version_data.get("modelId"),
             "version_name": meta["versionName"],
             "triggers": self.processor.format_triggers(meta["triggers"]),
+            "custom_tags": ", ".join(meta.get("tags", [])) if meta.get("tags") else "",
             "description": meta["description"]
         }
         self.db.upsert_model(model_record)
@@ -132,12 +145,10 @@ class VaultService:
 
         # Compare version IDs
         if latest["id"] != model["version_id"]:
-            return {
-                "new_version_id": latest["id"],
-                "new_version_name": latest["name"],
-                "download_url": latest.get("downloadUrl"),
-                "release_date": latest.get("createdAt"),
-                "description": latest.get("description")
-            }
+            return latest
         
-        return {"status": "up_to_date"}
+        return None
+
+    def quick_register(self, file_path, file_hash, version_data):
+        """Syncs a single file immediately with the provided metadata."""
+        return self.sync_model(file_path, file_hash, version_data)

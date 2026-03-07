@@ -225,6 +225,15 @@ class AIHubMainWindow(QMainWindow):
             print(f"Nota: Model Vault no pudo integrarse como tab (usando modo ventana): {e}")
             self.vault_tab = None
 
+        # Integrate LoRA Merger
+        try:
+            from apps.lora_merger.main import LoraMergerWidget
+            self.merger_tab = LoraMergerWidget()
+            self.tabs.addTab(self.merger_tab, "🔀  LoRA Merger")
+        except Exception as e:
+            print(f"Nota: LoRA Merger no pudo integrarse como tab: {e}")
+            self.merger_tab = None
+
         self.tabs.addTab(HubSettings(),          "⚙️  Hub")
         self.tabs.addTab(EventLogViewer(),        "📋  Log")
 
