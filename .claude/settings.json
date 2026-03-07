@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -c \":*)",
+      "Bash(python3 -c \"import py_compile; py_compile.compile\\(''apps/model_vault/ui/components.py'', doraise=True\\); print\\(''OK''\\)\")",
+      "Bash(uv pip install --system numpy safetensors)",
+      "Bash(pip install numpy safetensors)",
+      "Bash(/run/media/system/Kilaya/ai-hub/hub/.ui_venv/bin/python -m pip install numpy safetensors)",
+      "Bash(UV_BIN=/run/media/system/Kilaya/ai-hub/hub/tools/uv)",
+      "Bash(UI_VENV=/run/media/system/Kilaya/ai-hub/hub/.ui_venv)",
+      "Bash($UV_BIN pip install --python \"$UI_VENV/bin/python\" numpy safetensors)",
+      "Bash(/run/media/system/Kilaya/ai-hub/hub/tools/uv pip install --python /run/media/system/Kilaya/ai-hub/hub/.ui_venv/bin/python numpy safetensors)",
+      "Bash(/run/media/system/Kilaya/ai-hub/hub/.ui_venv/bin/python -c \"import numpy, safetensors; print\\(''numpy'', numpy.__version__, ''| safetensors'', safetensors.__version__\\)\")",
+      "Read(//run/media/system/Kilaya/Models/Lora/**)",
+      "Bash(done)",
+      "Bash(git add apps/model_vault/core/civitai_client.py apps/model_vault/core/database.py apps/model_vault/core/vault_service.py apps/model_vault/main.py apps/model_vault/ui/components.py hub/gui/main.py hub/run.sh hub/__init__.py hub/config/civitai_architectures.json apps/lora_merger/)",
+      "Bash(git add -f apps/model_vault/core/civitai_client.py apps/model_vault/core/database.py apps/model_vault/core/vault_service.py apps/model_vault/main.py apps/model_vault/ui/components.py)",
+      "Bash(git add -f apps/lora_merger/)",
+      "Bash(git add hub/gui/main.py hub/run.sh hub/__init__.py hub/config/civitai_architectures.json .gitignore)",
+      "Bash(git rm -r --cached apps/lora_merger/__pycache__/ apps/lora_merger/core/__pycache__/ apps/lora_merger/ui/__pycache__/)"
+    ]
+  }
+}
