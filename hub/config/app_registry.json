@@ -22,6 +22,7 @@
             },
             "output_map": {
                 "method": "config_json",
+                "version_uid_source": "modules/launch_utils.py",
                 "settings": {
                     "outdir_txt2img_samples": "txt2img",
                     "outdir_img2img_samples": "img2img",
@@ -78,8 +79,8 @@
                 "filename": "extra_model_paths.yaml",
                 "mappings": {
                     "checkpoints": "checkpoints", "loras": "loras", "vae": "vae", "controlnet": "controlnet",
-                    "embeddings": "embeddings", "upscalers": "upscale_models", "clip_vision": "clip_vision",
-                    "ipadapter": "ipadapter", "diffusion_models": "unet"
+                    "embeddings": "embeddings", "upscale_models": "upscalers", "clip_vision": "clip_vision",
+                    "ipadapter": "ipadapter", "diffusion_models": "diffusion_models", "clip": "text_encoders"
                 }
             },
             "output_map": { "method": "cli", "args": ["--output-directory"] },

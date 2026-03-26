@@ -4,6 +4,8 @@ AI Hub — PySide6 GUI Main Entry Point
 """
 import os
 import sys
+import traceback
+import logging
 
 # Ensure hub/ dir is in path to import gui modules
 GUI_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -13,117 +15,18 @@ if HUB_DIR not in sys.path:
 
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                                QHBoxLayout, QLabel, QScrollArea, QFrame,
-                               QMessageBox, QTabWidget, QPushButton)
+                               QMessageBox, QTabWidget, QPushButton, QSplitter)
 from PySide6.QtCore import Qt, QTimer
 
 from gui.state import state
+from gui.theme import STYLESHEET
 from gui.components.app_card import AppCard
 from gui.components.hub_settings import HubSettings
 from gui.components.event_log_viewer import EventLogViewer
 from gui.components.app_settings_dialog import AppSettingsDialog
+from gui.components.app_terminal import AppTerminal
 from gui.workers import HubWorkers
 
-_STYLESHEET = """
-    /* ── Backgrounds ─────────────────────────── */
-    QMainWindow, QWidget#main_bg {
-        background-color: #0F0023;
-        color: #e0e0ff;
-    }
-
-    /* ── Tab widget ───────────────────────────── */
-    QTabWidget::pane {
-        border: none;
-        background-color: #0F0023;
-    }
-    QTabBar::tab {
-        background: #1A0040;
-        color: #888aaa;
-        padding: 8px 20px;
-        border: 1px solid #3D1B7B;
-        border-bottom: none;
-        border-radius: 4px 4px 0 0;
-        font-size: 13px;
-        font-weight: bold;
-        margin-right: 2px;
-    }
-    QTabBar::tab:selected {
-        background: #2A0A5E;
-        color: #54EFEA;
-        border-bottom: 2px solid #600DB5;
-    }
-    QTabBar::tab:hover:!selected { background: #2A0A5E; color: #e0e0ff; }
-
-    /* ── Cards ───────────────────────────────── */
-    QFrame#card {
-        background-color: #1E004E;
-        border-radius: 8px;
-        border: 1px solid #3D1B7B;
-    }
-
-    /* ── Labels ──────────────────────────────── */
-    QLabel { color: #e0e0ff; }
-
-    /* ── Buttons ─────────────────────────────── */
-    QPushButton {
-        padding: 5px 14px;
-        border-radius: 4px;
-        font-weight: bold;
-        border: none;
-        font-size: 13px;
-        min-width: 80px;
-    }
-
-    /* Disabled: grey, but keeps button shape */
-    QPushButton:disabled {
-        background-color: #2A1A4A;
-        color: #554466;
-        border: 1px solid #3D1B7B;
-    }
-
-    /* Launch / primary — violet */
-    QPushButton#success_btn  { background-color: #600DB5; color: #FFFFFF; }
-    QPushButton#success_btn:hover  { background-color: #7B1FD4; }
-    QPushButton#install_btn  { background-color: #600DB5; color: #FFFFFF; }
-    QPushButton#install_btn:hover  { background-color: #7B1FD4; }
-
-    /* Update / outline — cyan */
-    QPushButton#outline_btn {
-        background-color: transparent;
-        border: 1px solid #51CCDC;
-        color: #51CCDC;
-    }
-    QPushButton#outline_btn:hover { background-color: rgba(81,204,220,0.12); }
-    QPushButton#outline_btn:disabled {
-        border: 1px solid #3D1B7B;
-        color: #444466;
-        background: #1A0040;
-    }
-
-    /* Stop — phlox solid */
-    QPushButton#stop_btn { background-color: #EC00F0; color: #0F0023; }
-    QPushButton#stop_btn:hover { background-color: #FF33FF; }
-
-    /* Uninstall — phlox outline */
-    QPushButton#danger_outline_btn {
-        background-color: transparent;
-        border: 1px solid #EC00F0;
-        color: #EC00F0;
-    }
-    QPushButton#danger_outline_btn:hover { background-color: rgba(236,0,240,0.10); }
-
-    /* ── Scrollbar ────────────────────────────── */
-    QScrollBar:vertical {
-        border: none; background: #0F0023; width: 6px; margin: 0;
-    }
-    QScrollBar::handle:vertical {
-        background: #3D1B7B; min-height: 20px; border-radius: 3px;
-    }
-    QScrollBar::handle:vertical:hover { background: #600DB5; }
-    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
-
-    /* ── Dialogs ─────────────────────────────── */
-    QMessageBox, QDialog { background-color: #1F004B; color: #e0e0ff; }
-"""
 
 
 class AIHubMainWindow(QMainWindow):
@@ -131,12 +34,14 @@ class AIHubMainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("AI Hub — Panel de Control")
         self.resize(920, 680)
-        self.setStyleSheet(_STYLESHEET)
+        self.setStyleSheet(STYLESHEET)
 
         self.workers = HubWorkers(shared_state=state)
         # Signal for immediate updates (best-effort from worker thread)
         self.workers.signals.app_state_changed.connect(self.refresh_apps_list)
+        self.workers.signals.app_state_changed.connect(self._on_app_state_changed)
         self.workers.signals.error_message.connect(self.show_error)
+        self.workers.signals.cleanup_result.connect(self._show_cleanup_result)
 
         # Polling timer — runs in the main thread every 1s, guarantees UI
         # reflects the real state regardless of cross-thread signal delivery.
@@ -144,6 +49,9 @@ class AIHubMainWindow(QMainWindow):
         self._poll_timer.setInterval(1000)
         self._poll_timer.timeout.connect(self.refresh_apps_list)
         self._poll_timer.start()
+
+        # Dict de cards persistentes: app_id → AppCard
+        self._app_cards: dict = {}
 
         self.build_ui()
 
@@ -194,6 +102,16 @@ class AIHubMainWindow(QMainWindow):
         topbar_layout.addWidget(info_lbl)
         topbar_layout.addStretch()
 
+        # Cleanup button — mata procesos stale en puertos conocidos
+        cleanup_btn = QPushButton("🧹 Limpiar")
+        cleanup_btn.setObjectName("outline_btn")
+        cleanup_btn.setToolTip(
+            "Terminar procesos de IA que ocupen puertos conocidos\n"
+            "pero no estén gestionados por el hub"
+        )
+        cleanup_btn.clicked.connect(self.workers.cleanup_stale_processes)
+        topbar_layout.addWidget(cleanup_btn)
+
         # Model Vault Button
         vault_btn = QPushButton("📦 Gestionar Modelos")
         vault_btn.setObjectName("outline_btn")
@@ -238,6 +156,7 @@ class AIHubMainWindow(QMainWindow):
         self.tabs.addTab(EventLogViewer(),        "📋  Log")
 
     def _build_apps_tab(self) -> QWidget:
+        # ── Scroll area con tarjetas de apps ──────────────────────────
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setFrameShape(QFrame.NoFrame)
@@ -258,44 +177,76 @@ class AIHubMainWindow(QMainWindow):
 
         scroll_area.setWidget(scroll_content)
         self.refresh_apps_list()
-        return scroll_area
+
+        # ── Panel de terminal ─────────────────────────────────────────
+        self.terminal = AppTerminal()
+        self.workers.signals.log_message.connect(self.terminal.append_line)
+
+        # ── Splitter vertical: cards arriba, terminal abajo ───────────
+        splitter = QSplitter(Qt.Vertical)
+        splitter.setStyleSheet("""
+            QSplitter::handle:vertical {
+                background: #2A0A5E;
+                height: 3px;
+            }
+        """)
+        splitter.addWidget(scroll_area)
+        splitter.addWidget(self.terminal)
+        splitter.setSizes([300, 340])   # proporciones iniciales: más espacio al terminal
+        splitter.setCollapsible(0, False)
+        splitter.setCollapsible(1, True)
+
+        return splitter
 
     # ------------------------------------------------------------------ #
     # Apps list refresh                                                    #
     # ------------------------------------------------------------------ #
 
     def refresh_apps_list(self, emitting_app_id=None):
-        while self.apps_layout.count():
-            child = self.apps_layout.takeAt(0)
-            if child.widget():
-                child.widget().deleteLater()
-
+        # Una app está "ocupando recursos" si corre o se está deteniendo
         any_running = bool(state.running_apps) or any(
             s == "stopping" for s in state.busy_apps.values()
         )
 
-        # Combine regular apps and utilities
+        # Limpiar entradas stale de running_apps (proceso ya terminó)
+        stale = [aid for aid, proc in state.running_apps.items()
+                 if proc.poll() is not None]
+        for aid in stale:
+            state.running_apps.pop(aid, None)
+
         all_apps = {**state.registry_apps, **state.registry_utilities}
+
         for app_id, app_cfg in all_apps.items():
-            # Skip Model Vault as it now has a primary dedicated button/tab
             if app_id == "model-vault":
                 continue
-                
-            app_status = state.get_app_status(app_id)
-            card = AppCard(app_id, app_cfg, app_status, self.on_app_action,
-                           any_running=any_running)
-            self.apps_layout.addWidget(card)
+
+            app_status   = state.get_app_status(app_id)
+            running_proc = state.running_apps.get(app_id)
+
+            if app_id in self._app_cards:
+                self._app_cards[app_id].update_status(app_status, any_running, running_proc)
+            else:
+                card = AppCard(app_id, app_cfg, app_status, self.on_app_action,
+                               any_running=any_running, running_proc=running_proc)
+                self._app_cards[app_id] = card
+                self.apps_layout.addWidget(card)
 
     # ------------------------------------------------------------------ #
     # Action dispatcher                                                    #
     # ------------------------------------------------------------------ #
 
     def on_app_action(self, action: str, app_id: str):
+        # Guard global: ignorar si ya hay una operación en curso para esta app
+        if action not in ("stop", "settings") and app_id in state.busy_apps:
+            return
+
         if action == "launch":
             if app_id in state.registry_utilities:
-                # Special handling for utilities (standalone launch)
                 self._launch_model_vault() if app_id == "model-vault" else None
             else:
+                # Feedback visual inmediato antes de que el thread arranque
+                state.busy_apps[app_id] = "launching"
+                self.refresh_apps_list()
                 self.workers.start_app(app_id)
         elif action == "stop":
             self.workers.stop_app(app_id)
@@ -328,6 +279,19 @@ class AIHubMainWindow(QMainWindow):
             if reply == QMessageBox.Yes:
                 self.workers.uninstall_app(app_id)
 
+    def _on_app_state_changed(self, app_id: str):
+        """Sincroniza el panel de terminal con el estado de la app."""
+        status = state.get_app_status(app_id)
+        if status == "running":
+            app_name = state.registry_apps.get(app_id, {}).get("name", app_id)
+            self.terminal.set_active_app(app_id, app_name)
+        elif status in ("installed", "not_installed"):
+            # App se detuvo
+            self.terminal.on_app_stopped(app_id)
+
+    def _show_cleanup_result(self, summary: str):
+        QMessageBox.information(self, "Limpieza de procesos", summary)
+
     def show_error(self, app_id: str, message: str):
         QMessageBox.critical(self, f"Error en {app_id}", message)
 
@@ -351,11 +315,41 @@ class AIHubMainWindow(QMainWindow):
             self.show_error("Model Vault", f"No se pudo iniciar: {e}")
 
 
+def _setup_logging():
+    """
+    Configura logging estructurado hacia stderr (terminal) y captura
+    cualquier excepción no manejada antes de que la GUI muera silenciosamente.
+    run.sh redirige stderr→tee, así todo queda en el log de sesión.
+    """
+    logging.basicConfig(
+        level=logging.INFO,
+        format="[%(asctime)s] [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+        stream=sys.stderr,
+    )
+
+    def _excepthook(exc_type, exc_value, exc_tb):
+        """Captura crashes no atrapados: los imprime completos antes de morir."""
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc_value, exc_tb)
+            return
+        logging.critical(
+            "CRASH NO MANEJADO — traceback completo:",
+            exc_info=(exc_type, exc_value, exc_tb),
+        )
+        # También al stderr directo para que tee lo capture aunque logging falle
+        traceback.print_exception(exc_type, exc_value, exc_tb, file=sys.stderr)
+
+    sys.excepthook = _excepthook
+
+
 def main():
+    _setup_logging()
     app = QApplication(sys.argv)
     window = AIHubMainWindow()
     window.show()
     sys.exit(app.exec())
+
 
 if __name__ == "__main__":
     main()

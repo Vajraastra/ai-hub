@@ -142,16 +142,48 @@ def build_app_model_args(app_config: dict, models_dir: str, app_dir: str = "") -
         yaml_path = os.path.join(app_dir, filename)
         mappings = model_map.get("mappings", {})
         
+        # Build alias map to find ALL folder variants for each category
+        # (e.g. both "vae" and "VAE" for the vae category)
+        categories = _load_categories()
+
         yaml_lines = [
             "aihub:",
             f"    base_path: {models_dir}"
         ]
-        
-        for comfy_key, hub_folder_name in mappings.items():
-            # Only map if the target hub folder exists to prevent ComfyUI startup warnings
-            target_path = os.path.join(models_dir, hub_folder_name)
-            if os.path.isdir(target_path):
-                yaml_lines.append(f"    {comfy_key}: {hub_folder_name}")
+
+        for comfy_key, hub_category in mappings.items():
+            # Collect all folder names that belong to this category (canonical + aliases)
+            category_aliases = set(
+                categories.get(hub_category, {}).get("aliases", [hub_category])
+            )
+            # Find which of those folders actually exist and have model files
+            found_folders = []
+            try:
+                for entry in os.scandir(models_dir):
+                    if not entry.is_dir():
+                        continue
+                    if entry.name not in category_aliases:
+                        continue
+                    # Only include if folder contains at least one file (skip empty placeholders)
+                    has_files = any(
+                        f.is_file() for f in os.scandir(entry.path)
+                    )
+                    if has_files:
+                        found_folders.append(entry.name)
+            except OSError:
+                pass
+
+            if not found_folders:
+                continue
+
+            if len(found_folders) == 1:
+                # Simple single-path syntax
+                yaml_lines.append(f"    {comfy_key}: {found_folders[0]}")
+            else:
+                # Multi-path pipe syntax — ComfyUI will scan all listed folders
+                yaml_lines.append(f"    {comfy_key}: |")
+                for folder in sorted(found_folders):
+                    yaml_lines.append(f"        {folder}")
                 
         try:
             with open(yaml_path, "w", encoding="utf-8") as f:

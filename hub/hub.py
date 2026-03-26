@@ -476,7 +476,7 @@ def _do_launch(app_id: str, app_cfg: dict, config: dict, logger: HubLogger):
     model_args = []
     models_dir = config.get("paths", {}).get("models")
     if models_dir and os.path.isdir(models_dir):
-        model_args = build_app_model_args(app_cfg, models_dir)
+        model_args = build_app_model_args(app_cfg, models_dir, app_dir)
 
     # Get outputs directory if configured
     outputs_dir = config.get("paths", {}).get("outputs")
@@ -519,6 +519,12 @@ def _do_update(app_id: str, app_cfg: dict, config: dict, logger: HubLogger):
     if result["success"]:
         if result["updated"]:
             print(f"\n  {C.GREEN}✓ Actualizada: {result['old_commit'][:8]} → {result['new_commit'][:8]}{C.RESET}")
+            # Regenerar config de modelos post-update para que no queden stale
+            models_dir = config.get("paths", {}).get("models")
+            if models_dir and os.path.isdir(models_dir):
+                build_app_model_args(app_cfg, models_dir, app_dir)
+                print(f"  {C.DIM}✓ Paths de modelos actualizados.{C.RESET}")
+                logger.info("update", "Model paths refreshed post-update")
         else:
             print(f"\n  {C.GREEN}✓ Ya estaba actualizada.{C.RESET}")
     else:
@@ -642,6 +648,21 @@ def _configure_path(config: dict, key: str, label: str,
         save_config(config)
         print(f"\n  {C.GREEN}✓ Carpeta de {label} configurada: {path}{C.RESET}")
         logger.info("config", f"{key} path set to: {path}")
+
+        # Al cambiar el path de modelos, regenerar config de todas las apps instaladas
+        if key == "models":
+            registry = load_registry()
+            installed = config.get("installed_apps", {})
+            refreshed = 0
+            for app_id, app_info in installed.items():
+                app_cfg = registry.get("apps", {}).get(app_id, {})
+                app_dir = app_info.get("dir", "")
+                if app_dir and app_cfg.get("model_map"):
+                    build_app_model_args(app_cfg, path, app_dir)
+                    refreshed += 1
+            if refreshed:
+                print(f"  {C.DIM}✓ Paths de modelos actualizados para {refreshed} app(s).{C.RESET}")
+                logger.info("config", f"Model paths refreshed for {refreshed} apps")
     else:
         print(f"\n  {C.RED}Error creando directorios en {path}{C.RESET}")
 

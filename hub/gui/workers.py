@@ -2,6 +2,7 @@ import os
 import sys
 import signal
 import shutil
+import socket
 import threading
 import subprocess
 from PySide6.QtCore import QObject, Signal
@@ -28,14 +29,56 @@ except ImportError as e:
     print(f"Error importing modules: {e}")
 
 
+class _ConsoleLogger:
+    """Logger ligero que escribe a stdout. Instancia única reutilizable."""
+    def info(self, tag, msg):    print(f"  [{tag}] {msg}")
+    def success(self, tag, msg): print(f"✅ [{tag}] {msg}")
+    def error(self, tag, msg):   print(f"❌ [{tag}] {msg}")
+    def warn(self, tag, msg):    print(f"⚠️  [{tag}] {msg}")
+    def section(self, msg):      print(f"\n{'='*10} {msg} {'='*10}")
+
+_console_logger = _ConsoleLogger()
+
+
+def _kill_processes_on_port(port: int) -> list[int]:
+    """
+    Encuentra y termina todos los procesos escuchando en el puerto dado.
+    Retorna lista de PIDs eliminados.
+    """
+    killed = []
+    try:
+        result = subprocess.run(
+            ["lsof", "-ti", f":{port}"],
+            capture_output=True, text=True, timeout=5
+        )
+        pids = [int(p) for p in result.stdout.strip().split() if p.isdigit()]
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGTERM)
+                killed.append(pid)
+            except ProcessLookupError:
+                pass
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    return killed
+
+
+def _is_port_in_use(port: int) -> bool:
+    """Comprueba si el puerto está ocupado."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.5)
+        return s.connect_ex(("127.0.0.1", port)) == 0
+
+
 class WorkerSignals(QObject):
     """
     Defines the signals available from a running worker thread.
     These are used to safely update the GUI from background threads.
     """
-    app_state_changed = Signal(str)  # Emits app_id when state changes
-    log_message = Signal(str, str)   # Emits (app_id, log_line)
-    error_message = Signal(str, str) # Emits (app_id, error_string)
+    app_state_changed = Signal(str)   # Emits app_id when state changes
+    log_message = Signal(str, str)    # Emits (app_id, log_line)
+    error_message = Signal(str, str)  # Emits (app_id, error_string)
+    cleanup_result = Signal(str)      # Emits resumen de limpieza de puertos
 
 
 class HubWorkers:
@@ -95,16 +138,6 @@ class HubWorkers:
             )
             self.signals.app_state_changed.emit(running_id)
 
-    def _make_console_logger(self):
-        """Simple logger that writes to stdout (visible in the terminal)."""
-        class _Logger:
-            def info(self, tag, msg):    print(f"  [{tag}] {msg}")
-            def success(self, tag, msg): print(f"✅ [{tag}] {msg}")
-            def error(self, tag, msg):   print(f"❌ [{tag}] {msg}")
-            def warn(self, tag, msg):    print(f"⚠️  [{tag}] {msg}")
-            def section(self, msg):      print(f"\n{'='*10} {msg} {'='*10}")
-        return _Logger()
-
     # ------------------------------------------------------------------ #
     # Launch                                                               #
     # ------------------------------------------------------------------ #
@@ -124,11 +157,8 @@ class HubWorkers:
             return
 
         def _launch_thread():
-            # Mark as launching immediately so UI shows feedback
-            self._state.busy_apps[app_id] = "launching"
-            self.signals.app_state_changed.emit(app_id)
-
-            # --- Single-app safeguard ---
+            # busy_apps["launching"] ya fue marcado por on_app_action antes de
+            # llegar acá. Solo necesitamos detener la app activa si la hay.
             self._stop_running_app(exclude_app_id=app_id)
 
             try:
@@ -155,10 +185,31 @@ class HubWorkers:
                     user_args  = [a for a in user_args  if not str(a).startswith("--port")]
                     user_args.append(f"--port={port_override}")
 
+                # Verificar si el puerto ya está en uso y liberar si es necesario
+                effective_port = port_override or app_cfg.get("default_port")
+                if effective_port and _is_port_in_use(int(effective_port)):
+                    self.signals.log_message.emit(
+                        app_id,
+                        f"⚠ Puerto {effective_port} ocupado — terminando proceso previo..."
+                    )
+                    killed = _kill_processes_on_port(int(effective_port))
+                    if killed:
+                        import time
+                        time.sleep(1)   # dar tiempo al OS para liberar el puerto
+                        self.signals.log_message.emit(
+                            app_id,
+                            f"✓ Proceso(s) PID {killed} terminado(s). Continuando lanzamiento."
+                        )
+                    else:
+                        self.signals.log_message.emit(
+                            app_id,
+                            f"✗ No se pudo liberar puerto {effective_port}. El lanzamiento podría fallar."
+                        )
+
                 proc = launch_app(
                     app_cfg, app_dir, cuda_env, model_args,
                     extra_args + user_args,
-                    outputs_dir, logger=None, async_mode=True, capture_output=False
+                    outputs_dir, logger=None, async_mode=True, capture_output=True
                 )
 
                 if isinstance(proc, subprocess.Popen):
@@ -170,13 +221,32 @@ class HubWorkers:
 
                     self.signals.log_message.emit(
                         app_id,
-                        f"--- App iniciada (PID: {proc.pid}) — Revisa la terminal principal ---"
+                        f"=== {app_cfg.get('name', app_id)} iniciada (PID: {proc.pid}) ==="
                     )
 
+                    # Leer stdout en hilo separado y emitir línea a línea.
+                    # El hilo termina naturalmente cuando el proceso cierra su pipe.
+                    stdout_done = threading.Event()
+
+                    def _read_stdout(p=proc, aid=app_id):
+                        try:
+                            for line in p.stdout:
+                                self.signals.log_message.emit(aid, line.rstrip('\n'))
+                        except Exception:
+                            pass
+                        finally:
+                            stdout_done.set()
+
+                    threading.Thread(target=_read_stdout, daemon=True).start()
+
                     proc.wait()
+                    # Esperar a que el lector de stdout drene el pipe antes de
+                    # limpiar el estado. Timeout de 2s para no bloquear indefinidamente.
+                    stdout_done.wait(timeout=2)
 
                     self._state.log_event("STOP", app_id, "Proceso terminado")
                     self._state.running_apps.pop(app_id, None)
+                    self.signals.log_message.emit(app_id, f"=== App detenida ===")
                     self.signals.app_state_changed.emit(app_id)
                 else:
                     # launch_app returned 0 (cancelled) — clear launching
@@ -206,6 +276,10 @@ class HubWorkers:
         if not proc:
             return
 
+        # Feedback visual inmediato antes de lanzar el thread
+        self._state.busy_apps[app_id] = "stopping"
+        self.signals.app_state_changed.emit(app_id)
+
         def _stop_thread():
             try:
                 proc.send_signal(signal.SIGINT)
@@ -220,6 +294,7 @@ class HubWorkers:
                 self.signals.error_message.emit(app_id, str(e))
             finally:
                 self._state.running_apps.pop(app_id, None)
+                self._state.busy_apps.pop(app_id, None)
                 self.signals.app_state_changed.emit(app_id)
 
         threading.Thread(target=_stop_thread, daemon=True).start()
@@ -272,7 +347,7 @@ class HubWorkers:
                     cuda_env=cuda_env,
                     backups_dir=backups_dir,
                     cuda_config=cuda_config,
-                    logger=self._make_console_logger()
+                    logger=_console_logger
                 )
 
                 if result.get("success"):
@@ -349,7 +424,7 @@ class HubWorkers:
                     backups_dir=backups_dir,
                     cuda_env=cuda_env,
                     cuda_tag=cuda_tag,
-                    logger=self._make_console_logger()
+                    logger=_console_logger
                 )
 
                 if result.get("success"):
@@ -358,6 +433,11 @@ class HubWorkers:
                         new = (result.get("new_commit") or "")[:8]
                         self._state.log_event("UPDATE", app_id, f"Actualizada: {old} → {new}")
                         print(f"✅ {app_id} actualizada: {old} → {new}")
+                        # Regenerar config de modelos post-update
+                        models_dir = hub_config.get("paths", {}).get("models")
+                        if models_dir and os.path.isdir(models_dir):
+                            build_app_model_args(app_cfg, models_dir, app_dir)
+                            print(f"[{app_id}] Paths de modelos actualizados post-update.")
                     else:
                         self._state.log_event("UPDATE", app_id, "Ya estaba al día")
                         print(f"✅ {app_id} ya estaba al día.")
@@ -427,3 +507,51 @@ class HubWorkers:
                 self.signals.app_state_changed.emit(app_id)
 
         threading.Thread(target=_uninstall_thread, daemon=True).start()
+
+    # ------------------------------------------------------------------ #
+    # Cleanup stale processes                                              #
+    # ------------------------------------------------------------------ #
+
+    def cleanup_stale_processes(self):
+        """
+        Escanea los puertos de todas las apps conocidas y mata los procesos
+        que los ocupan pero NO están trackeados por el hub.
+        Emite cleanup_result con el resumen final.
+        """
+        def _cleanup_thread():
+            import time
+            lines = []
+            killed_total = 0
+
+            for app_id, app_cfg in self._state.registry_apps.items():
+                port = app_cfg.get("default_port")
+                if not port:
+                    continue
+
+                # No tocar apps que el hub ya está manejando
+                if app_id in self._state.running_apps:
+                    app_name = app_cfg.get("name", app_id)
+                    lines.append(f"  ↷ {app_name} (:{port}) — gestionada por el hub, omitida")
+                    continue
+
+                if _is_port_in_use(int(port)):
+                    app_name = app_cfg.get("name", app_id)
+                    killed = _kill_processes_on_port(int(port))
+                    if killed:
+                        lines.append(f"  ✓ {app_name} (:{port}) — PID {killed} terminado")
+                        killed_total += len(killed)
+                    else:
+                        lines.append(f"  ✗ {app_name} (:{port}) — puerto ocupado, no se pudo liberar")
+
+            if killed_total:
+                time.sleep(0.5)   # dar tiempo al OS para liberar los puertos
+
+            if not lines:
+                summary = "✓ No hay procesos stale. Todos los puertos conocidos están libres."
+            else:
+                header = f"Resultado de limpieza ({killed_total} proceso(s) terminado(s)):\n\n"
+                summary = header + "\n".join(lines)
+
+            self.signals.cleanup_result.emit(summary)
+
+        threading.Thread(target=_cleanup_thread, daemon=True).start()

@@ -9,6 +9,7 @@ Zero external dependencies - stdlib only.
 import subprocess
 import os
 import json
+import re
 import signal
 import sys
 
@@ -48,6 +49,24 @@ def _inject_output_config(app_config: dict, app_dir: str,
         if app_cfg.get(setting_key) != full_path:
             app_cfg[setting_key] = full_path
             changed = True
+
+    # Sync VERSION_UID if the app specifies a source file (e.g. forge-neo).
+    # This prevents verify_version() from calling input() with stdin=DEVNULL.
+    version_uid_source = output_map.get("version_uid_source")
+    if version_uid_source:
+        source_path = os.path.join(app_dir, version_uid_source)
+        if os.path.isfile(source_path):
+            try:
+                with open(source_path, "r", encoding="utf-8") as f:
+                    src = f.read()
+                m = re.search(r'VERSION_UID[^=]*=\s*["\']([^"\']+)["\']', src)
+                if m:
+                    uid = m.group(1)
+                    if app_cfg.get("VERSION_UID") != uid:
+                        app_cfg["VERSION_UID"] = uid
+                        changed = True
+            except OSError:
+                pass
 
     if changed:
         try:
@@ -337,7 +356,7 @@ def launch_app(app_config: dict, app_dir: str, cuda_env: dict,
             "env": env
         }
         if capture_output:
-            kwargs["stdin"] = subprocess.PIPE
+            kwargs["stdin"] = subprocess.DEVNULL   # apps no necesitan stdin; evita bloqueos
             kwargs["stdout"] = subprocess.PIPE
             kwargs["stderr"] = subprocess.STDOUT
             kwargs["bufsize"] = 1

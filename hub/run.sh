@@ -307,70 +307,78 @@ if [ -z "$NODE_BIN" ]; then
 fi
 
 # ============================================================
-# Step 5: Launch (CLI or GUI)
+# Step 5: UI venv + dependencias
 # ============================================================
-echo ""
+log_step "5/5" "Verificando entorno de la UI..."
 
-# Export tools path so hub.py knows where to find uv
+UI_VENV="${SCRIPT_DIR}/.ui_venv"
+UI_PYTHON="${UI_VENV}/bin/python"
+UI_SCRIPT="${SCRIPT_DIR}/gui/main.py"
+
+if [ ! -f "$UI_PYTHON" ]; then
+    log_info "Creando venv de la UI..."
+    "$UV_BIN" venv --python 3.13 "$UI_VENV" 2>/dev/null \
+        || "$UV_BIN" venv --python "${PYTHON_BIN}" "$UI_VENV" 2>/dev/null
+fi
+
+"$UI_PYTHON" -c "import PySide6, requests, numpy, safetensors" 2>/dev/null
+if [ $? -ne 0 ]; then
+    log_info "Instalando dependencias de la UI..."
+    "$UV_BIN" pip install --python "$UI_PYTHON" \
+        PySide6 requests numpy safetensors 2>&1 | while read -r line; do
+        echo -e "    ${DIM}${line}${RESET}"
+    done
+    log_ok "Dependencias instaladas"
+fi
+
+if [ ! -f "$UI_PYTHON" ]; then
+    log_err "No se pudo preparar el entorno de la UI."
+    read -rp "  Presiona Enter para cerrar..."; exit 1
+fi
+
+# ── Variables de entorno ──────────────────────────────────
 export AI_HUB_UV_PATH="${UV_BIN}"
 export AI_HUB_TOOLS_DIR="${TOOLS_DIR}"
+export UV_CACHE_DIR="${SCRIPT_DIR}/../.cache/uv"
+export UV_LINK_MODE="hardlink"
+export PYTHONUNBUFFERED="1"   # Sin buffering: logs aparecen inmediatamente
 
-# Export Node.js path if available
 if [ -n "$NODE_BIN" ]; then
     export AI_HUB_NODE_DIR="${NODE_BIN}"
     export PATH="${NODE_BIN}:${PATH}"
 fi
 
-# Keep uv cache on same drive for hard-link dedup (saves ~8GB across apps)
-export UV_CACHE_DIR="${SCRIPT_DIR}/.cache/uv"
-export UV_LINK_MODE="hardlink"
+# ── Log de sesión ─────────────────────────────────────────
+LOGS_DIR="${SCRIPT_DIR}/../logs"
+mkdir -p "${LOGS_DIR}"
+SESSION_LOG="${LOGS_DIR}/session_$(date +%Y-%m-%d_%H-%M-%S).log"
 
-# Check for --gui flag
-GUI_MODE=false
-REMAINING_ARGS=()
-for arg in "$@"; do
-    if [ "$arg" = "--gui" ]; then
-        GUI_MODE=true
-    else
-        REMAINING_ARGS+=("$arg")
-    fi
-done
+# Conservar solo los últimos 10 logs de sesión
+ls -t "${LOGS_DIR}"/session_*.log 2>/dev/null | tail -n +11 | xargs -r rm --
 
-if [ "$GUI_MODE" = true ]; then
-    log_step "5/5" "Iniciando AI Hub (GUI)..."
-    echo ""
+# ── Lanzar GUI ────────────────────────────────────────────
+echo ""
+echo -e "  ${CYAN}${BOLD}Iniciando AI Hub...${RESET}"
+echo -e "  ${DIM}Log: ${SESSION_LOG}${RESET}"
+echo ""
+echo -e "  ${DIM}══════════════════════════════════════════════════════${RESET}"
+echo ""
 
-    # Provision GUI venv if needed
-    UI_VENV="${SCRIPT_DIR}/.ui_venv"
-    UI_PYTHON="${UI_VENV}/bin/python"
-    UI_SCRIPT="${SCRIPT_DIR}/gui/main.py"
+# tee duplica el output: terminal visible + archivo de log persistente
+"$UI_PYTHON" "$UI_SCRIPT" "$@" 2>&1 | tee "${SESSION_LOG}"
+EXIT_CODE="${PIPESTATUS[0]}"
 
-    if [ ! -f "$UI_PYTHON" ]; then
-        log_info "Instalando interfaz gráfica (primera vez)..."
-        "$UV_BIN" venv --python 3.13 "$UI_VENV" 2>/dev/null
-        if [ $? -ne 0 ]; then
-            log_error "Error creando venv para GUI"
-            log_info "Cayendo a modo terminal..."
-            exec "$PYTHON_BIN" "$HUB_SCRIPT" "${REMAINING_ARGS[@]}"
-        fi
-    fi
+echo ""
+echo -e "  ${DIM}══════════════════════════════════════════════════════${RESET}"
+echo ""
 
-    # Check if all UI dependencies are installed
-    "$UI_PYTHON" -c "import PySide6, requests, numpy, safetensors" 2>/dev/null
-    if [ $? -ne 0 ]; then
-        log_info "Instalando dependencias de la UI (PySide6, requests, numpy, safetensors)..."
-        "$UV_BIN" pip install --python "$UI_PYTHON" PySide6 requests numpy safetensors 2>/dev/null
-        if [ $? -ne 0 ]; then
-            log_error "Error instalando dependencias de la UI"
-            log_info "Cayendo a modo terminal..."
-            exec "$PYTHON_BIN" "$HUB_SCRIPT" "${REMAINING_ARGS[@]}"
-        fi
-        log_ok "Dependencias de la UI instaladas"
-    fi
-
-    exec "$UI_PYTHON" "$UI_SCRIPT" "${REMAINING_ARGS[@]}"
+if [ "$EXIT_CODE" -ne 0 ]; then
+    echo -e "  ${RED}${BOLD}AI Hub terminó con error (código: ${EXIT_CODE})${RESET}"
+    echo -e "  ${YELLOW}Log completo guardado en:${RESET}"
+    echo -e "  ${DIM}  ${SESSION_LOG}${RESET}"
 else
-    log_step "4/4" "Iniciando AI Hub..."
-    echo ""
-    exec "$PYTHON_BIN" "$HUB_SCRIPT" "$@"
+    echo -e "  ${GREEN}AI Hub cerrado correctamente.${RESET}"
 fi
+
+echo ""
+read -rp "  Presiona Enter para cerrar la terminal..."
