@@ -32,6 +32,10 @@ class AppTerminal(QWidget):
     Widget de salida de terminal. Recibe líneas via append_line(app_id, line)
     y solo muestra las del app actualmente activo.
     """
+    # Límite de líneas en el buffer pendiente antes de descartar las más antiguas
+    MAX_PENDING = 500
+    # Límite de líneas visibles en el QTextEdit
+    MAX_DOC_LINES = 2000
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -128,6 +132,21 @@ class AppTerminal(QWidget):
         clean = _strip_ansi(raw_line)
         if clean:
             self._pending_lines.append(clean)
+            # Si el buffer supera el límite, descartar líneas antiguas
+            if len(self._pending_lines) > self.MAX_PENDING:
+                self._pending_lines = self._pending_lines[-self.MAX_PENDING:]
+
+    def _trim_document(self):
+        """Elimina las primeras líneas si el documento supera MAX_DOC_LINES."""
+        doc = self._output.document()
+        if doc.blockCount() > self.MAX_DOC_LINES:
+            cursor = QTextCursor(doc)
+            cursor.movePosition(QTextCursor.Start)
+            # Seleccionar las líneas excedentes desde el inicio
+            excess = doc.blockCount() - self.MAX_DOC_LINES
+            for _ in range(excess):
+                cursor.movePosition(QTextCursor.NextBlock, QTextCursor.KeepAnchor)
+            cursor.removeSelectedText()
 
     def _flush_pending(self):
         """Vuelca el buffer acumulado al QTextEdit en un solo repaint."""
@@ -139,6 +158,7 @@ class AppTerminal(QWidget):
         cursor.movePosition(QTextCursor.End)
         self._output.setTextCursor(cursor)
         self._output.insertPlainText(block)
+        self._trim_document()
         self._output.verticalScrollBar().setValue(
             self._output.verticalScrollBar().maximum()
         )

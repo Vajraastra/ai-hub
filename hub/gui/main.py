@@ -26,6 +26,7 @@ from gui.components.event_log_viewer import EventLogViewer
 from gui.components.app_settings_dialog import AppSettingsDialog
 from gui.components.app_terminal import AppTerminal
 from gui.workers import HubWorkers
+from gui.utils.confirm_dialog import confirm_update, confirm_uninstall
 
 
 
@@ -37,18 +38,12 @@ class AIHubMainWindow(QMainWindow):
         self.setStyleSheet(STYLESHEET)
 
         self.workers = HubWorkers(shared_state=state)
-        # Signal for immediate updates (best-effort from worker thread)
+        # All state updates come through signals — no polling timer needed.
         self.workers.signals.app_state_changed.connect(self.refresh_apps_list)
         self.workers.signals.app_state_changed.connect(self._on_app_state_changed)
         self.workers.signals.error_message.connect(self.show_error)
         self.workers.signals.cleanup_result.connect(self._show_cleanup_result)
-
-        # Polling timer — runs in the main thread every 1s, guarantees UI
-        # reflects the real state regardless of cross-thread signal delivery.
-        self._poll_timer = QTimer(self)
-        self._poll_timer.setInterval(1000)
-        self._poll_timer.timeout.connect(self.refresh_apps_list)
-        self._poll_timer.start()
+        # log_message is connected to terminal in _build_apps_tab (after terminal is created)
 
         # Dict de cards persistentes: app_id → AppCard
         self._app_cards: dict = {}
@@ -214,7 +209,8 @@ class AIHubMainWindow(QMainWindow):
         all_apps = {**state.registry_apps, **state.registry_utilities}
 
         for app_id, app_cfg in all_apps.items():
-            if app_id == "model-vault":
+            # Skip utilities (model-vault, etc.) from the apps list
+            if app_cfg.get("is_utility") or app_cfg.get("is_internal"):
                 continue
 
             app_status   = state.get_app_status(app_id)
@@ -242,7 +238,7 @@ class AIHubMainWindow(QMainWindow):
                 self._launch_model_vault() if app_id == "model-vault" else None
             else:
                 # Feedback visual inmediato antes de que el thread arranque
-                state.busy_apps[app_id] = "launching"
+                state.set_busy(app_id, "launching")
                 self.refresh_apps_list()
                 self.workers.start_app(app_id)
         elif action == "stop":
@@ -254,26 +250,12 @@ class AIHubMainWindow(QMainWindow):
             dlg.exec()
         elif action == "update":
             app_name = state.registry_apps.get(app_id, {}).get("name", app_id)
-            reply = QMessageBox.question(
-                self, f"Actualizar {app_name}",
-                f"¿Buscar y aplicar actualizaciones para <b>{app_name}</b>?<br><br>"
-                f"La app será detenida si está corriendo.<br>"
-                f"Los archivos locales no serán eliminados.",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
-            )
-            if reply == QMessageBox.Yes:
+            if confirm_update(self, app_name):
                 self.workers.update_app(app_id)
         elif action == "uninstall":
             app_name = state.registry_apps.get(app_id, {}).get("name", app_id)
             app_dir  = state.installed_apps.get(app_id, {}).get("dir", "")
-            reply = QMessageBox.warning(
-                self, f"Desinstalar {app_name}",
-                f"¿Desinstalar <b>{app_name}</b>?<br><br>"
-                f"<b>Se eliminará permanentemente:</b><br>{app_dir}<br><br>"
-                f"Los modelos en tu carpeta configurada NO serán afectados.",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
-            )
-            if reply == QMessageBox.Yes:
+            if confirm_uninstall(self, app_name, app_dir):
                 self.workers.uninstall_app(app_id)
 
     def _on_app_state_changed(self, app_id: str):
