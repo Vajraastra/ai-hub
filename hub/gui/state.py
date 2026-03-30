@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import threading
 
 # Adjust path to find hub modules if needed
 GUI_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -33,15 +34,15 @@ class HubState:
         self.registry_utilities = {}  # Fixed: initialization
         self.installed_apps = {}
 
+        # Lock for thread-safe access to mutable runtime state
+        self._lock = threading.Lock()
+
         # INVARIANT: Only ONE app can be running at a time.
         # app_id -> subprocess.Popen object
         self.running_apps = {}
 
         # Operations in progress: app_id -> status string
         self.busy_apps = {}
-
-        # Buffer for runtime logs: app_id -> list of lines
-        self.app_logs = {}
 
         # GPU profile + app flags caches
         self._gpu_profile = None
@@ -141,14 +142,54 @@ class HubState:
     # App status                                                           #
     # ------------------------------------------------------------------ #
 
+    # ------------------------------------------------------------------ #
+    # Thread-safe accessors for runtime state                              #
+    # ------------------------------------------------------------------ #
+
+    def set_busy(self, app_id: str, status: str):
+        """Thread-safe: marks an app as busy with the given status."""
+        with self._lock:
+            self.busy_apps[app_id] = status
+
+    def clear_busy(self, app_id: str):
+        """Thread-safe: clears the busy status for an app."""
+        with self._lock:
+            self.busy_apps.pop(app_id, None)
+
+    def set_running(self, app_id: str, proc):
+        """Thread-safe: registers a running process."""
+        with self._lock:
+            self.running_apps[app_id] = proc
+
+    def clear_running(self, app_id: str):
+        """Thread-safe: removes a running process entry."""
+        with self._lock:
+            self.running_apps.pop(app_id, None)
+
+    def cleanup_stale(self):
+        """
+        Thread-safe: removes running_apps entries for processes that have
+        already terminated. Should be called from the GUI thread.
+        Returns list of stale app_ids that were cleaned up.
+        """
+        with self._lock:
+            stale = [
+                aid for aid, proc in self.running_apps.items()
+                if proc.poll() is not None
+            ]
+            for aid in stale:
+                self.running_apps.pop(aid, None)
+        return stale
+
     def get_app_status(self, app_id: str) -> str:
         """
         Priority: busy (stopping/installing/…) > running > installed > not_installed
         """
-        if app_id in self.busy_apps:
-            return self.busy_apps[app_id]
-        if app_id in self.running_apps:
-            return "running"
+        with self._lock:
+            if app_id in self.busy_apps:
+                return self.busy_apps[app_id]
+            if app_id in self.running_apps:
+                return "running"
         if app_id in self.installed_apps:
             return "installed"
         if app_id in self.registry_utilities:
@@ -157,7 +198,8 @@ class HubState:
 
     def get_running_app(self) -> "str | None":
         """Returns the app_id of the currently running app, or None."""
-        return next(iter(self.running_apps), None)
+        with self._lock:
+            return next(iter(self.running_apps), None)
 
     # ------------------------------------------------------------------ #
     # Hub paths                                                            #

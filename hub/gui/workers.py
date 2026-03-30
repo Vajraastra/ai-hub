@@ -70,6 +70,21 @@ def _is_port_in_use(port: int) -> bool:
         return s.connect_ex(("127.0.0.1", port)) == 0
 
 
+def _wait_port_free(port: int, timeout: float = 3.0, interval: float = 0.2) -> bool:
+    """
+    Espera hasta que el puerto esté libre o se agote el timeout.
+    Retorna True si el puerto quedó libre, False si se agotó el tiempo.
+    """
+    import time
+    elapsed = 0.0
+    while elapsed < timeout:
+        if not _is_port_in_use(port):
+            return True
+        time.sleep(interval)
+        elapsed += interval
+    return False
+
+
 class WorkerSignals(QObject):
     """
     Defines the signals available from a running worker thread.
@@ -117,7 +132,7 @@ class HubWorkers:
             f"⏹️ Deteniendo {running_name} para liberar memoria..."
         )
         # Mark as busy so the card updates immediately
-        self._state.busy_apps[running_id] = "stopping"
+        self._state.set_busy(running_id, "stopping")
         self.signals.app_state_changed.emit(running_id)
 
         try:
@@ -130,8 +145,8 @@ class HubWorkers:
         except Exception as e:
             print(f"[workers] Error stopping {running_id}: {e}")
         finally:
-            self._state.running_apps.pop(running_id, None)
-            self._state.busy_apps.pop(running_id, None)
+            self._state.clear_running(running_id)
+            self._state.clear_busy(running_id)
             self.signals.log_message.emit(
                 running_id,
                 f"✅ {running_name} detenida correctamente."
@@ -194,8 +209,7 @@ class HubWorkers:
                     )
                     killed = _kill_processes_on_port(int(effective_port))
                     if killed:
-                        import time
-                        time.sleep(1)   # dar tiempo al OS para liberar el puerto
+                        freed = _wait_port_free(int(effective_port), timeout=3.0)
                         self.signals.log_message.emit(
                             app_id,
                             f"✓ Proceso(s) PID {killed} terminado(s). Continuando lanzamiento."
@@ -214,8 +228,8 @@ class HubWorkers:
 
                 if isinstance(proc, subprocess.Popen):
                     # Clear launching state → now truly running
-                    self._state.busy_apps.pop(app_id, None)
-                    self._state.running_apps[app_id] = proc
+                    self._state.clear_busy(app_id)
+                    self._state.set_running(app_id, proc)
                     self._state.log_event("LAUNCH", app_id, f"Iniciada — PID {proc.pid}")
                     self.signals.app_state_changed.emit(app_id)
 
@@ -231,6 +245,9 @@ class HubWorkers:
                     def _read_stdout(p=proc, aid=app_id):
                         try:
                             for line in p.stdout:
+                                # decode with errors='replace' to handle non-UTF-8 output
+                                if isinstance(line, bytes):
+                                    line = line.decode("utf-8", errors="replace")
                                 self.signals.log_message.emit(aid, line.rstrip('\n'))
                         except Exception:
                             pass
@@ -245,12 +262,12 @@ class HubWorkers:
                     stdout_done.wait(timeout=2)
 
                     self._state.log_event("STOP", app_id, "Proceso terminado")
-                    self._state.running_apps.pop(app_id, None)
+                    self._state.clear_running(app_id)
                     self.signals.log_message.emit(app_id, f"=== App detenida ===")
                     self.signals.app_state_changed.emit(app_id)
                 else:
                     # launch_app returned 0 (cancelled) — clear launching
-                    self._state.busy_apps.pop(app_id, None)
+                    self._state.clear_busy(app_id)
                     self.signals.app_state_changed.emit(app_id)
 
             except Exception as e:
@@ -260,8 +277,8 @@ class HubWorkers:
                 traceback.print_exc()
                 self._state.log_event("ERROR", app_id, f"Error al lanzar: {e}")
                 self.signals.error_message.emit(app_id, str(e))
-                self._state.running_apps.pop(app_id, None)
-                self._state.busy_apps.pop(app_id, None)
+                self._state.clear_running(app_id)
+                self._state.clear_busy(app_id)
                 self.signals.app_state_changed.emit(app_id)
 
         threading.Thread(target=_launch_thread, daemon=True).start()
@@ -277,7 +294,7 @@ class HubWorkers:
             return
 
         # Feedback visual inmediato antes de lanzar el thread
-        self._state.busy_apps[app_id] = "stopping"
+        self._state.set_busy(app_id, "stopping")
         self.signals.app_state_changed.emit(app_id)
 
         def _stop_thread():
@@ -293,8 +310,8 @@ class HubWorkers:
                 print(f"[workers] Error stopping {app_id}: {e}")
                 self.signals.error_message.emit(app_id, str(e))
             finally:
-                self._state.running_apps.pop(app_id, None)
-                self._state.busy_apps.pop(app_id, None)
+                self._state.clear_running(app_id)
+                self._state.clear_busy(app_id)
                 self.signals.app_state_changed.emit(app_id)
 
         threading.Thread(target=_stop_thread, daemon=True).start()
@@ -311,7 +328,7 @@ class HubWorkers:
             return
 
         def _install_thread():
-            self._state.busy_apps[app_id] = "installing"
+            self._state.set_busy(app_id, "installing")
             self.signals.app_state_changed.emit(app_id)
             try:
                 import json
@@ -367,7 +384,7 @@ class HubWorkers:
             except Exception as e:
                 self.signals.error_message.emit(app_id, f"Error del instalador: {e}")
             finally:
-                self._state.busy_apps.pop(app_id, None)
+                self._state.clear_busy(app_id)
                 self.signals.app_state_changed.emit(app_id)
 
         threading.Thread(target=_install_thread, daemon=True).start()
@@ -401,7 +418,7 @@ class HubWorkers:
                 print(f"[workers] Deteniendo '{app_id}' antes de actualizar...")
                 self._stop_running_app(exclude_app_id=None)
 
-            self._state.busy_apps[app_id] = "updating"
+            self._state.set_busy(app_id, "updating")
             self.signals.app_state_changed.emit(app_id)
             try:
                 import json
@@ -450,7 +467,7 @@ class HubWorkers:
             except Exception as e:
                 self.signals.error_message.emit(app_id, f"Error del actualizador: {e}")
             finally:
-                self._state.busy_apps.pop(app_id, None)
+                self._state.clear_busy(app_id)
                 self.signals.app_state_changed.emit(app_id)
 
         threading.Thread(target=_update_thread, daemon=True).start()
@@ -481,7 +498,7 @@ class HubWorkers:
                 print(f"[workers] Deteniendo '{app_id}' antes de desinstalar...")
                 self._stop_running_app(exclude_app_id=None)
 
-            self._state.busy_apps[app_id] = "uninstalling"
+            self._state.set_busy(app_id, "uninstalling")
             self.signals.app_state_changed.emit(app_id)
             try:
                 # Delete directory
@@ -503,7 +520,7 @@ class HubWorkers:
                 print(f"❌ {err}")
                 self.signals.error_message.emit(app_id, err)
             finally:
-                self._state.busy_apps.pop(app_id, None)
+                self._state.clear_busy(app_id)
                 self.signals.app_state_changed.emit(app_id)
 
         threading.Thread(target=_uninstall_thread, daemon=True).start()

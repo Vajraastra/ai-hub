@@ -209,10 +209,7 @@ class AIHubMainWindow(QMainWindow):
         )
 
         # Limpiar entradas stale de running_apps (proceso ya terminó)
-        stale = [aid for aid, proc in state.running_apps.items()
-                 if proc.poll() is not None]
-        for aid in stale:
-            state.running_apps.pop(aid, None)
+        state.cleanup_stale()
 
         all_apps = {**state.registry_apps, **state.registry_utilities}
 

@@ -126,7 +126,7 @@
             "pip_exclude_packages": [ "onnxruntime" ],
             "model_map": {},
             "output_map": { "method": "none" },
-            "default_port": 7860,
+            "default_port": 7861,
             "extra_args": []
         }
     },
@@ -137,6 +137,7 @@
             "description": "Organizador y gestor de modelos/LoRAs con integración a Civitai. Pre-instalado con el Hub.",
             "type": "utility",
             "is_internal": true,
+            "is_utility": true,
             "launch_type": "standalone",
             "launch_script": "apps/model_vault/run_vault.sh",
             "launch_script_win": "apps/model_vault/run_vault.bat",
