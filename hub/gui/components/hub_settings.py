@@ -8,9 +8,10 @@ Muestra y permite editar:
 """
 import os
 
+import threading
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QLineEdit, QGroupBox, QFileDialog, QMessageBox
+    QLineEdit, QGroupBox, QFileDialog, QMessageBox, QProgressDialog
 )
 from PySide6.QtCore import Qt
 
@@ -56,8 +57,23 @@ class HubSettings(QWidget):
             }
         """)
 
+        # Botón toggle para mostrar/ocultar la key
+        toggle_btn = QPushButton("👁")
+        toggle_btn.setFixedWidth(34)
+        toggle_btn.setToolTip("Mostrar/ocultar API Key")
+        toggle_btn.setStyleSheet(
+            "QPushButton { background: #3D1B7B; color: #e0e0ff; border-radius: 4px; }"
+            "QPushButton:hover { background: #600DB5; }"
+        )
+        toggle_btn.setCheckable(True)
+        def _toggle_visibility(checked):
+            mode = QLineEdit.Normal if checked else QLineEdit.Password
+            self._civitai_key_edit.setEchoMode(mode)
+        toggle_btn.toggled.connect(_toggle_visibility)
+
         row.addWidget(lbl)
         row.addWidget(self._civitai_key_edit)
+        row.addWidget(toggle_btn)
         layout.addLayout(row)
 
         save_btn = QPushButton("💾 Guardar Ajustes Vault")
@@ -188,7 +204,7 @@ class HubSettings(QWidget):
         QMessageBox.information(self, "Guardado", "✅ Rutas guardadas correctamente.")
 
     def _refresh_model_paths(self):
-        """Escanea la carpeta de modelos y regenera los configs de todas las apps."""
+        """Regenera los configs de modelos de forma asincrónica con indicador de progreso."""
         models_dir = state.get_paths().get("models", "")
         if not models_dir or not os.path.isdir(models_dir):
             QMessageBox.warning(
@@ -196,12 +212,35 @@ class HubSettings(QWidget):
                 "Primero configura y guarda la carpeta de modelos."
             )
             return
-        refreshed = self._run_refresh(models_dir, silent=False)
-        QMessageBox.information(
-            self, "Paths actualizados",
-            f"✅ Configs regenerados para {refreshed} app(s).\n\n"
-            "Reinicia las apps activas para que carguen los nuevos paths."
+
+        progress = QProgressDialog(
+            "Regenerando paths de modelos...", None, 0, 0, self
         )
+        progress.setWindowTitle("Actualizando")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+        progress.show()
+
+        result = {"count": 0}
+
+        def _worker():
+            result["count"] = self._run_refresh(models_dir, silent=False)
+
+        def _on_done():
+            progress.close()
+            QMessageBox.information(
+                self, "Paths actualizados",
+                f"✅ Configs regenerados para {result['count']} app(s).\n\n"
+                "Reinicia las apps activas para que carguen los nuevos paths."
+            )
+
+        def _run():
+            _worker()
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(0, _on_done)
+
+        threading.Thread(target=_run, daemon=True).start()
 
     def _run_refresh(self, models_dir: str, silent: bool = False) -> int:
         """Regenera model paths para todas las apps instaladas. Retorna count."""
@@ -230,6 +269,11 @@ class HubSettings(QWidget):
         box.setStyleSheet(GROUPBOX_STYLE)
         layout = QVBoxLayout(box)
         layout.setSpacing(6)
+
+        # Nota informativa
+        readonly_lbl = QLabel("ℹ️  Solo lectura — detectado automáticamente al iniciar")
+        readonly_lbl.setStyleSheet("color: #555588; font-size: 11px; font-style: italic;")
+        layout.addWidget(readonly_lbl)
 
         info = state.sys_info
         rows = [

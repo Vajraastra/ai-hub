@@ -1,12 +1,21 @@
 """
 AppCard — Tarjeta de aplicación individual para el AI Hub.
 
-Diseño: widget persistente. Solo el panel derecho (botones + status) se
-reconstruye al llamar update_status(). El panel izquierdo (nombre, desc,
-puerto) es estático y nunca se toca después de _build_ui().
+Diseño (Fase 4 — rediseño completo):
+  ┌─────────────────────────────────────────────────────────────────┐
+  │ [ícono]  Nombre App               [badge tipo]  ● Estado        │
+  │          Descripción breve              🔌 puerto  🔑 PID XXXXX │
+  │                          [▶ Lanzar]  [↑ Act.]  [⚙]  [✕]        │
+  └─────────────────────────────────────────────────────────────────┘
+
+Solo el panel derecho (botones + status + meta) se reconstruye en
+update_status(). El ícono y la info estática no se tocan.
 """
+import os
+
 from PySide6.QtWidgets import (QFrame, QHBoxLayout, QVBoxLayout, QLabel,
                                QPushButton, QProgressBar, QWidget)
+from PySide6.QtGui import QPixmap, QFont
 from PySide6.QtCore import Qt
 from gui import theme
 
@@ -22,15 +31,49 @@ _BUSY_LABELS = {
 _PROGRESS_BAR_STYLE = f"""
     QProgressBar {{
         border: none;
-        border-radius: 3px;
+        border-radius: 2px;
         background: {theme.BG_SURFACE};
-        max-height: 4px;
+        max-height: 3px;
     }}
     QProgressBar::chunk {{
         background: {theme.ACCENT_VIOLET};
-        border-radius: 3px;
+        border-radius: 2px;
     }}
 """
+
+# Altura fija de cada card para consistencia visual
+_CARD_HEIGHT = 90
+
+# Directorio de íconos — apps/{app_id}/icon.png (relativo a HUB_ROOT)
+_HUB_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_ICONS_BASE = os.path.join(os.path.dirname(_HUB_DIR), "apps")
+
+
+def _load_icon(app_id: str, size: int = 48) -> QLabel:
+    """
+    Carga apps/{app_id}/icon.png si existe.
+    Fallback: placeholder con la inicial del nombre en un cuadrado de color.
+    """
+    icon_path = os.path.join(_ICONS_BASE, app_id, "icon.png")
+    lbl = QLabel()
+    lbl.setFixedSize(size, size)
+    lbl.setAlignment(Qt.AlignCenter)
+    if os.path.isfile(icon_path):
+        px = QPixmap(icon_path).scaled(
+            size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation
+        )
+        lbl.setPixmap(px)
+    else:
+        # Placeholder: inicial del app_id en caja con color accent
+        initial = app_id[0].upper()
+        lbl.setText(initial)
+        lbl.setFont(QFont("sans-serif", size // 3, QFont.Bold))
+        lbl.setStyleSheet(
+            f"background-color: {theme.ACCENT_VIOLET}; "
+            f"color: {theme.TEXT_PRIMARY}; "
+            f"border-radius: {size // 6}px;"
+        )
+    return lbl
 
 
 class AppCard(QFrame):
@@ -38,13 +81,14 @@ class AppCard(QFrame):
                  on_action_callback, any_running: bool = False,
                  running_proc=None, parent=None):
         super().__init__(parent)
-        self.app_id          = app_id
-        self.app_cfg         = app_cfg
-        self.status          = status
-        self.any_running     = any_running
-        self.running_proc    = running_proc   # subprocess.Popen | None
+        self.app_id             = app_id
+        self.app_cfg            = app_cfg
+        self.status             = status
+        self.any_running        = any_running
+        self.running_proc       = running_proc
         self.on_action_callback = on_action_callback
         self.setObjectName("card")
+        self.setFixedHeight(_CARD_HEIGHT)
         self._build_ui()
 
     def _trigger_action(self, action: str):
@@ -62,60 +106,68 @@ class AppCard(QFrame):
         launch_type = self.app_cfg.get("launch_type", "")
 
         if port:
-            type_badge, type_color = "🌐 WebUI",   "#51CCDC"
+            type_badge, type_color = "🌐 WebUI",   theme.ACCENT_CYAN_2
         elif launch_type == "python" and not port:
-            type_badge, type_color = "🖥 Desktop", "#888aaa"
+            type_badge, type_color = "🖥 Desktop", theme.TEXT_SECONDARY
+        elif launch_type == "npm":
+            type_badge, type_color = "🌐 WebUI",   theme.ACCENT_CYAN_2
         else:
             type_badge, type_color = "", ""
 
-        self._outer = QHBoxLayout(self)
-        self._outer.setContentsMargins(14, 12, 14, 12)
-        self._outer.setSpacing(12)
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(12, 8, 14, 8)
+        outer.setSpacing(12)
 
-        # ── Panel izquierdo: info estática ────────────────────────────
-        info = QVBoxLayout()
-        info.setSpacing(3)
+        # ── Ícono de la app ───────────────────────────────────────────
+        icon_lbl = _load_icon(self.app_id, size=48)
+        outer.addWidget(icon_lbl, alignment=Qt.AlignVCenter)
 
-        title_row = QHBoxLayout()
-        title_row.setSpacing(8)
-        title_row.setContentsMargins(0, 0, 0, 0)
+        # ── Info estática (columna central) ───────────────────────────
+        info_col = QVBoxLayout()
+        info_col.setSpacing(2)
+        info_col.setContentsMargins(0, 0, 0, 0)
 
-        title_lbl = QLabel(name)
-        title_lbl.setStyleSheet(f"font-size: 14px; font-weight: bold; color: {theme.TEXT_PRIMARY};")
-        title_row.addWidget(title_lbl)
+        # Fila 1: nombre + badge de tipo
+        name_row = QHBoxLayout()
+        name_row.setSpacing(8)
+        name_row.setContentsMargins(0, 0, 0, 0)
+
+        name_lbl = QLabel(name)
+        name_lbl.setStyleSheet(
+            f"font-size: 14px; font-weight: bold; color: {theme.TEXT_PRIMARY};"
+        )
+        name_row.addWidget(name_lbl)
 
         if type_badge:
             badge_lbl = QLabel(type_badge)
             badge_lbl.setStyleSheet(
                 f"font-size: 10px; color: {type_color}; "
                 f"border: 1px solid {type_color}; border-radius: 3px; "
-                f"padding: 1px 5px; font-weight: bold;"
+                f"padding: 1px 5px;"
             )
-            title_row.addWidget(badge_lbl)
+            name_row.addWidget(badge_lbl)
 
-        title_row.addStretch()
-        info.addLayout(title_row)
+        name_row.addStretch()
+        info_col.addLayout(name_row)
 
+        # Fila 2: descripción (truncada si es muy larga)
         if desc:
             desc_lbl = QLabel(desc)
-            desc_lbl.setStyleSheet(f"color: {theme.TEXT_SECONDARY}; font-size: 12px;")
-            desc_lbl.setWordWrap(True)
-            info.addWidget(desc_lbl)
+            desc_lbl.setStyleSheet(f"color: {theme.TEXT_SECONDARY}; font-size: 11px;")
+            desc_lbl.setWordWrap(False)
+            # Truncar con elipsis si excede el espacio
+            desc_lbl.setMaximumWidth(380)
+            info_col.addWidget(desc_lbl)
 
-        if port:
-            port_lbl = QLabel(f"Puerto: {port}")
-            port_lbl.setStyleSheet(f"color: {theme.TEXT_META}; font-size: 11px;")
-            info.addWidget(port_lbl)
+        outer.addLayout(info_col, stretch=1)
 
-        self._outer.addLayout(info, stretch=1)
-
-        # ── Panel derecho: contenedor mutable ────────────────────────
+        # ── Panel derecho (mutable) ───────────────────────────────────
         self._right_widget = QWidget()
         self._right_layout = QVBoxLayout(self._right_widget)
-        self._right_layout.setSpacing(6)
+        self._right_layout.setSpacing(4)
         self._right_layout.setContentsMargins(0, 0, 0, 0)
         self._right_layout.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self._outer.addWidget(self._right_widget)
+        outer.addWidget(self._right_widget)
 
         self._populate_right(self.status, self.any_running, self.running_proc)
 
@@ -137,63 +189,71 @@ class AppCard(QFrame):
         while self._right_layout.count():
             item = self._right_layout.takeAt(0)
             if item.widget():
-                # setParent(None) lo saca del árbol de hijos inmediatamente,
-                # antes del deleteLater() diferido. Evita que findChildren()
-                # devuelva widgets "fantasma" del estado anterior.
                 w = item.widget()
                 w.setParent(None)
                 w.deleteLater()
             elif item.layout():
-                # Sub-layouts (btn_row): limpiar sus hijos primero
-                sub_layout = item.layout()
-                while sub_layout.count():
-                    sub = sub_layout.takeAt(0)
-                    if sub.widget():
-                        sub.widget().setParent(None)
-                        sub.widget().deleteLater()
+                sub = item.layout()
+                while sub.count():
+                    s = sub.takeAt(0)
+                    if s.widget():
+                        s.widget().setParent(None)
+                        s.widget().deleteLater()
 
         self._populate_right(status, any_running, running_proc)
 
     def _populate_right(self, status: str, any_running: bool, running_proc=None):
-        """Construye el contenido del panel derecho según el estado actual."""
+        """Construye el panel derecho según el estado actual."""
         label_text  = theme.STATUS_LABELS.get(status, "○ Desconocido")
         label_color = theme.STATUS_COLORS.get(status, theme.TEXT_META)
+
+        # Fila: status + meta (puerto, PID) en la misma línea cuando running
+        top_row = QHBoxLayout()
+        top_row.setSpacing(10)
+        top_row.setContentsMargins(0, 0, 0, 0)
+        top_row.addStretch()
+
         status_lbl = QLabel(label_text)
-        status_lbl.setAlignment(Qt.AlignRight)
         status_lbl.setStyleSheet(
             f"color: {label_color}; font-weight: bold; font-size: 12px;"
         )
-        self._right_layout.addWidget(status_lbl)
+        top_row.addWidget(status_lbl)
+
+        if status == "running" and running_proc:
+            port = self.app_cfg.get("default_port")
+            meta_parts = []
+            if port:
+                meta_parts.append(f"🔌 {port}")
+            if running_proc.pid:
+                meta_parts.append(f"🔑 PID {running_proc.pid}")
+            if meta_parts:
+                meta_lbl = QLabel("  ".join(meta_parts))
+                meta_lbl.setStyleSheet(
+                    f"color: {theme.TEXT_META}; font-size: 11px; font-family: monospace;"
+                )
+                top_row.addWidget(meta_lbl)
+
+        self._right_layout.addLayout(top_row)
 
         is_busy     = status in _BUSY_LABELS
         is_internal = self.app_cfg.get("is_internal", False)
 
         if status == "running":
-            # Info de proceso activo: puerto + PID
-            meta_parts = []
-            port = self.app_cfg.get("default_port")
-            if port:
-                meta_parts.append(f":{port}")
-            if running_proc and running_proc.pid:
-                meta_parts.append(f"PID {running_proc.pid}")
-            if meta_parts:
-                meta_lbl = QLabel("  ".join(meta_parts))
-                meta_lbl.setAlignment(Qt.AlignRight)
-                meta_lbl.setStyleSheet(f"color: {theme.TEXT_META}; font-size: 11px; font-family: monospace;")
-                self._right_layout.addWidget(meta_lbl)
-
             btn_stop = QPushButton("⏹ Detener")
             btn_stop.setObjectName("stop_btn")
+            btn_stop.setFixedWidth(100)
             btn_stop.clicked.connect(lambda: self._trigger_action("stop"))
             self._right_layout.addWidget(btn_stop, alignment=Qt.AlignRight)
 
         elif status == "installed":
             btn_row = QHBoxLayout()
-            btn_row.setSpacing(6)
+            btn_row.setSpacing(4)
             btn_row.setContentsMargins(0, 0, 0, 0)
+            btn_row.addStretch()
 
             btn_launch = QPushButton("▶ Lanzar")
             btn_launch.setObjectName("success_btn")
+            btn_launch.setFixedWidth(90)
             btn_launch.setEnabled(not any_running)
             if any_running:
                 btn_launch.setToolTip("Otra app está activa. Detén la app activa primero.")
@@ -201,22 +261,27 @@ class AppCard(QFrame):
             btn_row.addWidget(btn_launch)
 
             if not is_internal:
-                btn_update = QPushButton("↑ Actualizar")
+                btn_update = QPushButton("↑ Act.")
                 btn_update.setObjectName("outline_btn")
+                btn_update.setFixedWidth(72)
+                btn_update.setToolTip("Buscar y aplicar actualizaciones")
                 btn_update.clicked.connect(lambda: self._trigger_action("update"))
 
-                btn_uninstall = QPushButton("✕ Desinstalar")
-                btn_uninstall.setObjectName("danger_outline_btn")
-                btn_uninstall.clicked.connect(lambda: self._trigger_action("uninstall"))
-
-                btn_settings = QPushButton("⚙ Opciones")
+                btn_settings = QPushButton("⚙")
                 btn_settings.setObjectName("outline_btn")
+                btn_settings.setFixedWidth(32)
                 btn_settings.setToolTip("Configurar flags y opciones")
                 btn_settings.clicked.connect(lambda: self._trigger_action("settings"))
 
+                btn_uninstall = QPushButton("✕")
+                btn_uninstall.setObjectName("danger_outline_btn")
+                btn_uninstall.setFixedWidth(32)
+                btn_uninstall.setToolTip("Desinstalar esta aplicación")
+                btn_uninstall.clicked.connect(lambda: self._trigger_action("uninstall"))
+
                 btn_row.addWidget(btn_update)
-                btn_row.addWidget(btn_uninstall)
                 btn_row.addWidget(btn_settings)
+                btn_row.addWidget(btn_uninstall)
 
             self._right_layout.addLayout(btn_row)
 
@@ -226,17 +291,17 @@ class AppCard(QFrame):
             placeholder.setEnabled(False)
             self._right_layout.addWidget(placeholder, alignment=Qt.AlignRight)
 
-            # Barra de progreso indeterminada para todos los estados busy
-            if status in ("launching", "installing", "updating", "uninstalling", "stopping"):
-                bar = QProgressBar()
-                bar.setRange(0, 0)   # indeterminado
-                bar.setFixedHeight(4)
-                bar.setStyleSheet(_PROGRESS_BAR_STYLE)
-                bar.setTextVisible(False)
-                self._right_layout.addWidget(bar)
+            # Progress bar indeterminada para todos los estados busy
+            bar = QProgressBar()
+            bar.setRange(0, 0)
+            bar.setFixedHeight(3)
+            bar.setStyleSheet(_PROGRESS_BAR_STYLE)
+            bar.setTextVisible(False)
+            self._right_layout.addWidget(bar)
 
         else:  # not_installed
             btn_install = QPushButton("↓ Instalar")
             btn_install.setObjectName("install_btn")
+            btn_install.setFixedWidth(110)
             btn_install.clicked.connect(lambda: self._trigger_action("install"))
             self._right_layout.addWidget(btn_install, alignment=Qt.AlignRight)

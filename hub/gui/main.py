@@ -27,6 +27,7 @@ from gui.components.app_settings_dialog import AppSettingsDialog
 from gui.components.app_terminal import AppTerminal
 from gui.workers import HubWorkers
 from gui.utils.confirm_dialog import confirm_update, confirm_uninstall
+from gui import theme
 
 
 
@@ -63,41 +64,49 @@ class AIHubMainWindow(QMainWindow):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # ── Compact top bar ───────────────────────────────────────────────
+        # ── Topbar ────────────────────────────────────────────────────────
         topbar = QWidget()
-        topbar.setStyleSheet("background-color: #1A0040; border-bottom: 1px solid #3D1B7B;")
+        topbar.setStyleSheet(
+            f"background-color: {theme.BG_SURFACE}; "
+            f"border-bottom: 1px solid {theme.BORDER_NEUTRAL};"
+        )
         topbar_layout = QHBoxLayout(topbar)
-        topbar_layout.setContentsMargins(20, 10, 20, 10)
+        topbar_layout.setContentsMargins(20, 8, 20, 8)
         topbar_layout.setSpacing(16)
 
-        # App name — compact
         name_lbl = QLabel("🤖 <b>AI Hub</b>")
-        name_lbl.setStyleSheet("font-size: 18px; color: #54EFEA;")
+        name_lbl.setStyleSheet(f"font-size: 18px; color: {theme.ACCENT_CYAN};")
         topbar_layout.addWidget(name_lbl)
 
-        # System info inline (compact)
+        # System info inline
         info = state.sys_info
-        gpu_text = info.get("gpu_name", "GPU desconocida")
+        gpu_text  = info.get("gpu_name", "GPU desconocida")
         cuda_text = info.get("cuda_tag", "")
         disk_text = info.get("disk_free", "")
 
-        sep = QLabel("|")
-        sep.setStyleSheet("color: #3D1B7B;")
-
         info_lbl = QLabel(
-            f"<span style='color:#888aaa'>GPU:</span> <span style='color:#54EFEA'>{gpu_text}</span>"
-            f"  <span style='color:#3D1B7B'>|</span>"
-            f"  <span style='color:#888aaa'>CUDA:</span> <span style='color:#54EFEA'>{cuda_text}</span>"
-            f"  <span style='color:#3D1B7B'>|</span>"
-            f"  <span style='color:#888aaa'>Libre:</span> <span style='color:#51CCDC'>{disk_text}</span>"
+            f"<span style='color:{theme.TEXT_SECONDARY}'>GPU:</span> "
+            f"<span style='color:{theme.ACCENT_CYAN}'>{gpu_text}</span>"
+            f"  <span style='color:{theme.BORDER_NEUTRAL}'>|</span>"
+            f"  <span style='color:{theme.TEXT_SECONDARY}'>CUDA:</span> "
+            f"<span style='color:{theme.ACCENT_CYAN}'>{cuda_text}</span>"
+            f"  <span style='color:{theme.BORDER_NEUTRAL}'>|</span>"
+            f"  <span style='color:{theme.TEXT_SECONDARY}'>Libre:</span> "
+            f"<span style='color:{theme.ACCENT_CYAN_2}'>{disk_text}</span>"
         )
         info_lbl.setStyleSheet("font-size: 12px;")
-
-        topbar_layout.addWidget(sep)
         topbar_layout.addWidget(info_lbl)
+
+        # Indicador de app activa (se actualiza via _on_app_state_changed)
+        self._active_app_lbl = QLabel("")
+        self._active_app_lbl.setStyleSheet(
+            f"font-size: 12px; color: {theme.ACCENT_CYAN}; font-family: monospace;"
+        )
+        self._active_app_lbl.setVisible(False)
+        topbar_layout.addWidget(self._active_app_lbl)
+
         topbar_layout.addStretch()
 
-        # Cleanup button — mata procesos stale en puertos conocidos
         cleanup_btn = QPushButton("🧹 Limpiar")
         cleanup_btn.setObjectName("outline_btn")
         cleanup_btn.setToolTip(
@@ -107,7 +116,6 @@ class AIHubMainWindow(QMainWindow):
         cleanup_btn.clicked.connect(self.workers.cleanup_stale_processes)
         topbar_layout.addWidget(cleanup_btn)
 
-        # Model Vault Button
         vault_btn = QPushButton("📦 Gestionar Modelos")
         vault_btn.setObjectName("outline_btn")
         vault_btn.setToolTip("Abrir Model Vault")
@@ -116,7 +124,7 @@ class AIHubMainWindow(QMainWindow):
 
         root.addWidget(topbar)
 
-        # ── Tab widget fills the rest ─────────────────────────────────────
+        # ── Tab widget ────────────────────────────────────────────────────
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
         root.addWidget(self.tabs)
@@ -259,14 +267,21 @@ class AIHubMainWindow(QMainWindow):
                 self.workers.uninstall_app(app_id)
 
     def _on_app_state_changed(self, app_id: str):
-        """Sincroniza el panel de terminal con el estado de la app."""
+        """Sincroniza el panel de terminal y el indicador de app activa."""
         status = state.get_app_status(app_id)
         if status == "running":
             app_name = state.registry_apps.get(app_id, {}).get("name", app_id)
+            port = state.registry_apps.get(app_id, {}).get("default_port", "")
             self.terminal.set_active_app(app_id, app_name)
+            # Mostrar indicador en topbar
+            port_str = f" :{port}" if port else ""
+            self._active_app_lbl.setText(f"● {app_name}{port_str}")
+            self._active_app_lbl.setVisible(True)
         elif status in ("installed", "not_installed"):
-            # App se detuvo
             self.terminal.on_app_stopped(app_id)
+            # Ocultar indicador si no hay ninguna app corriendo
+            if not state.get_running_app():
+                self._active_app_lbl.setVisible(False)
 
     def _show_cleanup_result(self, summary: str):
         QMessageBox.information(self, "Limpieza de procesos", summary)

@@ -58,23 +58,31 @@ STYLESHEET = """
         border: none;
         background-color: #0F0023;
     }
+    QTabBar {
+        background: #1A0040;
+        border-bottom: 1px solid #3D1B7B;
+    }
     QTabBar::tab {
         background: #1A0040;
         color: #888aaa;
-        padding: 8px 20px;
-        border: 1px solid #3D1B7B;
-        border-bottom: none;
-        border-radius: 4px 4px 0 0;
+        padding: 10px 22px;
+        border: none;
+        border-bottom: 3px solid transparent;
         font-size: 13px;
         font-weight: bold;
-        margin-right: 2px;
+        margin-right: 1px;
+        min-width: 100px;
     }
     QTabBar::tab:selected {
         background: #2A0A5E;
         color: #54EFEA;
-        border-bottom: 2px solid #600DB5;
+        border-bottom: 3px solid #54EFEA;
     }
-    QTabBar::tab:hover:!selected { background: #2A0A5E; color: #e0e0ff; }
+    QTabBar::tab:hover:!selected {
+        background: #200850;
+        color: #e0e0ff;
+        border-bottom: 3px solid #3D1B7B;
+    }
 
     /* ── Cards ───────────────────────────────── */
     QFrame#card {

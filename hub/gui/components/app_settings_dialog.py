@@ -6,9 +6,10 @@ Permite configurar:
   - Info de instalación (read-only)
 """
 import os
+import socket
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QCheckBox, QLineEdit, QSpinBox, QGroupBox, QScrollArea,
+    QCheckBox, QLineEdit, QPlainTextEdit, QSpinBox, QGroupBox, QScrollArea,
     QWidget, QFrame
 )
 from PySide6.QtCore import Qt
@@ -157,16 +158,48 @@ class AppSettingsDialog(QDialog):
         self._port_spin.setEnabled(current_override is not None)
         self._port_spin.setToolTip("Puerto en el que se iniciará la app")
 
-        self._port_check.toggled.connect(self._port_spin.setEnabled)
+        # Indicador de disponibilidad del puerto
+        self._port_status_lbl = QLabel("")
+        self._port_status_lbl.setStyleSheet("font-size: 11px;")
+        self._port_status_lbl.setVisible(current_override is not None)
+
+        def _toggle_port(checked: bool):
+            self._port_spin.setEnabled(checked)
+            self._port_status_lbl.setVisible(checked)
+            if checked:
+                self._check_port_availability(self._port_spin.value())
+
+        self._port_check.toggled.connect(_toggle_port)
+        self._port_spin.valueChanged.connect(self._check_port_availability)
+
+        if current_override is not None:
+            self._check_port_availability(current_override)
 
         hint = QLabel(f"(base: {default_port})")
         hint.setStyleSheet("color: #777799; font-size: 11px;")
 
         layout.addWidget(self._port_check)
         layout.addWidget(self._port_spin)
+        layout.addWidget(self._port_status_lbl)
         layout.addWidget(hint)
         layout.addStretch()
         return box
+
+    def _check_port_availability(self, port: int):
+        """Actualiza el indicador de disponibilidad del puerto en tiempo real."""
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(0.3)
+                in_use = s.connect_ex(("127.0.0.1", port)) == 0
+        except Exception:
+            in_use = False
+
+        if in_use:
+            self._port_status_lbl.setText("🔴 Puerto en uso")
+            self._port_status_lbl.setStyleSheet("font-size: 11px; color: #ef5350;")
+        else:
+            self._port_status_lbl.setText("🟢 Puerto libre")
+            self._port_status_lbl.setStyleSheet("font-size: 11px; color: #66bb6a;")
 
     # ------------------------------------------------------------------ #
     # Flags group                                                          #
@@ -290,19 +323,27 @@ class AppSettingsDialog(QDialog):
         layout = QVBoxLayout(box)
 
         hint = QLabel(
-            "Flags extra separadas por espacios. Se añaden al final del comando.\n"
-            "Ejemplo: --no-half --skip-version-check"
+            "Una flag por línea. Se añaden al final del comando de lanzamiento.\n"
+            "Ejemplo:\n  --no-half\n  --skip-version-check"
         )
         hint.setStyleSheet("color: #777799; font-size: 11px;")
         layout.addWidget(hint)
 
-        # Build initial value from known flags not shown above
+        # Build initial value from args not covered by known flags
         current_args = state.get_user_extra_args(self.app_id)
         known_flags  = {fd["flag"] for fd in self.app_flags.get("flags", [])}
         custom_args  = [a for a in current_args if not any(a.startswith(k) for k in known_flags)]
 
-        self._custom_edit = QLineEdit(" ".join(custom_args))
-        self._custom_edit.setPlaceholderText("--flag-extra --otra-flag valor")
+        self._custom_edit = QPlainTextEdit("\n".join(custom_args))
+        self._custom_edit.setPlaceholderText("--flag-extra\n--otra-flag valor")
+        self._custom_edit.setFixedHeight(80)
+        self._custom_edit.setStyleSheet("""
+            QPlainTextEdit {
+                background: #1A0040; color: #54EFEA;
+                border: 1px solid #3D1B7B; border-radius: 4px;
+                padding: 4px 8px; font-family: monospace;
+            }
+        """)
         layout.addWidget(self._custom_edit)
         return box
 
@@ -348,10 +389,13 @@ class AppSettingsDialog(QDialog):
                 else:
                     args.append(flag)
 
-        # Collect custom flags
-        custom = self._custom_edit.text().strip()
-        if custom:
-            args.extend(custom.split())
+        # Collect custom flags — una por línea
+        custom_text = self._custom_edit.toPlainText().strip()
+        if custom_text:
+            for line in custom_text.splitlines():
+                line = line.strip()
+                if line:
+                    args.extend(line.split())
 
         state.set_user_extra_args(self.app_id, args)
 
