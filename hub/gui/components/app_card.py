@@ -238,33 +238,34 @@ class AppCard(QFrame):
         is_busy     = status in _BUSY_LABELS
         is_internal = self.app_cfg.get("is_internal", False)
 
-        if status == "running":
-            btn_stop = QPushButton("⏹ Detener")
-            btn_stop.setObjectName("stop_btn")
-            btn_stop.setFixedWidth(100)
-            btn_stop.clicked.connect(lambda: self._trigger_action("stop"))
-            self._right_layout.addWidget(btn_stop, alignment=Qt.AlignRight)
-
-        elif status == "installed":
+        if status in ("installed", "running"):
             btn_row = QHBoxLayout()
             btn_row.setSpacing(4)
             btn_row.setContentsMargins(0, 0, 0, 0)
             btn_row.addStretch()
 
-            btn_launch = QPushButton("▶ Lanzar")
-            btn_launch.setObjectName("success_btn")
-            btn_launch.setFixedWidth(90)
-            btn_launch.setEnabled(not any_running)
-            if any_running:
-                btn_launch.setToolTip("Otra app está activa. Detén la app activa primero.")
-            btn_launch.clicked.connect(lambda: self._trigger_action("launch"))
-            btn_row.addWidget(btn_launch)
+            # Botón principal: Lanzar ↔ Detener según el estado
+            if status == "running":
+                btn_primary = QPushButton("⏹ Detener")
+                btn_primary.setObjectName("stop_btn")
+                btn_primary.setToolTip("Detener la aplicación")
+                btn_primary.clicked.connect(lambda: self._trigger_action("stop"))
+            else:
+                btn_primary = QPushButton("▶ Lanzar")
+                btn_primary.setObjectName("success_btn")
+                btn_primary.setEnabled(not any_running)
+                if any_running:
+                    btn_primary.setToolTip("Otra app está activa. Deténla primero.")
+                btn_primary.clicked.connect(lambda: self._trigger_action("launch"))
+            btn_primary.setFixedWidth(100)
+            btn_row.addWidget(btn_primary)
 
             if not is_internal:
                 btn_update = QPushButton("↑ Act.")
                 btn_update.setObjectName("outline_btn")
                 btn_update.setFixedWidth(72)
                 btn_update.setToolTip("Buscar y aplicar actualizaciones")
+                btn_update.setEnabled(status != "running")
                 btn_update.clicked.connect(lambda: self._trigger_action("update"))
 
                 btn_settings = QPushButton("⚙")
@@ -277,6 +278,7 @@ class AppCard(QFrame):
                 btn_uninstall.setObjectName("danger_outline_btn")
                 btn_uninstall.setFixedWidth(32)
                 btn_uninstall.setToolTip("Desinstalar esta aplicación")
+                btn_uninstall.setEnabled(status != "running")
                 btn_uninstall.clicked.connect(lambda: self._trigger_action("uninstall"))
 
                 btn_row.addWidget(btn_update)
