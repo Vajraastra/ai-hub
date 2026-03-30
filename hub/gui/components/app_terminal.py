@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout,
                                 QTextEdit, QLabel, QPushButton)
 from PySide6.QtGui import QFont, QTextCursor
 from PySide6.QtCore import Qt, QTimer, Slot
+from gui import theme
 
 
 # Elimina secuencias ANSI de color/cursor y carriage returns
@@ -53,42 +54,42 @@ class AppTerminal(QWidget):
         self._output.setMinimumHeight(180)
         self._output.setReadOnly(True)
         self._output.setFont(QFont("Monospace", 9))
-        self._output.setStyleSheet("""
-            QTextEdit {
+        self._output.setStyleSheet(f"""
+            QTextEdit {{
                 background: #07000F;
-                color: #B8C0D0;
+                color: {theme.TEXT_SECONDARY};
                 border: none;
                 padding: 8px 12px;
-                selection-background-color: #2A0A5E;
-            }
+                selection-background-color: {theme.BG_ELEVATED};
+            }}
         """)
 
         # ── Header ──────────────────────────────────────────────────────
         header = QWidget()
         header.setFixedHeight(28)
-        header.setStyleSheet("background: #0D0025; border-top: 1px solid #2A0A5E;")
+        header.setStyleSheet(f"background: #0D0025; border-top: 1px solid {theme.BG_ELEVATED};")
         header_row = QHBoxLayout(header)
         header_row.setContentsMargins(12, 0, 8, 0)
         header_row.setSpacing(8)
 
         self._title_lbl = QLabel("▸ Terminal  —  sin app activa")
         self._title_lbl.setStyleSheet(
-            "color: #555588; font-size: 11px; font-weight: bold; font-family: monospace;"
+            f"color: {theme.TEXT_META}; font-size: 11px; font-weight: bold; font-family: monospace;"
         )
         header_row.addWidget(self._title_lbl)
         header_row.addStretch()
 
         clear_btn = QPushButton("limpiar")
         clear_btn.setFixedSize(54, 18)
-        clear_btn.setStyleSheet("""
-            QPushButton {
+        clear_btn.setStyleSheet(f"""
+            QPushButton {{
                 font-size: 10px; padding: 0 4px;
                 background: transparent;
-                border: 1px solid #2A0A5E;
+                border: 1px solid {theme.BG_ELEVATED};
                 color: #444466;
                 border-radius: 3px;
-            }
-            QPushButton:hover { border-color: #54EFEA; color: #54EFEA; }
+            }}
+            QPushButton:hover {{ border-color: {theme.ACCENT_CYAN}; color: {theme.ACCENT_CYAN}; }}
         """)
         clear_btn.clicked.connect(self._output.clear)
         header_row.addWidget(clear_btn)
@@ -110,7 +111,7 @@ class AppTerminal(QWidget):
         self._pending_lines.clear()
         self._title_lbl.setText(f"▸ Terminal  —  {app_name}")
         self._title_lbl.setStyleSheet(
-            "color: #54EFEA; font-size: 11px; font-weight: bold; font-family: monospace;"
+            f"color: {theme.ACCENT_CYAN}; font-size: 11px; font-weight: bold; font-family: monospace;"
         )
         self._output.clear()
 
@@ -121,7 +122,7 @@ class AppTerminal(QWidget):
                 f"▸ Terminal  —  {self._title_lbl.text().split('—')[-1].strip()}  (detenida)"
             )
             self._title_lbl.setStyleSheet(
-                "color: #888aaa; font-size: 11px; font-weight: bold; font-family: monospace;"
+                f"color: {theme.TEXT_SECONDARY}; font-size: 11px; font-weight: bold; font-family: monospace;"
             )
 
     @Slot(str, str)

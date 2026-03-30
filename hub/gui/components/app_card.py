@@ -8,17 +8,7 @@ puerto) es estático y nunca se toca después de _build_ui().
 from PySide6.QtWidgets import (QFrame, QHBoxLayout, QVBoxLayout, QLabel,
                                QPushButton, QProgressBar, QWidget)
 from PySide6.QtCore import Qt
-
-_STATUS_DISPLAY = {
-    "running":       ("● Corriendo",        "#54EFEA"),
-    "installed":     ("● Instalada",        "#51CCDC"),
-    "launching":     ("⏳ Iniciando...",    "#EC00F0"),
-    "installing":    ("⏳ Instalando...",   "#EC00F0"),
-    "updating":      ("⏳ Actualizando...", "#EC00F0"),
-    "uninstalling":  ("⏹ Desinstalando…",  "#EC00F0"),
-    "stopping":      ("⏹ Deteniendo...",   "#EC00F0"),
-    "not_installed": ("○ No instalada",     "#555588"),
-}
+from gui import theme
 
 # Texto del botón placeholder según estado busy
 _BUSY_LABELS = {
@@ -29,17 +19,17 @@ _BUSY_LABELS = {
     "stopping":     "Deteniendo...",
 }
 
-_PROGRESS_BAR_STYLE = """
-    QProgressBar {
+_PROGRESS_BAR_STYLE = f"""
+    QProgressBar {{
         border: none;
         border-radius: 3px;
-        background: #1A0040;
+        background: {theme.BG_SURFACE};
         max-height: 4px;
-    }
-    QProgressBar::chunk {
-        background: #600DB5;
+    }}
+    QProgressBar::chunk {{
+        background: {theme.ACCENT_VIOLET};
         border-radius: 3px;
-    }
+    }}
 """
 
 
@@ -91,7 +81,7 @@ class AppCard(QFrame):
         title_row.setContentsMargins(0, 0, 0, 0)
 
         title_lbl = QLabel(name)
-        title_lbl.setStyleSheet("font-size: 14px; font-weight: bold; color: #e0e0ff;")
+        title_lbl.setStyleSheet(f"font-size: 14px; font-weight: bold; color: {theme.TEXT_PRIMARY};")
         title_row.addWidget(title_lbl)
 
         if type_badge:
@@ -108,13 +98,13 @@ class AppCard(QFrame):
 
         if desc:
             desc_lbl = QLabel(desc)
-            desc_lbl.setStyleSheet("color: #888aaa; font-size: 12px;")
+            desc_lbl.setStyleSheet(f"color: {theme.TEXT_SECONDARY}; font-size: 12px;")
             desc_lbl.setWordWrap(True)
             info.addWidget(desc_lbl)
 
         if port:
             port_lbl = QLabel(f"Puerto: {port}")
-            port_lbl.setStyleSheet("color: #555588; font-size: 11px;")
+            port_lbl.setStyleSheet(f"color: {theme.TEXT_META}; font-size: 11px;")
             info.addWidget(port_lbl)
 
         self._outer.addLayout(info, stretch=1)
@@ -166,9 +156,8 @@ class AppCard(QFrame):
 
     def _populate_right(self, status: str, any_running: bool, running_proc=None):
         """Construye el contenido del panel derecho según el estado actual."""
-        label_text, label_color = _STATUS_DISPLAY.get(
-            status, ("○ Desconocido", "#757575")
-        )
+        label_text  = theme.STATUS_LABELS.get(status, "○ Desconocido")
+        label_color = theme.STATUS_COLORS.get(status, theme.TEXT_META)
         status_lbl = QLabel(label_text)
         status_lbl.setAlignment(Qt.AlignRight)
         status_lbl.setStyleSheet(
@@ -190,7 +179,7 @@ class AppCard(QFrame):
             if meta_parts:
                 meta_lbl = QLabel("  ".join(meta_parts))
                 meta_lbl.setAlignment(Qt.AlignRight)
-                meta_lbl.setStyleSheet("color: #555588; font-size: 11px; font-family: monospace;")
+                meta_lbl.setStyleSheet(f"color: {theme.TEXT_META}; font-size: 11px; font-family: monospace;")
                 self._right_layout.addWidget(meta_lbl)
 
             btn_stop = QPushButton("⏹ Detener")
@@ -237,8 +226,8 @@ class AppCard(QFrame):
             placeholder.setEnabled(False)
             self._right_layout.addWidget(placeholder, alignment=Qt.AlignRight)
 
-            # Barra de progreso indeterminada para operaciones largas
-            if status in ("installing", "updating", "uninstalling"):
+            # Barra de progreso indeterminada para todos los estados busy
+            if status in ("launching", "installing", "updating", "uninstalling", "stopping"):
                 bar = QProgressBar()
                 bar.setRange(0, 0)   # indeterminado
                 bar.setFixedHeight(4)

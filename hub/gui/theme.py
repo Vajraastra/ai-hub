@@ -1,19 +1,50 @@
 """
 AI Hub — Paleta y stylesheet global de la interfaz PySide6.
 
-Colores corporativos:
-    #0F0023  background principal
-    #1A0040  surface (topbar, cards)
-    #2A0A5E  surface elevada (selected)
-    #3D1B7B  borde sutil
-    #600DB5  violet — acción primaria
-    #7B1FD4  violet hover
-    #51CCDC  cyan — acción secundaria / outline
-    #54EFEA  cyan brillante — texto de énfasis / running
-    #EC00F0  phlox — stop / warning
-    #e0e0ff  texto principal
-    #888aaa  texto secundario
+Todas las constantes de color están definidas aquí como variables Python.
+Los componentes deben importar estas constantes en lugar de hardcodear colores.
 """
+
+# ── Paleta de colores ─────────────────────────────────────────────────────── #
+BG_MAIN          = "#0F0023"   # background principal
+BG_SURFACE       = "#1A0040"   # surface (topbar, cards)
+BG_ELEVATED      = "#2A0A5E"   # surface elevada (selected/hover)
+BG_CARD          = "#1E004E"   # fondo de tarjetas de app
+BORDER_NEUTRAL   = "#3D1B7B"   # borde sutil
+
+ACCENT_VIOLET        = "#600DB5"   # acción primaria (launch/install)
+ACCENT_VIOLET_HOVER  = "#7B1FD4"   # hover de acción primaria
+ACCENT_CYAN          = "#54EFEA"   # énfasis / running
+ACCENT_CYAN_2        = "#51CCDC"   # acción secundaria / outline
+ACCENT_PINK          = "#EC00F0"   # stop / warning / danger
+ACCENT_PINK_HOVER    = "#FF33FF"
+
+TEXT_PRIMARY   = "#e0e0ff"   # texto principal
+TEXT_SECONDARY = "#888aaa"   # texto secundario
+TEXT_META      = "#555588"   # texto terciario / meta
+
+# ── Estado de apps — colores y etiquetas ─────────────────────────────────── #
+STATUS_COLORS = {
+    "running":      ACCENT_CYAN,
+    "installed":    ACCENT_CYAN_2,
+    "not_installed": TEXT_META,
+    "launching":    ACCENT_PINK,
+    "installing":   ACCENT_PINK,
+    "updating":     ACCENT_PINK,
+    "stopping":     ACCENT_PINK,
+    "uninstalling": ACCENT_PINK,
+}
+
+STATUS_LABELS = {
+    "running":      "● Corriendo",
+    "installed":    "● Instalada",
+    "not_installed": "○ No instalada",
+    "launching":    "⏳ Iniciando...",
+    "installing":   "⏳ Instalando...",
+    "updating":     "⏳ Actualizando...",
+    "stopping":     "⏳ Deteniendo...",
+    "uninstalling": "⏳ Desinstalando...",
+}
 
 STYLESHEET = """
     /* ── Backgrounds ─────────────────────────── */
