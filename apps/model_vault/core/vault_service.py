@@ -33,7 +33,7 @@ class VaultService:
                 progress_callback(i + 1, total, model["name"])
 
             # Check if already in DB and not needing update
-            existing = self.db.get_model_by_hash_path(model["path"]) # Need this method
+            existing = self.db.get_model_by_path(model["path"])
             
             # Logic for when to re-hash
             file_hash = None

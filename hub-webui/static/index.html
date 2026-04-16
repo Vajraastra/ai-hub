@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Hub</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- Topbar -->
+  <header id="topbar">
+    <span class="logo">AI Hub</span>
+    <div class="top-sep"></div>
+    <div id="sysinfo">
+      <span style="color:var(--text-secondary);font-size:11px">GPU</span>
+      <span class="val" id="sys-gpu">—</span>
+      <div class="top-sep"></div>
+      <span style="color:var(--text-secondary);font-size:11px">CUDA</span>
+      <span class="val" id="sys-cuda">—</span>
+      <div class="top-sep"></div>
+      <span style="color:var(--text-secondary);font-size:11px">Libre</span>
+      <span class="val" id="sys-disk">—</span>
+    </div>
+    <div class="spacer"></div>
+    <div id="active-badge">
+      <span class="dot"></span>
+      <span id="active-app-name"></span>
+    </div>
+  </header>
+
+  <!-- Tab bar -->
+  <nav id="tab-bar">
+    <button class="tab-btn active" data-tab="apps">Aplicaciones</button>
+    <button class="tab-btn" data-tab="tools">Herramientas</button>
+    <button class="tab-btn" data-tab="settings">Ajustes</button>
+    <button class="tab-btn" data-tab="log">Log de Eventos</button>
+  </nav>
+
+  <!-- ── Tab: Aplicaciones ────────────────────────────────────────────── -->
+  <div class="tab-panel active" id="tab-apps">
+    <div id="apps-area">
+      <div id="apps-toolbar">
+        <span style="font-size:12px;color:var(--text-secondary)" id="apps-count"></span>
+        <div class="spacer"></div>
+        <button class="btn btn-outline" id="btn-cleanup">🧹 Limpiar procesos</button>
+      </div>
+      <div id="apps-scroll">
+        <div id="apps-list"></div>
+      </div>
+      <!-- Terminal -->
+      <div id="terminal-wrapper">
+        <div id="terminal-header">
+          <span id="terminal-title">Log de salida</span>
+          <button id="terminal-copy">Copiar</button>
+          <button id="terminal-clear">Limpiar</button>
+        </div>
+        <div id="terminal-output"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Tab: Herramientas ─────────────────────────────────────────────── -->
+  <div class="tab-panel" id="tab-tools">
+    <div id="tools-area">
+      <p class="tools-section-title">Herramientas del Hub</p>
+      <div class="tool-cards">
+        <div class="tool-card">
+          <span class="tool-card-icon">📦</span>
+          <span class="tool-card-name">Model Vault</span>
+          <span class="tool-card-desc">Gestiona y organiza modelos. Integración con Civitai.</span>
+          <button class="btn btn-outline" onclick="window.open('/vault','_blank')">Abrir</button>
+        </div>
+        <div class="tool-card">
+          <span class="tool-card-icon">🔀</span>
+          <span class="tool-card-name">LoRA Merger</span>
+          <span class="tool-card-desc">Combina LoRAs con métodos avanzados: slerp, TIES, DARE.</span>
+          <button class="btn btn-outline" onclick="window.open('/merger','_blank')">Abrir</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Tab: Ajustes ─────────────────────────────────────────────────── -->
+  <div class="tab-panel" id="tab-settings">
+    <div id="settings-area">
+      <!-- GPU info -->
+      <div class="settings-section">
+        <p class="settings-section-title">Sistema</p>
+        <div class="info-grid" id="gpu-info-grid">
+          <span class="lbl">GPU</span><span class="val" id="set-gpu">—</span>
+          <span class="lbl">VRAM</span><span class="val" id="set-vram">—</span>
+          <span class="lbl">Arquitectura</span><span class="val" id="set-arch">—</span>
+          <span class="lbl">CUDA Tag</span><span class="val" id="set-cuda">—</span>
+          <span class="lbl">PyTorch</span><span class="val" id="set-torch">—</span>
+        </div>
+      </div>
+
+      <!-- Paths -->
+      <div class="settings-section">
+        <p class="settings-section-title">Rutas</p>
+        <div class="field">
+          <label>Directorio de Modelos</label>
+          <input type="text" id="set-models-path" placeholder="/ruta/a/modelos">
+          <span class="field-hint">Ruta donde están almacenados los checkpoints, LoRAs, VAEs, etc.</span>
+        </div>
+        <div class="field">
+          <label>Directorio de Salidas</label>
+          <input type="text" id="set-outputs-path" placeholder="/ruta/a/outputs">
+          <span class="field-hint">Dónde se guardan las imágenes generadas.</span>
+        </div>
+      </div>
+
+      <!-- API Keys -->
+      <div class="settings-section">
+        <p class="settings-section-title">Servicios</p>
+        <div class="field">
+          <label>Civitai API Key</label>
+          <input type="password" id="set-civitai-key" placeholder="••••••••••••••••">
+          <span class="field-hint">Necesaria para descargar modelos y ver thumbnails de Civitai.</span>
+        </div>
+      </div>
+
+      <div class="settings-actions">
+        <button class="btn btn-primary" id="btn-save-settings">Guardar cambios</button>
+        <button class="btn btn-outline" id="btn-reload-settings">Descartar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Tab: Log ──────────────────────────────────────────────────────── -->
+  <div class="tab-panel" id="tab-log">
+    <div id="log-area">
+      <div id="log-toolbar">
+        <span style="font-size:12px;color:var(--text-secondary)">Eventos recientes</span>
+        <div class="spacer"></div>
+        <button class="btn btn-outline" id="btn-refresh-log">↻ Actualizar</button>
+      </div>
+      <div id="log-list"></div>
+    </div>
+  </div>
+
+</div><!-- /#app -->
+
+<!-- Status bar -->
+<footer id="statusbar">
+  <div id="ws-indicator">
+    <span class="ws-dot"></span>
+    <span id="ws-label">conectando...</span>
+  </div>
+  <span>AI Hub WebUI</span>
+</footer>
+
+<!-- App Settings Modal -->
+<div id="modal-overlay">
+  <div id="modal-box">
+    <div id="modal-header">
+      <span id="modal-title">Ajustes de app</span>
+      <button id="modal-close">✕</button>
+    </div>
+    <div id="modal-body"></div>
+    <div id="modal-footer">
+      <button class="btn btn-outline" id="modal-cancel">Cancelar</button>
+      <button class="btn btn-primary" id="modal-save">Guardar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Confirm Modal -->
+<div id="confirm-overlay">
+  <div id="confirm-box">
+    <p id="confirm-msg"></p>
+    <div id="confirm-footer">
+      <button class="btn btn-outline" id="confirm-no">Cancelar</button>
+      <button class="btn btn-stop" id="confirm-yes">Confirmar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

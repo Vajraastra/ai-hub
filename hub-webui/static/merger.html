@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LoRA Merger — AI Hub</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+  <style>
+    /* ── Layout tool ───────────────────────────────────────────── */
+    body { overflow: hidden; }
+    #tool-wrap { display:flex; flex-direction:column; height:100vh; }
+
+    #tool-header {
+      display:flex; align-items:center; gap:12px;
+      padding:0 16px; height:52px; flex-shrink:0;
+      background:var(--bg-card); border-bottom:1px solid var(--border);
+    }
+    .back-btn {
+      background:none; border:1px solid var(--border); color:var(--text-secondary);
+      border-radius:6px; padding:4px 10px; font-size:12px; cursor:pointer;
+      transition:color .15s, border-color .15s;
+    }
+    .back-btn:hover { color:var(--text-primary); border-color:var(--accent-purple); }
+    #tool-header h1 { font-size:15px; font-weight:600; color:var(--text-primary); flex:1; }
+    #val-status { font-size:12px; padding:3px 10px; border-radius:20px;
+                  background:rgba(255,255,255,.04); color:var(--text-secondary); }
+    #val-status.ok   { background:rgba(84,239,234,.12); color:var(--accent-cyan); }
+    #val-status.warn { background:rgba(255,179,71,.12); color:var(--accent-amber); }
+    #val-status.err  { background:rgba(255,80,80,.12); color:var(--status-error); }
+
+    /* ── Dos paneles ────────────────────────────────────────────── */
+    #merger-body {
+      display:flex; flex:1; overflow:hidden; gap:0;
+    }
+
+    /* Panel izquierdo — lista de LoRAs */
+    #left-panel {
+      width:380px; flex-shrink:0; display:flex; flex-direction:column;
+      border-right:1px solid var(--border); overflow:hidden;
+    }
+    #left-toolbar {
+      display:flex; align-items:center; gap:8px;
+      padding:10px 12px; border-bottom:1px solid var(--border);
+    }
+    #left-toolbar span { font-size:12px; color:var(--text-secondary); flex:1; }
+    #lora-list {
+      flex:1; overflow-y:auto; padding:10px;
+      display:flex; flex-direction:column; gap:8px;
+    }
+    .lora-empty {
+      display:flex; flex-direction:column; align-items:center; justify-content:center;
+      height:100%; gap:10px; color:var(--text-dim);
+      font-size:13px; text-align:center; padding:20px;
+    }
+    .lora-empty .big-icon { font-size:36px; opacity:.4; }
+
+    /* Tarjeta LoRA */
+    .lora-card {
+      background:var(--bg-card); border:1px solid var(--border);
+      border-radius:8px; padding:12px; position:relative;
+    }
+    .lora-card.loading { border-color: var(--border); }
+    .lora-card-top {
+      display:flex; align-items:flex-start; gap:10px;
+    }
+    .lora-arch-badge {
+      font-size:10px; font-weight:600; padding:2px 7px; border-radius:4px;
+      white-space:nowrap; flex-shrink:0; margin-top:2px;
+    }
+    .arch-sd15   { background:rgba(84,239,234,.15); color:#54efea; }
+    .arch-sdxl   { background:rgba(236,0,240,.15);  color:#ec00f0; }
+    .arch-flux   { background:rgba(255,140,0,.15);  color:#ff8c00; }
+    .arch-sd3    { background:rgba(96,13,181,.25);  color:#b57aff; }
+    .arch-wan    { background:rgba(255,60,120,.15); color:#ff3c78; }
+    .arch-other  { background:rgba(255,255,255,.06); color:var(--text-secondary); }
+
+    .lora-info { flex:1; min-width:0; }
+    .lora-name { font-size:13px; font-weight:500; color:var(--text-primary);
+                  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .lora-meta { font-size:11px; color:var(--text-secondary); margin-top:3px; }
+    .lora-content-type {
+      display:inline-block; font-size:10px; padding:1px 6px; border-radius:10px;
+      background:rgba(255,255,255,.06); color:var(--text-secondary);
+      margin-top:4px;
+    }
+    .lora-remove {
+      background:none; border:none; color:var(--text-dim); cursor:pointer;
+      font-size:14px; padding:2px 5px; border-radius:4px; flex-shrink:0;
+      transition:color .15s, background .15s;
+    }
+    .lora-remove:hover { color:var(--status-error); background:rgba(255,80,80,.1); }
+
+    /* Barras de impacto por bloque */
+    .impact-section { margin-top:8px; }
+    .impact-section-label { font-size:10px; color:var(--text-dim); margin-bottom:4px; }
+    .impact-bar-row {
+      display:flex; align-items:center; gap:6px; margin-bottom:3px;
+    }
+    .impact-bar-label { font-size:10px; color:var(--text-secondary); width:80px;
+                         flex-shrink:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .impact-bar-track { flex:1; height:4px; background:rgba(255,255,255,.07); border-radius:2px; }
+    .impact-bar-fill  { height:100%; border-radius:2px;
+                         background:linear-gradient(90deg, var(--accent-purple), var(--accent-cyan)); }
+    .impact-val { font-size:10px; color:var(--text-dim); width:28px; text-align:right; }
+
+    /* Loading spinner en tarjeta */
+    .lora-loading-bar {
+      margin-top:8px; height:3px; border-radius:2px;
+      background:linear-gradient(90deg, var(--accent-purple) 0%, var(--accent-cyan) 50%, var(--accent-purple) 100%);
+      background-size:200% 100%;
+      animation:shimmer 1.5s infinite linear;
+    }
+    @keyframes shimmer {
+      0%   { background-position: 200% 0; }
+      100% { background-position: -200% 0; }
+    }
+
+    /* Panel derecho — configuración */
+    #right-panel {
+      flex:1; overflow-y:auto; padding:16px 20px;
+      display:flex; flex-direction:column; gap:14px;
+    }
+    .config-section {
+      background:var(--bg-card); border:1px solid var(--border);
+      border-radius:8px; padding:14px;
+    }
+    .config-section-title {
+      font-size:11px; font-weight:600; color:var(--text-secondary);
+      text-transform:uppercase; letter-spacing:.06em; margin-bottom:12px;
+    }
+    .config-row {
+      display:flex; align-items:center; gap:10px; margin-bottom:10px;
+    }
+    .config-row:last-child { margin-bottom:0; }
+    .config-row label { font-size:12px; color:var(--text-secondary); width:120px; flex-shrink:0; }
+    .config-row select,
+    .config-row input[type="number"],
+    .config-row input[type="text"] {
+      flex:1; background:var(--bg-input); border:1px solid var(--border);
+      color:var(--text-primary); border-radius:6px; padding:6px 9px;
+      font-size:12px; font-family:inherit;
+    }
+    .method-desc {
+      font-size:11px; color:var(--text-dim); margin-top:-6px; margin-bottom:4px;
+      font-style:italic;
+    }
+
+    /* Advanced params (ocultos según método) */
+    #adv-slerp, #adv-dare, #adv-ties { display:none; }
+
+    /* Pesos por LoRA */
+    #weights-section { display:none; }
+    .weight-row {
+      display:flex; align-items:center; gap:8px; margin-bottom:8px;
+    }
+    .weight-row:last-child { margin-bottom:0; }
+    .weight-label { font-size:12px; color:var(--text-secondary);
+                     width:140px; flex-shrink:0; overflow:hidden;
+                     text-overflow:ellipsis; white-space:nowrap; }
+    .weight-slider { flex:1; accent-color:var(--accent-purple); }
+    .weight-val { font-size:12px; color:var(--text-primary);
+                   font-family:'JetBrains Mono',monospace; width:36px; text-align:right; }
+
+    /* Sección merge + progreso */
+    #merge-section {
+      background:var(--bg-card); border:1px solid var(--border);
+      border-radius:8px; padding:14px;
+    }
+    #btn-merge {
+      width:100%; padding:10px; font-size:14px; font-weight:600;
+      border-radius:8px; cursor:pointer; border:none;
+      background:linear-gradient(135deg, var(--accent-purple), var(--accent-magenta));
+      color:#fff; transition:opacity .15s, transform .1s;
+    }
+    #btn-merge:hover:not(:disabled) { opacity:.9; transform:translateY(-1px); }
+    #btn-merge:disabled { opacity:.4; cursor:not-allowed; transform:none; }
+
+    #merge-progress { display:none; margin-top:12px; }
+    #merge-progress-bar {
+      height:6px; border-radius:3px; background:rgba(255,255,255,.07);
+      overflow:hidden; margin-bottom:6px;
+    }
+    #merge-progress-fill {
+      height:100%; width:0%; border-radius:3px;
+      background:linear-gradient(90deg, var(--accent-purple), var(--accent-cyan));
+      transition:width .2s ease;
+    }
+    #merge-progress-text {
+      font-size:11px; color:var(--text-secondary); font-family:'JetBrains Mono',monospace;
+    }
+    #merge-result { display:none; margin-top:10px; }
+    .merge-ok   { color:var(--accent-cyan); font-size:12px; }
+    .merge-fail { color:var(--status-error); font-size:12px; }
+
+    /* Sugerencia */
+    #suggestion-box {
+      display:none; padding:10px; border-radius:6px;
+      background:rgba(84,239,234,.07); border:1px solid rgba(84,239,234,.2);
+      font-size:12px; color:var(--accent-cyan); margin-bottom:4px;
+    }
+
+    /* Browser modal */
+    #browser-overlay {
+      display:none; position:fixed; inset:0; z-index:200;
+      background:rgba(0,0,0,.7); align-items:center; justify-content:center;
+    }
+    #browser-overlay.open { display:flex; }
+    #browser-box {
+      background:var(--bg-card); border:1px solid var(--border);
+      border-radius:10px; width:540px; max-height:80vh;
+      display:flex; flex-direction:column; overflow:hidden;
+    }
+    #browser-header {
+      display:flex; align-items:center; gap:8px; padding:12px 14px;
+      border-bottom:1px solid var(--border);
+    }
+    #browser-path-input {
+      flex:1; background:var(--bg-input); border:1px solid var(--border);
+      color:var(--text-primary); border-radius:6px; padding:6px 9px;
+      font-size:12px; font-family:'JetBrains Mono',monospace;
+    }
+    #browser-go { flex-shrink:0; }
+    #browser-list {
+      flex:1; overflow-y:auto; padding:8px;
+    }
+    .browser-entry {
+      display:flex; align-items:center; gap:8px; padding:7px 10px;
+      border-radius:6px; cursor:pointer; transition:background .1s;
+    }
+    .browser-entry:hover { background:rgba(255,255,255,.05); }
+    .browser-icon { font-size:14px; width:18px; text-align:center; flex-shrink:0; }
+    .browser-name { font-size:12px; color:var(--text-primary); flex:1; overflow:hidden;
+                     text-overflow:ellipsis; white-space:nowrap; }
+    .browser-size { font-size:11px; color:var(--text-dim); flex-shrink:0; }
+    .browser-check { width:16px; height:16px; flex-shrink:0; accent-color:var(--accent-purple); }
+    #browser-footer {
+      display:flex; align-items:center; gap:8px; padding:10px 14px;
+      border-top:1px solid var(--border);
+    }
+    #browser-selected-count { font-size:12px; color:var(--text-secondary); flex:1; }
+    .browser-parent-btn {
+      background:none; border:1px solid var(--border); color:var(--text-secondary);
+      border-radius:6px; padding:4px 10px; font-size:12px; cursor:pointer;
+    }
+    .browser-parent-btn:hover { border-color:var(--accent-purple); color:var(--text-primary); }
+  </style>
+</head>
+<body>
+<div id="tool-wrap">
+
+  <!-- Header -->
+  <header id="tool-header">
+    <button class="back-btn" onclick="location.href='/'">← AI Hub</button>
+    <h1>LoRA Merger</h1>
+    <span id="val-status">Sin LoRAs</span>
+  </header>
+
+  <!-- Cuerpo principal -->
+  <div id="merger-body">
+
+    <!-- Panel izquierdo: lista de LoRAs -->
+    <div id="left-panel">
+      <div id="left-toolbar">
+        <span id="lora-count">0 LoRAs</span>
+        <button class="btn btn-outline" id="btn-add">+ Agregar</button>
+        <button class="btn btn-outline" id="btn-suggest" style="display:none">
+          ✦ Sugerir
+        </button>
+      </div>
+      <div id="lora-list">
+        <div class="lora-empty">
+          <span class="big-icon">🔀</span>
+          <span>Agrega archivos .safetensors<br>para comenzar el merge</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Panel derecho: configuración -->
+    <div id="right-panel">
+
+      <!-- Sugerencia automática -->
+      <div id="suggestion-box"></div>
+
+      <!-- Método -->
+      <div class="config-section">
+        <div class="config-section-title">Método de merge</div>
+        <div class="config-row">
+          <label>Algoritmo</label>
+          <select id="cfg-method">
+            <option value="weighted_sum">Weighted Sum</option>
+            <option value="slerp">SLERP</option>
+            <option value="ties">TIES</option>
+            <option value="dare">DARE</option>
+            <option value="dare_ties">DARE + TIES</option>
+          </select>
+        </div>
+        <div class="method-desc" id="method-desc">
+          Suma ponderada de deltas. Resultado = ∑ wi × ΔWi
+        </div>
+        <!-- SLERP -->
+        <div id="adv-slerp">
+          <div class="config-row">
+            <label>SLERP t</label>
+            <input type="number" id="cfg-slerp-t" min="0" max="1" step="0.05" value="0.5" style="max-width:90px">
+          </div>
+        </div>
+        <!-- DARE -->
+        <div id="adv-dare">
+          <div class="config-row">
+            <label>Densidad DARE</label>
+            <input type="number" id="cfg-dare-density" min="0" max="1" step="0.05" value="0.5" style="max-width:90px">
+          </div>
+        </div>
+        <!-- TIES -->
+        <div id="adv-ties">
+          <div class="config-row">
+            <label>TIES top-k</label>
+            <input type="number" id="cfg-ties-k" min="0.01" max="1" step="0.05" value="0.2" style="max-width:90px">
+          </div>
+        </div>
+      </div>
+
+      <!-- Pesos por LoRA -->
+      <div class="config-section" id="weights-section">
+        <div class="config-section-title">Pesos por LoRA</div>
+        <div id="weights-list"></div>
+        <div style="margin-top:8px">
+          <button class="btn btn-outline" id="btn-normalize" style="font-size:11px;padding:4px 10px">
+            Normalizar (suma = 1)
+          </button>
+        </div>
+      </div>
+
+      <!-- Filtro de capas + rank -->
+      <div class="config-section">
+        <div class="config-section-title">Capas y rank</div>
+        <div class="config-row">
+          <label>Filtro de capas</label>
+          <select id="cfg-layer-filter">
+            <option value="full">Todas las capas</option>
+            <option value="attn-only">Solo Atención</option>
+            <option value="mlp-only">Solo MLP</option>
+            <option value="attn-mlp">Atención + MLP</option>
+          </select>
+        </div>
+        <div class="config-row">
+          <label>Rank objetivo</label>
+          <input type="number" id="cfg-rank" min="1" max="512" placeholder="auto"
+                 style="max-width:90px">
+        </div>
+      </div>
+
+      <!-- Output -->
+      <div class="config-section">
+        <div class="config-section-title">Salida</div>
+        <div class="config-row">
+          <label>Directorio</label>
+          <input type="text" id="cfg-output-dir" placeholder="/ruta/de/salida">
+        </div>
+        <div class="config-row">
+          <label>Nombre</label>
+          <input type="text" id="cfg-output-name" placeholder="merged_lora.safetensors">
+        </div>
+        <div class="config-row">
+          <label>Precisión</label>
+          <select id="cfg-dtype">
+            <option value="bf16">BF16 (recomendado)</option>
+            <option value="f16">F16</option>
+            <option value="f32">F32</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Merge + progreso -->
+      <div id="merge-section">
+        <button class="btn" id="btn-merge" disabled>Merge</button>
+        <div id="merge-progress">
+          <div id="merge-progress-bar">
+            <div id="merge-progress-fill"></div>
+          </div>
+          <div id="merge-progress-text">Preparando...</div>
+        </div>
+        <div id="merge-result"></div>
+      </div>
+
+    </div><!-- #right-panel -->
+  </div><!-- #merger-body -->
+</div><!-- #tool-wrap -->
+
+<!-- Browser modal -->
+<div id="browser-overlay">
+  <div id="browser-box">
+    <div id="browser-header">
+      <button class="browser-parent-btn" id="browser-up">↑ Subir</button>
+      <input type="text" id="browser-path-input" placeholder="/ruta/a/directorio">
+      <button class="btn btn-outline" id="browser-go" style="flex-shrink:0">Ir</button>
+    </div>
+    <div id="browser-list"></div>
+    <div id="browser-footer">
+      <span id="browser-selected-count">0 seleccionados</span>
+      <button class="btn btn-outline" onclick="closeBrowser()">Cancelar</button>
+      <button class="btn btn-primary" id="browser-confirm">Agregar seleccionados</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<script src="/static/merger.js"></script>
+</body>
+</html>

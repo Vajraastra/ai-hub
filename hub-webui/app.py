@@ -1,0 +1,292 @@
+"""
+AI Hub WebUI — Implementación completa
+Backend: FastAPI + WebSocket
+Frontend: pywebview (ventana nativa) o browser como fallback
+"""
+import os
+import sys
+import json
+import threading
+import asyncio
+import socket
+from typing import Optional
+
+# ── Paths ──────────────────────────────────────────────────────────────────
+POC_DIR = os.path.dirname(os.path.abspath(__file__))
+HUB_DIR = os.path.join(os.path.dirname(POC_DIR), "hub")
+PROJECT_ROOT = os.path.dirname(POC_DIR)
+for path in [HUB_DIR, PROJECT_ROOT]:
+    if path not in sys.path:
+        sys.path.insert(0, path)
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
+import uvicorn
+
+from hub_bridge import bridge
+from merger_routes import merger_router
+from vault_routes import vault_router
+
+# ── WebSocket clients ───────────────────────────────────────────────────────
+_ws_clients: list[WebSocket] = []
+_ws_lock = threading.Lock()
+_event_loop: asyncio.AbstractEventLoop | None = None
+
+
+async def _broadcast(data: dict):
+    msg = json.dumps(data)
+    dead = []
+    with _ws_lock:
+        clients = list(_ws_clients)
+    for ws in clients:
+        try:
+            await ws.send_text(msg)
+        except Exception:
+            dead.append(ws)
+    if dead:
+        with _ws_lock:
+            for ws in dead:
+                if ws in _ws_clients:
+                    _ws_clients.remove(ws)
+
+
+def _schedule(coro):
+    loop = _event_loop
+    if loop and loop.is_running():
+        asyncio.run_coroutine_threadsafe(coro, loop)
+
+
+# ── Handlers del bridge ─────────────────────────────────────────────────────
+
+def _on_state_changed(app_id: str):
+    _schedule(_broadcast({
+        "type": "state_changed",
+        "app_id": app_id,
+        "apps": bridge.get_apps_payload(),
+    }))
+
+
+def _on_log(app_id: str, line: str):
+    _schedule(_broadcast({"type": "log", "app_id": app_id, "line": line}))
+
+
+bridge.on_state_changed(_on_state_changed)
+bridge.on_log(_on_log)
+
+
+# ── FastAPI ─────────────────────────────────────────────────────────────────
+api = FastAPI(title="AI Hub WebUI")
+api.mount("/static", StaticFiles(directory=os.path.join(POC_DIR, "static")), name="static")
+api.include_router(merger_router)
+api.include_router(vault_router)
+
+
+# ── Models Pydantic ──────────────────────────────────────────────────────────
+class HubSettingsPayload(BaseModel):
+    models_path: str = ""
+    outputs_path: str = ""
+    civitai_key: str = ""
+
+
+class AppConfigPayload(BaseModel):
+    port_override: Optional[int] = None
+    active_flags: list[dict] = []
+    free_args: str = ""
+
+
+# ── Rutas estáticas ──────────────────────────────────────────────────────────
+@api.get("/")
+async def index():
+    return FileResponse(os.path.join(POC_DIR, "static", "index.html"))
+
+@api.get("/merger")
+async def merger_page():
+    return FileResponse(os.path.join(POC_DIR, "static", "merger.html"))
+
+@api.get("/vault")
+async def vault_page():
+    return FileResponse(os.path.join(POC_DIR, "static", "vault.html"))
+
+
+# ── Apps ─────────────────────────────────────────────────────────────────────
+@api.get("/api/apps")
+async def get_apps():
+    return {"apps": bridge.get_apps_payload()}
+
+
+@api.get("/api/sysinfo")
+async def get_sysinfo():
+    return bridge.get_sysinfo()
+
+
+@api.post("/api/apps/{app_id}/launch")
+async def launch_app(app_id: str):
+    ok = bridge.launch(app_id)
+    return {"ok": ok}
+
+
+@api.post("/api/apps/{app_id}/stop")
+async def stop_app(app_id: str):
+    ok = bridge.stop(app_id)
+    return {"ok": ok}
+
+
+@api.post("/api/apps/{app_id}/install")
+async def install_app(app_id: str):
+    ok = bridge.install(app_id)
+    return {"ok": ok}
+
+
+@api.post("/api/apps/{app_id}/update")
+async def update_app(app_id: str):
+    ok = bridge.update(app_id)
+    return {"ok": ok}
+
+
+@api.post("/api/apps/{app_id}/uninstall")
+async def uninstall_app(app_id: str):
+    ok = bridge.uninstall(app_id)
+    return {"ok": ok}
+
+
+# ── Per-app config ────────────────────────────────────────────────────────────
+@api.get("/api/apps/{app_id}/config")
+async def get_app_config(app_id: str):
+    return bridge.get_app_config(app_id)
+
+
+@api.post("/api/apps/{app_id}/config")
+async def save_app_config(app_id: str, payload: AppConfigPayload):
+    return bridge.save_app_config(
+        app_id,
+        payload.port_override,
+        payload.active_flags,
+        payload.free_args,
+    )
+
+
+# ── Hub Settings ──────────────────────────────────────────────────────────────
+@api.get("/api/settings")
+async def get_settings():
+    return bridge.get_hub_settings()
+
+
+@api.post("/api/settings")
+async def save_settings(payload: HubSettingsPayload):
+    return bridge.save_hub_settings(
+        payload.models_path,
+        payload.outputs_path,
+        payload.civitai_key,
+    )
+
+
+# ── Event Log ─────────────────────────────────────────────────────────────────
+@api.get("/api/log")
+async def get_log(lines: int = 200):
+    return {"entries": bridge.get_event_log(lines)}
+
+
+# ── Cleanup ───────────────────────────────────────────────────────────────────
+@api.post("/api/cleanup")
+async def cleanup():
+    return bridge.cleanup_stale()
+
+
+# ── Herramientas externas ─────────────────────────────────────────────────────
+@api.post("/api/tools/{tool_id}/launch")
+async def launch_tool(tool_id: str):
+    return bridge.launch_tool(tool_id)
+
+
+# ── WebSocket ─────────────────────────────────────────────────────────────────
+@api.websocket("/ws")
+async def websocket_endpoint(ws: WebSocket):
+    await ws.accept()
+    with _ws_lock:
+        _ws_clients.append(ws)
+    try:
+        await ws.send_text(json.dumps({
+            "type": "init",
+            "apps": bridge.get_apps_payload(),
+            "sysinfo": bridge.get_sysinfo(),
+        }))
+        while True:
+            await ws.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        with _ws_lock:
+            if ws in _ws_clients:
+                _ws_clients.remove(ws)
+
+
+# ── Servidor uvicorn ─────────────────────────────────────────────────────────
+PORT = 9753
+
+
+def _find_free_port(start: int = PORT) -> int:
+    for p in range(start, start + 20):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            if s.connect_ex(("127.0.0.1", p)) != 0:
+                return p
+    return start
+
+
+def _run_server(port: int):
+    global _event_loop
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    _event_loop = loop
+    config = uvicorn.Config(api, host="127.0.0.1", port=port,
+                            loop="asyncio", log_level="warning")
+    server = uvicorn.Server(config)
+    loop.run_until_complete(server.serve())
+
+
+# ── Entry point ───────────────────────────────────────────────────────────────
+
+def main():
+    port = _find_free_port()
+    url  = f"http://127.0.0.1:{port}"
+
+    server_thread = threading.Thread(target=_run_server, args=(port,), daemon=True)
+    server_thread.start()
+
+    import time
+    for _ in range(30):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            if s.connect_ex(("127.0.0.1", port)) == 0:
+                break
+        time.sleep(0.1)
+
+    print(f"  Servidor listo en {url}")
+
+    webview_ok = False
+    try:
+        import webview
+        window = webview.create_window(
+            "AI Hub",
+            url,
+            width=1020,
+            height=740,
+            min_size=(820, 580),
+            background_color="#0F0023",
+        )
+        webview_ok = True
+        webview.start(debug=False)
+    except Exception as e:
+        if not webview_ok:
+            print(f"  pywebview no disponible ({type(e).__name__}) — usando browser")
+        import webbrowser
+        webbrowser.open(url)
+        print(f"  Servidor activo en {url}  (Ctrl+C para salir)")
+        try:
+            server_thread.join()
+        except KeyboardInterrupt:
+            print("\n  Saliendo...")
+
+
+if __name__ == "__main__":
+    main()

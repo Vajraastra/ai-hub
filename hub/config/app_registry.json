@@ -35,6 +35,7 @@
             },
             "cuda_env_vars": { "torch_index": "TORCH_INDEX_URL", "torch_command": "TORCH_COMMAND" },
             "default_port": 7860,
+            "auto_open_browser": true,
             "extra_args": ["--uv"]
         },
         "ai-toolkit": {
@@ -58,6 +59,7 @@
             "output_map": { "method": "none" },
             "cuda_env_vars": { "torch_index": "PIP_EXTRA_INDEX_URL" },
             "default_port": 8675,
+            "auto_open_browser": true,
             "extra_args": []
         },
         "comfyui": {
@@ -86,6 +88,7 @@
             "output_map": { "method": "cli", "args": ["--output-directory"] },
             "cuda_env_vars": { "torch_index": "PIP_EXTRA_INDEX_URL" },
             "default_port": 8188,
+            "auto_open_browser": true,
             "extra_args": ["--use-pytorch-cross-attention"]
         },
         "taggui": {
@@ -127,6 +130,7 @@
             "model_map": {},
             "output_map": { "method": "none" },
             "default_port": 7861,
+            "auto_open_browser": true,
             "extra_args": []
         }
     },
