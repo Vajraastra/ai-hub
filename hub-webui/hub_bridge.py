@@ -588,6 +588,8 @@ class HubBridge:
                 backups_dir=os.path.join(_HUB_DIR, ".cache", "backups"),
                 cuda_env=cuda_env,
                 cuda_tag=hub_config.get("cuda", {}).get("tag", "cpu"),
+                app_config=app_cfg,
+                cuda_config=hub_config.get("cuda", {}),
                 logger=None
             )
 

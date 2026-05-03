@@ -59,18 +59,22 @@ def check_for_updates(app_dir: str, branch: str) -> dict:
 
 
 def update_app(app_dir: str, branch: str, backups_dir: str,
-               cuda_env: dict, cuda_tag: str, logger=None) -> dict:
+               cuda_env: dict, cuda_tag: str,
+               app_config: dict = None, cuda_config: dict = None,
+               logger=None) -> dict:
     """
-    Update an app: backup → git pull → verify CUDA → rollback if broken.
-    
+    Update an app: backup → git pull → install new deps → verify CUDA → rollback if broken.
+
     Args:
         app_dir: Path to the installed app
         branch: Git branch name
         backups_dir: Directory for backups
         cuda_env: CUDA environment overrides
         cuda_tag: Expected CUDA tag for verification
+        app_config: App registry entry (used to check install_deps)
+        cuda_config: CUDA config dict with index_url, torch_version, etc.
         logger: HubLogger instance
-    
+
     Returns:
         dict with update results
     """
@@ -132,7 +136,34 @@ def update_app(app_dir: str, branch: str, backups_dir: str,
     if logger:
         logger.info("update", f"Updated to: {result['new_commit'][:8]}")
 
-    # Step 4: Verify CUDA (if venv exists and torch is installed)
+    # Step 4: Install new/updated dependencies from requirements.txt
+    reqs_file = os.path.join(app_dir, "requirements.txt")
+    if app_config and app_config.get("install_deps", False) and os.path.isfile(reqs_file):
+        if logger:
+            logger.info("update", "Installing updated dependencies...")
+
+        uv = app_installer._get_uv_path()
+        env = app_installer._get_install_env()
+        env["VIRTUAL_ENV"] = os.path.join(app_dir, "venv")
+        env.update(cuda_env)
+
+        cmd = [uv, "pip", "install", "-r", reqs_file]
+        if cuda_config and cuda_config.get("index_url"):
+            cmd += ["--extra-index-url", cuda_config["index_url"]]
+
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, cwd=app_dir, env=env)
+            if proc.returncode == 0:
+                if logger:
+                    logger.success("update", "Dependencies updated.")
+            else:
+                if logger:
+                    logger.warn("update", f"Dependency update warning: {proc.stderr[-300:]}")
+        except (OSError, FileNotFoundError) as e:
+            if logger:
+                logger.warn("update", f"Could not update dependencies: {e}")
+
+    # Step 5: Verify CUDA (if venv exists and torch is installed)
     python_path = app_installer.get_app_python(app_dir)
     if os.path.exists(python_path):
         if logger:

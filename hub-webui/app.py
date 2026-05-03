@@ -263,22 +263,25 @@ def main():
 
     print(f"  Servidor listo en {url}")
 
+    import io, contextlib
+
     webview_ok = False
     try:
-        import webview
-        window = webview.create_window(
-            "AI Hub",
-            url,
-            width=1020,
-            height=740,
-            min_size=(820, 580),
-            background_color="#0F0023",
-        )
-        webview_ok = True
-        webview.start(debug=False)
-    except Exception as e:
+        with contextlib.redirect_stderr(io.StringIO()):
+            import webview
+            window = webview.create_window(
+                "AI Hub",
+                url,
+                width=1020,
+                height=740,
+                min_size=(820, 580),
+                background_color="#0F0023",
+            )
+            webview_ok = True
+            webview.start(debug=False)
+    except Exception:
         if not webview_ok:
-            print(f"  pywebview no disponible ({type(e).__name__}) — usando browser")
+            print("  pywebview: sin backend nativo disponible — usando browser")
         import webbrowser
         webbrowser.open(url)
         print(f"  Servidor activo en {url}  (Ctrl+C para salir)")
