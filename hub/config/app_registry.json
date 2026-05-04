@@ -80,9 +80,20 @@
                 "method": "yaml",
                 "filename": "extra_model_paths.yaml",
                 "mappings": {
-                    "checkpoints": "checkpoints", "loras": "loras", "vae": "vae", "controlnet": "controlnet",
-                    "embeddings": "embeddings", "upscale_models": "upscalers", "clip_vision": "clip_vision",
-                    "ipadapter": "ipadapter", "diffusion_models": "diffusion_models", "clip": "text_encoders"
+                    "checkpoints": "checkpoints",
+                    "loras": "loras",
+                    "vae": "vae",
+                    "vae_approx": "vae_approx",
+                    "controlnet": "controlnet",
+                    "embeddings": "embeddings",
+                    "upscale_models": "upscale_models",
+                    "clip_vision": "clip_vision",
+                    "ipadapter": "ipadapter",
+                    "diffusion_models": "diffusion_models",
+                    "clip": "clip",
+                    "style_models": "style_models",
+                    "hypernetworks": "hypernetworks",
+                    "ultralytics": "ultralytics"
                 }
             },
             "output_map": { "method": "cli", "args": ["--output-directory"] },

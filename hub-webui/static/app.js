@@ -284,6 +284,8 @@ async function loadSettings() {
     $("set-arch").textContent   = d.gpu?.arch      || "—";
     $("set-cuda").textContent   = d.cuda?.tag      || "—";
     $("set-torch").textContent  = d.cuda?.torch_version || "—";
+    // Limpiar estado previo de validación al recargar
+    _hidePathStatus();
   } catch {
     showToast("❌ Error cargando ajustes.");
   }
@@ -304,14 +306,165 @@ async function saveSettings() {
       }),
     });
     const data = await res.json();
-    if (data.ok) showToast("✅ Ajustes guardados.");
-    else showToast(`❌ ${data.error}`);
+    if (data.ok) showToast("Ajustes guardados.");
+    else showToast(`Error: ${data.error}`);
   } catch {
-    showToast("❌ Error guardando ajustes.");
+    showToast("Error guardando ajustes.");
   } finally {
     btn.disabled = false;
     btn.textContent = "Guardar cambios";
   }
+}
+
+// ── Models Path Validation Flow ──────────────────────────────────────────────
+
+function _hidePathStatus() {
+  const el = $("models-path-status");
+  if (el) { el.style.display = "none"; el.innerHTML = ""; }
+}
+
+function _showPathStatus(html) {
+  const el = $("models-path-status");
+  if (!el) return;
+  el.style.display = "block";
+  el.innerHTML = html;
+}
+
+async function validateModelsPath() {
+  const path = $("set-models-path").value.trim();
+  if (!path) { _hidePathStatus(); return; }
+
+  const btn = $("btn-validate-models-path");
+  btn.disabled = true;
+  btn.textContent = "Verificando...";
+
+  try {
+    const res  = await fetch("/api/settings/validate-models-path", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
+    });
+    const d = await res.json();
+    _renderPathStatus(d, path);
+  } catch {
+    _showPathStatus(`<div class="path-status error">Error al verificar el path.</div>`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Verificar";
+  }
+}
+
+function _renderPathStatus(d, path) {
+  if (d.state === "ok") {
+    _showPathStatus(`
+      <div class="path-status ok">
+        Directorio encontrado con estructura canónica completa.
+      </div>`);
+    return;
+  }
+
+  if (d.state === "not_found") {
+    _showPathStatus(`
+      <div class="path-status warn">
+        El directorio <code>${path}</code> no existe.
+        <div style="margin-top:8px">
+          <button class="btn btn-primary btn-sm" onclick="_createModelsPath('${_esc(path)}')">
+            Crear estructura canónica
+          </button>
+          <button class="btn btn-outline btn-sm" onclick="_hidePathStatus()">Cancelar</button>
+        </div>
+      </div>`);
+    return;
+  }
+
+  // State: "incomplete" or "empty"
+  let html = `<div class="path-status warn">`;
+  if (d.missing_dirs && d.missing_dirs.length) {
+    html += `<p>Faltan ${d.missing_dirs.length} carpeta(s) canónica(s):
+             <code>${d.missing_dirs.join(", ")}</code>.</p>
+             <p>Se añadirán automáticamente al guardar.</p>`;
+  }
+  if (d.orphan_count > 0) {
+    html += `<p style="margin-top:6px">Se detectaron <strong>${d.orphan_count}</strong>
+             modelo(s) fuera del árbol canónico.</p>`;
+    if (d.orphan_preview && d.orphan_preview.length) {
+      const previews = d.orphan_preview.map(p => `<li><code>${p}</code></li>`).join("");
+      html += `<ul style="margin:4px 0 8px 16px;font-size:11px;color:#aaa">${previews}</ul>`;
+    }
+    html += `<div style="margin-top:8px">
+      <button class="btn btn-primary btn-sm" onclick="_reorganizeOrphans('${_esc(path)}')">
+        Mover a Inbox para organizar
+      </button>
+      <button class="btn btn-outline btn-sm" onclick="_hidePathStatus()">Ignorar por ahora</button>
+    </div>`;
+  } else {
+    html += `<div style="margin-top:8px">
+      <button class="btn btn-primary btn-sm" onclick="_applyModelsPath('${_esc(path)}', false)">
+        Aplicar y añadir carpetas faltantes
+      </button>
+    </div>`;
+  }
+  html += `</div>`;
+  _showPathStatus(html);
+}
+
+async function _createModelsPath(path) {
+  const res  = await fetch("/api/settings/apply-models-path", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, create_if_missing: true }),
+  });
+  const d = await res.json();
+  if (d.ok) {
+    _showPathStatus(`<div class="path-status ok">
+      Directorio creado con ${d.missing_added.length} carpeta(s) canónica(s).
+      Guarda los ajustes para activar el cambio.
+    </div>`);
+  } else {
+    _showPathStatus(`<div class="path-status error">Error: ${d.error}</div>`);
+  }
+}
+
+async function _applyModelsPath(path, createIfMissing) {
+  const res = await fetch("/api/settings/apply-models-path", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, create_if_missing: createIfMissing }),
+  });
+  const d = await res.json();
+  if (d.ok) {
+    const msg = d.missing_added.length
+      ? `${d.missing_added.length} carpeta(s) añadida(s). Guarda los ajustes para activar.`
+      : "Estructura canónica completa. Guarda los ajustes para activar.";
+    _showPathStatus(`<div class="path-status ok">${msg}</div>`);
+  } else {
+    _showPathStatus(`<div class="path-status error">Error: ${d.error}</div>`);
+  }
+}
+
+async function _reorganizeOrphans(path) {
+  _showPathStatus(`<div class="path-status warn">Moviendo modelos a Inbox...</div>`);
+  const res = await fetch("/api/settings/reorganize-orphans", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path }),
+  });
+  const d = await res.json();
+  if (d.errors && d.errors.length) {
+    _showPathStatus(`<div class="path-status warn">
+      Movidos: ${d.moved} | Saltados: ${d.skipped}<br>
+      Errores: ${d.errors.slice(0, 3).join(", ")}
+    </div>`);
+  } else {
+    _showPathStatus(`<div class="path-status ok">
+      ${d.moved} modelo(s) movidos a _inbox/.
+      Abre la tab Inbox en Model Vault para clasificarlos.
+    </div>`);
+  }
+}
+
+function _esc(s) {
+  return s.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -531,6 +684,9 @@ document.addEventListener("DOMContentLoaded", () => {
   // Settings
   $("btn-save-settings").addEventListener("click", saveSettings);
   $("btn-reload-settings").addEventListener("click", loadSettings);
+  $("btn-validate-models-path").addEventListener("click", validateModelsPath);
+  // Limpiar estado de validación cuando el usuario modifica el campo manualmente
+  $("set-models-path").addEventListener("input", _hidePathStatus);
   $("btn-refresh-log").addEventListener("click", loadEventLog);
 
   // Modal

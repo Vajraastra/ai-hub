@@ -96,6 +96,15 @@ class AppConfigPayload(BaseModel):
     free_args: str = ""
 
 
+class ValidatePathPayload(BaseModel):
+    path: str = ""
+
+
+class ApplyPathPayload(BaseModel):
+    path: str = ""
+    create_if_missing: bool = False
+
+
 # ── Rutas estáticas ──────────────────────────────────────────────────────────
 @api.get("/")
 async def index():
@@ -180,6 +189,22 @@ async def save_settings(payload: HubSettingsPayload):
         payload.outputs_path,
         payload.civitai_key,
     )
+
+
+# ── Models Path Management ───────────────────────────────────────────────────
+@api.post("/api/settings/validate-models-path")
+async def validate_models_path(payload: ValidatePathPayload):
+    return bridge.validate_models_path(payload.path)
+
+
+@api.post("/api/settings/apply-models-path")
+async def apply_models_path(payload: ApplyPathPayload):
+    return bridge.apply_models_path(payload.path, payload.create_if_missing)
+
+
+@api.post("/api/settings/reorganize-orphans")
+async def reorganize_orphans(payload: ValidatePathPayload):
+    return bridge.reorganize_orphans(payload.path)
 
 
 # ── Event Log ─────────────────────────────────────────────────────────────────

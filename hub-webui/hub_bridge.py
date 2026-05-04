@@ -67,6 +67,37 @@ class HubBridge:
         self._state = _state
         self._on_state_changed_handlers: list = []
         self._on_log_handlers: list = []
+        self._run_startup_sync()
+
+    # ── Startup sync ────────────────────────────────────────────────────
+
+    def _run_startup_sync(self):
+        """Al arrancar el hub, regenera configs de rutas para todas las apps."""
+        try:
+            from modules.model_organizer import sync_all_app_configs, sync_krita_priority
+
+            with open(self._state.config_file, "r") as f:
+                hub_config = json.load(f)
+
+            with open(os.path.join(_HUB_DIR, "config", "app_registry.json"), "r") as f:
+                registry = json.load(f)
+
+            apps_dir = os.path.join(_ROOT_DIR, "apps")
+            sync_all_app_configs(
+                hub_config, registry,
+                self._state.installed_apps, apps_dir
+            )
+
+            models_dir = hub_config.get("paths", {}).get("models", "")
+            if models_dir and os.path.isdir(models_dir):
+                from modules.storage_manager import create_model_dirs
+                create_model_dirs(models_dir)  # garantizar árbol canónico al arrancar
+                sync_krita_priority(models_dir)
+
+        except Exception as e:
+            import traceback
+            print(f"[model_organizer] Error en startup sync: {e}")
+            traceback.print_exc()
 
     # ── Registro de handlers ────────────────────────────────────────────
 
@@ -162,9 +193,77 @@ class HubBridge:
                 outputs_dir = outputs_path or None,
             )
             self._state.set_civitai_key(civitai_key)
+
+            # Si la ruta de modelos es válida, garantizar árbol canónico ComfyUI
+            if models_path and os.path.isdir(models_path):
+                from modules.storage_manager import create_model_dirs
+                create_model_dirs(models_path)
+
             return {"ok": True}
         except Exception as e:
             return {"ok": False, "error": str(e)}
+
+    def validate_models_path(self, path: str) -> dict:
+        """
+        Analiza el estado de un directorio de modelos candidato.
+        Llamado en tiempo real mientras el usuario escribe o al salir del campo.
+        """
+        try:
+            from modules.model_organizer import check_models_path
+            return check_models_path(path)
+        except Exception as e:
+            return {"state": "error", "error": str(e),
+                    "missing_dirs": [], "orphan_count": 0, "orphan_preview": []}
+
+    def apply_models_path(self, path: str, create_if_missing: bool = False) -> dict:
+        """
+        Aplica un nuevo models_path:
+        - Si no existe y create_if_missing=True: crea el directorio + árbol canónico.
+        - Si existe: añade las carpetas que falten silenciosamente.
+        - Persiste el path en hub_config.
+        Returns: {"ok": bool, "created": bool, "missing_added": list, "error": str}
+        """
+        try:
+            from modules.storage_manager import create_model_dirs, DEFAULT_MODEL_SUBDIRS
+            from modules.model_organizer import check_models_path
+
+            if not path:
+                return {"ok": False, "error": "Path vacío"}
+
+            created = False
+            if not os.path.exists(path):
+                if not create_if_missing:
+                    return {"ok": False, "error": "Directorio no encontrado"}
+                os.makedirs(path, exist_ok=True)
+                created = True
+
+            # Detectar qué faltaba antes de crear
+            missing_before = [d for d in DEFAULT_MODEL_SUBDIRS
+                              if not os.path.isdir(os.path.join(path, d))]
+
+            create_model_dirs(path)
+
+            # Persiste en hub_config
+            self._state.set_paths(models_dir=path)
+
+            return {
+                "ok": True,
+                "created": created,
+                "missing_added": missing_before,
+            }
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def reorganize_orphans(self, models_path: str) -> dict:
+        """
+        Mueve archivos de modelo fuera del árbol canónico a _inbox/.
+        Incluye sidecars (.json, .preview.*) del mismo modelo.
+        """
+        try:
+            from modules.model_organizer import move_orphans_to_inbox
+            return move_orphans_to_inbox(models_path)
+        except Exception as e:
+            return {"moved": 0, "skipped": 0, "errors": [str(e)]}
 
     # ── Event Log ───────────────────────────────────────────────────────
 

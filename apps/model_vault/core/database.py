@@ -68,8 +68,11 @@ class VaultDatabase:
             if "date_added" not in columns:
                 print("[db] Migrando base de datos: Añadiendo columna 'date_added'...")
                 conn.execute("ALTER TABLE models ADD COLUMN date_added TIMESTAMP DEFAULT '2020-01-01 00:00:00'")
-                # Update existing rows to current time immediately after adding the column
                 conn.execute("UPDATE models SET date_added = CURRENT_TIMESTAMP WHERE date_added = '2020-01-01 00:00:00'")
+
+            if "civitai_tags" not in columns:
+                print("[db] Migrando base de datos: Añadiendo columna 'civitai_tags'...")
+                conn.execute("ALTER TABLE models ADD COLUMN civitai_tags TEXT")
             
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS scan_folders (

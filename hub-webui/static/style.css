@@ -257,6 +257,19 @@ html, body { height: 100%; background: var(--bg-base); color: var(--text-primary
 .info-grid .val { color:var(--accent-cyan); font-family:var(--font-mono); }
 .settings-actions { display:flex; gap:10px; }
 
+/* ── Path status feedback ───────────────────────────────────────────────── */
+.path-status { padding:10px 14px; border-radius:var(--radius-md); font-size:12px;
+  line-height:1.6; }
+.path-status.ok   { background:rgba(0,200,80,.12); border:1px solid rgba(0,200,80,.35);
+  color:#7fe8a0; }
+.path-status.warn { background:rgba(240,160,0,.10); border:1px solid rgba(240,160,0,.35);
+  color:#f0d080; }
+.path-status.error{ background:rgba(220,50,50,.12); border:1px solid rgba(220,50,50,.35);
+  color:#f08080; }
+.path-status code { background:rgba(255,255,255,.08); padding:1px 5px;
+  border-radius:3px; font-family:var(--font-mono); font-size:11px; }
+.btn-sm { padding:4px 12px !important; font-size:11px !important; }
+
 /* ── Log Tab ────────────────────────────────────────────────────────────── */
 #log-area { display:flex; flex-direction:column; flex:1; overflow:hidden; padding:0; }
 #log-toolbar { display:flex; align-items:center; gap:10px; padding:12px 20px;

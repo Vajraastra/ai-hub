@@ -18,19 +18,23 @@ _CONFIG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "co
 _CATEGORIES_FILE = os.path.join(_CONFIG_DIR, "model_categories.json")
 
 
-# Hub's recommended structure (created for new users)
+# Hub's recommended structure — canonical ComfyUI names
 DEFAULT_MODEL_SUBDIRS = [
     "checkpoints",
     "loras",
     "vae",
-    "text_encoders",
+    "vae_approx",
+    "clip",
+    "clip_vision",
     "embeddings",
     "controlnet",
-    "upscalers",
-    "clip_vision",
     "ipadapter",
     "diffusion_models",
+    "upscale_models",
     "style_models",
+    "hypernetworks",
+    "ultralytics",
+    "_inbox",
 ]
 
 # Output subdirectories
@@ -156,10 +160,13 @@ def build_app_model_args(app_config: dict, models_dir: str, app_dir: str = "") -
             category_aliases = set(
                 categories.get(hub_category, {}).get("aliases", [hub_category])
             )
-            # Find which of those folders actually exist and have model files
+            # Find which of those folders actually exist and have model files.
+            # Symlinks se saltan — apuntan al canónico que ya se incluirá.
             found_folders = []
             try:
                 for entry in os.scandir(models_dir):
+                    if entry.is_symlink():
+                        continue
                     if not entry.is_dir():
                         continue
                     if entry.name not in category_aliases:
@@ -213,6 +220,8 @@ def build_app_model_args(app_config: dict, models_dir: str, app_dir: str = "") -
 
     for subdir_name in subdirs:
         subdir_path = os.path.join(models_dir, subdir_name)
+        if os.path.islink(subdir_path):
+            continue  # skip symlinks — only use canonical dirs
         if not os.path.isdir(subdir_path):
             continue
 
@@ -316,6 +325,8 @@ def scan_model_dirs(models_dir: str) -> list:
 
     for subdir_name in subdirs:
         subdir_path = os.path.join(models_dir, subdir_name)
+        if os.path.islink(subdir_path):
+            continue  # skip symlinks — only canonical dirs
         if not os.path.isdir(subdir_path):
             continue
 

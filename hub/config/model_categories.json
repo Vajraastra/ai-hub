@@ -28,13 +28,20 @@
                 "VAE"
             ]
         },
-        "text_encoders": {
-            "description": "Text encoder models (CLIP, T5)",
+        "vae_approx": {
+            "description": "Approximate VAE decoders (preview thumbnails)",
             "aliases": [
+                "vae_approx",
+                "ApproxVAE"
+            ]
+        },
+        "clip": {
+            "description": "Text encoder models (CLIP, T5, Qwen)",
+            "aliases": [
+                "clip",
                 "text_encoders",
                 "TextEncoders",
-                "text_encoder",
-                "clip"
+                "text_encoder"
             ]
         },
         "embeddings": {
@@ -53,15 +60,17 @@
                 "T2IAdapter"
             ]
         },
-        "upscalers": {
-            "description": "Upscaler models (ESRGAN, RealESRGAN, SwinIR)",
+        "upscale_models": {
+            "description": "Upscaler models (ESRGAN, RealESRGAN, SwinIR, HAT)",
             "aliases": [
+                "upscale_models",
                 "upscalers",
                 "ESRGAN",
                 "RealESRGAN",
                 "SwinIR",
                 "BSRGAN",
-                "upscale_models"
+                "ScuNET",
+                "LDSR"
             ]
         },
         "clip_vision": {
@@ -81,7 +90,7 @@
             ]
         },
         "diffusion_models": {
-            "description": "Standalone diffusion / UNET models",
+            "description": "Standalone diffusion / UNET models (Flux, Wan, etc.)",
             "aliases": [
                 "diffusion_models",
                 "DiffusionModels",
@@ -91,9 +100,23 @@
             ]
         },
         "style_models": {
-            "description": "Style models",
+            "description": "Style models (Redux)",
             "aliases": [
                 "style_models"
+            ]
+        },
+        "hypernetworks": {
+            "description": "Hypernetwork models",
+            "aliases": [
+                "hypernetworks",
+                "Hypernetwork"
+            ]
+        },
+        "ultralytics": {
+            "description": "Ultralytics YOLO models (face/person detection for ADetailer)",
+            "aliases": [
+                "ultralytics",
+                "Ultralytics"
             ]
         }
     }

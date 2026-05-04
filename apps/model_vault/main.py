@@ -24,12 +24,15 @@ class UIWorkerSignals(QObject):
 class ModelVaultWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        
+
         # Paths
         self.script_dir = os.path.dirname(os.path.abspath(__file__))
         self.root_dir = os.path.dirname(os.path.dirname(self.script_dir))
         self.db_path = os.path.join(self.root_dir, "hub", ".cache", "model_vault.db")
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+
+        # Resolve models_dir from hub_config (never hardcode paths)
+        self.models_dir = self._resolve_models_dir()
         
         # Service
         # Try to get API key from Hub State if available
@@ -61,6 +64,28 @@ class ModelVaultWidget(QWidget):
 
         # API Check
         QTimer.singleShot(2000, self._check_api_status)
+
+    def _resolve_models_dir(self) -> str:
+        """Lee paths.models desde hub_config.json; crea la estructura canónica si falta."""
+        hub_config_path = os.path.join(self.root_dir, "hub", "hub_config.json")
+        models_dir = ""
+        try:
+            import json as _json
+            with open(hub_config_path, "r", encoding="utf-8") as f:
+                cfg = _json.load(f)
+            models_dir = cfg.get("paths", {}).get("models", "")
+        except Exception:
+            pass
+
+        if models_dir and os.path.isdir(models_dir):
+            # Ensure canonical folder tree exists
+            try:
+                sys.path.insert(0, os.path.join(self.root_dir, "hub", "modules"))
+                from storage_manager import create_model_dirs
+                create_model_dirs(models_dir)
+            except Exception:
+                pass
+        return models_dir
 
     def _check_api_status(self):
         def _target():
@@ -256,17 +281,10 @@ class ModelVaultWidget(QWidget):
     def run_scan(self, deep=False):
         def _target():
             try:
-                scan_dirs = [
-                    "/run/media/system/Kilaya/Models/Lora/",
-                    "/run/media/system/Kilaya/Models/StableDiffusion/",
-                    "/run/media/system/Kilaya/Models/checkpoints/"
-                ]
-                
                 from core.scanner import scan_models
                 all_discovered = []
-                for d in scan_dirs:
-                    if os.path.exists(d):
-                        all_discovered.extend(scan_models(d))
+                if self.models_dir and os.path.isdir(self.models_dir):
+                    all_discovered.extend(scan_models(self.models_dir))
                 
                 def progress_cb(c, t, n):
                     self.signals.progress.emit(c, t, n)
@@ -404,15 +422,350 @@ class ModelVaultWidget(QWidget):
         self._load_models(filter_cat=active_cat, search_query=search_text)
 
 
+class InboxWidget(QWidget):
+    """
+    Tab Inbox: escanea _inbox/, clasifica cada modelo por header + Civitai,
+    sugiere destino y permite al usuario colocarlo en la carpeta correcta.
+    """
+
+    def __init__(self, vault_service, models_dir: str, parent=None):
+        super().__init__(parent)
+        self.vault    = vault_service
+        self.models_dir = models_dir
+        self._items: list = []   # lista de InboxItem
+        self._signals = UIWorkerSignals()
+        self._signals.finished.connect(self._on_scan_done)
+        self._signals.error.connect(self._on_error)
+        self._build_ui()
+
+    # ── UI ───────────────────────────────────────────────────────────────────
+
+    def _build_ui(self):
+        self.setObjectName("inbox_root")
+        self.setStyleSheet("""
+            QWidget#inbox_root { background-color: #0F0023; color: #e0e0ff; }
+            QLabel  { color: #e0e0ff; }
+            QTableWidget {
+                background: #120030; color: #e0e0ff;
+                border: 1px solid #3D1B7B; gridline-color: #2A0060;
+                selection-background-color: #3D1B7B;
+            }
+            QTableWidget::item { padding: 6px; }
+            QHeaderView::section {
+                background: #1A0040; color: #54EFEA;
+                border: none; padding: 6px; font-weight: bold;
+            }
+            QPushButton#primary_btn {
+                background-color: #600DB5; color: white; font-weight: bold;
+                border-radius: 4px; padding: 8px 16px;
+            }
+            QPushButton#primary_btn:hover { background-color: #7B1FD4; }
+            QPushButton#place_btn {
+                background-color: #1A6B3A; color: white; font-weight: bold;
+                border-radius: 3px; padding: 4px 12px;
+            }
+            QPushButton#place_btn:hover  { background-color: #228B4A; }
+            QPushButton#ignore_btn {
+                background-color: #3A1A1A; color: #aaa;
+                border-radius: 3px; padding: 4px 12px;
+            }
+            QPushButton#ignore_btn:hover { background-color: #5A2A2A; }
+            QComboBox, QLineEdit {
+                background: #1A0040; color: #54EFEA;
+                border: 1px solid #3D1B7B; border-radius: 3px; padding: 3px 8px;
+            }
+            QProgressBar {
+                background: #1A0040; border: 1px solid #3D1B7B;
+                border-radius: 4px; text-align: center; color: white;
+            }
+            QProgressBar::chunk { background-color: #600DB5; }
+        """)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(20, 20, 20, 20)
+        root.setSpacing(12)
+
+        # ── Barra superior ────────────────────────────────────────────────
+        top = QHBoxLayout()
+        title = QLabel("Inbox — Modelos sin clasificar")
+        title.setStyleSheet("font-size: 16px; font-weight: bold; color: #54EFEA;")
+        top.addWidget(title)
+        top.addStretch()
+
+        inbox_path = os.path.join(self.models_dir, "_inbox")
+        hint = QLabel(f"Carpeta: {inbox_path}")
+        hint.setStyleSheet("color: #666; font-size: 11px;")
+        top.addWidget(hint)
+
+        self._scan_btn = QPushButton("Escanear Inbox")
+        self._scan_btn.setObjectName("primary_btn")
+        self._scan_btn.clicked.connect(self._run_scan)
+        top.addWidget(self._scan_btn)
+
+        root.addLayout(top)
+
+        # ── Barra de progreso ─────────────────────────────────────────────
+        self._progress = QProgressBar()
+        self._progress.setVisible(False)
+        root.addWidget(self._progress)
+
+        # ── Tabla ─────────────────────────────────────────────────────────
+        self._table = QTableWidget(0, 7)
+        self._table.setHorizontalHeaderLabels([
+            "Archivo", "Tipo", "Arquitectura", "Confianza",
+            "Nombre Civitai", "Destino", "Acción",
+        ])
+        self._table.horizontalHeader().setStretchLastSection(False)
+        self._table.setColumnWidth(0, 220)
+        self._table.setColumnWidth(1, 100)
+        self._table.setColumnWidth(2, 140)
+        self._table.setColumnWidth(3, 80)
+        self._table.setColumnWidth(4, 180)
+        self._table.setColumnWidth(5, 240)
+        self._table.setColumnWidth(6, 130)
+        self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._table.verticalHeader().setVisible(False)
+        root.addWidget(self._table)
+
+        # ── Status bar ────────────────────────────────────────────────────
+        self._status = QLabel("Pulsa 'Escanear Inbox' para buscar modelos nuevos.")
+        self._status.setStyleSheet("color: #888; font-size: 11px;")
+        root.addWidget(self._status)
+
+    # ── Escaneo ──────────────────────────────────────────────────────────────
+
+    def _run_scan(self):
+        from core.model_placer import ensure_inbox_dir
+        ensure_inbox_dir(self.models_dir)
+
+        self._scan_btn.setEnabled(False)
+        self._progress.setVisible(True)
+        self._progress.setRange(0, 0)
+        self._status.setText("Escaneando _inbox/ …")
+        self._items.clear()
+        self._table.setRowCount(0)
+
+        threading.Thread(target=self._scan_thread, daemon=True).start()
+
+    def _scan_thread(self):
+        try:
+            from core.model_placer import scan_inbox, classify_inbox_file
+            from core.hasher import calculate_sha256
+
+            files = scan_inbox(self.models_dir)
+            results = []
+            for i, fp in enumerate(files):
+                item = classify_inbox_file(
+                    fp,
+                    civitai_client=self.vault.client,
+                    hasher=calculate_sha256,
+                )
+                results.append(item)
+
+            self._items = results
+            self._signals.finished.emit(len(results))
+        except Exception as e:
+            self._signals.error.emit(str(e))
+
+    def _on_scan_done(self, count: int):
+        self._scan_btn.setEnabled(True)
+        self._progress.setVisible(False)
+        self._populate_table()
+        if count == 0:
+            self._status.setText("Inbox vacío. Descarga modelos en la carpeta _inbox/ para clasificarlos.")
+        else:
+            self._status.setText(f"{count} archivo(s) encontrado(s). Revisa el destino y pulsa 'Colocar'.")
+
+    def _on_error(self, msg: str):
+        from PySide6.QtWidgets import QMessageBox
+        self._scan_btn.setEnabled(True)
+        self._progress.setVisible(False)
+        QMessageBox.critical(self, "Error", msg)
+
+    # ── Tabla ─────────────────────────────────────────────────────────────────
+
+    def _populate_table(self):
+        from PySide6.QtWidgets import QComboBox
+        from core.model_placer import get_existing_subfolders, build_dest_display
+
+        self._table.setRowCount(len(self._items))
+
+        for row, item in enumerate(self._items):
+            self._table.setRowHeight(row, 44)
+
+            # Columna 0: nombre archivo
+            name_lbl = QLabel(f" {item.filename}")
+            name_lbl.setStyleSheet("color: #cce; padding: 4px;")
+            name_lbl.setToolTip(item.file_path)
+            self._table.setCellWidget(row, 0, name_lbl)
+
+            # Columna 1: tipo detectado
+            type_color = {
+                "lora": "#EC00F0", "checkpoint": "#54EFEA",
+                "vae": "#F0A000", "controlnet": "#50E0A0",
+                "clip": "#80C0FF", "diffusion_model": "#FF8060",
+                "upscaler": "#C0C000", "ipadapter": "#E080FF",
+                "embedding": "#90FF90",
+            }.get(item.model_type, "#888")
+            type_lbl = QLabel(f" {item.model_type}")
+            type_lbl.setStyleSheet(f"color: {type_color}; font-weight: bold; padding: 4px;")
+            self._table.setCellWidget(row, 1, type_lbl)
+
+            # Columna 2: arquitectura
+            arch_lbl = QLabel(f" {item.arch}")
+            arch_lbl.setStyleSheet("color: #aaa; padding: 4px;")
+            self._table.setCellWidget(row, 2, arch_lbl)
+
+            # Columna 3: confianza
+            pct = int(item.confidence * 100)
+            src_icon = {"header": "H", "civitai": "C", "extension": "E"}.get(item.classify_source, "?")
+            conf_lbl = QLabel(f" {pct}% [{src_icon}]")
+            conf_color = "#54EFEA" if pct >= 80 else "#F0A000" if pct >= 50 else "#FF6060"
+            conf_lbl.setStyleSheet(f"color: {conf_color}; padding: 4px;")
+            self._table.setCellWidget(row, 3, conf_lbl)
+
+            # Columna 4: nombre Civitai
+            civ_name = item.civitai_name or "—"
+            civ_lbl = QLabel(f" {civ_name}")
+            civ_lbl.setStyleSheet("color: #888; padding: 4px;")
+            civ_lbl.setToolTip(", ".join(item.civitai_tags) if item.civitai_tags else "Sin tags")
+            self._table.setCellWidget(row, 4, civ_lbl)
+
+            # Columna 5: destino (categoría / subcarpeta editables)
+            dest_widget = QWidget()
+            dest_layout = QHBoxLayout(dest_widget)
+            dest_layout.setContentsMargins(4, 2, 4, 2)
+            dest_layout.setSpacing(4)
+
+            cat_combo = QComboBox()
+            CATEGORIES = [
+                "checkpoints", "loras", "vae", "vae_approx", "controlnet",
+                "embeddings", "clip", "clip_vision", "diffusion_models",
+                "ipadapter", "upscale_models", "hypernetworks", "ultralytics",
+            ]
+            cat_combo.addItems(CATEGORIES)
+            idx = CATEGORIES.index(item.suggested_category) if item.suggested_category in CATEGORIES else 0
+            cat_combo.setCurrentIndex(idx)
+            cat_combo.setFixedWidth(130)
+
+            sub_combo = QComboBox()
+            sub_combo.setEditable(True)
+            sub_combo.addItem("")  # raíz
+            sub_combo.addItems(get_existing_subfolders(self.models_dir, item.suggested_category))
+            sub_combo.setCurrentText(item.suggested_subfolder)
+            sub_combo.setFixedWidth(100)
+
+            # Actualizar subcarpetas cuando cambia la categoría
+            def _on_cat_changed(text, sc=sub_combo):
+                sc.clear()
+                sc.addItem("")
+                sc.addItems(get_existing_subfolders(self.models_dir, text))
+
+            cat_combo.currentTextChanged.connect(_on_cat_changed)
+
+            dest_layout.addWidget(cat_combo)
+            dest_layout.addWidget(QLabel("/"))
+            dest_layout.addWidget(sub_combo)
+            self._table.setCellWidget(row, 5, dest_widget)
+
+            # Guardar referencias para la acción
+            item._cat_combo = cat_combo
+            item._sub_combo = sub_combo
+
+            # Columna 6: botones acción
+            btn_widget = QWidget()
+            btn_layout = QHBoxLayout(btn_widget)
+            btn_layout.setContentsMargins(4, 2, 4, 2)
+            btn_layout.setSpacing(4)
+
+            place_btn = QPushButton("Colocar")
+            place_btn.setObjectName("place_btn")
+            place_btn.clicked.connect(lambda checked, r=row: self._place_item(r))
+
+            ignore_btn = QPushButton("Ignorar")
+            ignore_btn.setObjectName("ignore_btn")
+            ignore_btn.clicked.connect(lambda checked, r=row: self._ignore_item(r))
+
+            btn_layout.addWidget(place_btn)
+            btn_layout.addWidget(ignore_btn)
+            self._table.setCellWidget(row, 6, btn_widget)
+
+    # ── Acciones ──────────────────────────────────────────────────────────────
+
+    def _place_item(self, row: int):
+        from core.model_placer import place_model
+        from PySide6.QtWidgets import QMessageBox
+
+        if row >= len(self._items):
+            return
+        item = self._items[row]
+
+        category  = item._cat_combo.currentText()
+        subfolder = item._sub_combo.currentText().strip()
+
+        result = place_model(item, self.models_dir,
+                             category_override=category,
+                             subfolder_override=subfolder)
+        if result["ok"]:
+            item.status = "placed"
+            self._table.hideRow(row)
+            remaining = sum(1 for i in self._items if i.status == "pending")
+            self._status.setText(f"Colocado en: {result['dest']}   —   {remaining} pendiente(s).")
+
+            # Registrar en DB del vault
+            threading.Thread(
+                target=self._sync_placed, args=(result["dest"],), daemon=True
+            ).start()
+        else:
+            QMessageBox.warning(self, "Error al colocar", result["error"])
+
+    def _ignore_item(self, row: int):
+        if row < len(self._items):
+            self._items[row].status = "ignored"
+        self._table.hideRow(row)
+        remaining = sum(1 for i in self._items if i.status == "pending")
+        self._status.setText(f"{remaining} pendiente(s).")
+
+    def _sync_placed(self, file_path: str):
+        """Sincroniza el modelo recién colocado con Civitai en background."""
+        try:
+            from core.hasher import calculate_sha256
+            file_hash = calculate_sha256(file_path)
+            if file_hash:
+                self.vault.sync_model(file_path, file_hash)
+        except Exception:
+            pass
+
+
 class ModelVaultMainWindow(QMainWindow):
-    """Standalone window wrapper for the widget."""
+    """Standalone window wrapper con tabs: Vault + Inbox."""
     def __init__(self):
         super().__init__()
         self.setWindowTitle("AI Hub — Model Vault")
-        # Adjusting default size to comfortably fit 3 columns + sidebar
-        self.resize(1200, 850)
-        self.widget = ModelVaultWidget(self)
-        self.setCentralWidget(self.widget)
+        self.resize(1300, 850)
+
+        from PySide6.QtWidgets import QTabWidget
+
+        tabs = QTabWidget()
+        tabs.setStyleSheet("""
+            QTabWidget::pane  { border: 1px solid #3D1B7B; background: #0F0023; }
+            QTabBar::tab {
+                background: #1A0040; color: #888aaa;
+                padding: 8px 20px; border: none;
+            }
+            QTabBar::tab:selected { background: #3D1B7B; color: #54EFEA; font-weight: bold; }
+            QTabBar::tab:hover:!selected { background: #250050; }
+        """)
+
+        self.vault_widget = ModelVaultWidget()
+        tabs.addTab(self.vault_widget, "Vault")
+
+        # models_dir ya fue resuelto desde hub_config por ModelVaultWidget
+        self.inbox_widget = InboxWidget(self.vault_widget.vault, self.vault_widget.models_dir)
+        tabs.addTab(self.inbox_widget, "Inbox")
+
+        self.setCentralWidget(tabs)
 
 def main():
     app = QApplication(sys.argv)

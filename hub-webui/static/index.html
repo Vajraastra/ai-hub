@@ -105,8 +105,13 @@
         <p class="settings-section-title">Rutas</p>
         <div class="field">
           <label>Directorio de Modelos</label>
-          <input type="text" id="set-models-path" placeholder="/ruta/a/modelos">
+          <div style="display:flex;gap:8px;align-items:center;">
+            <input type="text" id="set-models-path" placeholder="/ruta/a/modelos" style="flex:1">
+            <button class="btn btn-outline" id="btn-validate-models-path" style="white-space:nowrap">Verificar</button>
+          </div>
           <span class="field-hint">Ruta donde están almacenados los checkpoints, LoRAs, VAEs, etc.</span>
+          <!-- Área de estado del path — se muestra solo cuando hay algo que reportar -->
+          <div id="models-path-status" style="display:none;margin-top:10px;"></div>
         </div>
         <div class="field">
           <label>Directorio de Salidas</label>

@@ -162,7 +162,13 @@ cython_debug/
 # =========================
 # AI Hub Specific Ignores
 # =========================
-apps/
+BITACORA.md
+TASKS.md
+HANDOFF.md
+scripts/
+apps/*
+!apps/model_vault/
+!apps/lora_merger/
 models/
 outputs/
 backups/
