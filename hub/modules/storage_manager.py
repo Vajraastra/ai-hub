@@ -177,10 +177,9 @@ def build_app_model_args(app_config: dict, models_dir: str, app_dir: str = "") -
                         continue
                     if entry.name not in category_aliases:
                         continue
-                    # Only include if folder contains at least one file (skip empty placeholders)
-                    has_files = any(
-                        f.is_file() for f in os.scandir(entry.path)
-                    )
+                    # Include if folder contains at least one file at any depth
+                    # (e.g. ultralytics keeps models in bbox/ subdirs)
+                    has_files = any(files for _, _, files in os.walk(entry.path))
                     if has_files:
                         found_folders.append(entry.name)
             except OSError:
