@@ -93,7 +93,13 @@
                     "clip": "clip",
                     "style_models": "style_models",
                     "hypernetworks": "hypernetworks",
-                    "ultralytics": "ultralytics"
+                    "ultralytics": "ultralytics",
+                    "inpaint": "inpaint",
+                    "model_patches": "model_patches",
+                    "gligen": "gligen",
+                    "sams": "sams",
+                    "photomaker": "photomaker",
+                    "classifiers": "classifiers"
                 }
             },
             "output_map": { "method": "cli", "args": ["--output-directory"] },
@@ -153,9 +159,8 @@
             "type": "utility",
             "is_internal": true,
             "is_utility": true,
-            "launch_type": "standalone",
-            "launch_script": "apps/model_vault/run_vault.sh",
-            "launch_script_win": "apps/model_vault/run_vault.bat",
+            "launch_type": "web",
+            "web_path": "/vault",
             "icon": "📦"
         }
     }

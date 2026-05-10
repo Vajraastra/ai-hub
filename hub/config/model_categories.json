@@ -116,7 +116,52 @@
             "description": "Ultralytics YOLO models (face/person detection for ADetailer)",
             "aliases": [
                 "ultralytics",
-                "Ultralytics"
+                "Ultralytics",
+                "AfterDetailer"
+            ]
+        },
+        "inpaint": {
+            "description": "Inpainting models (Fooocus Inpaint, MAT, ControlNet Inpaint)",
+            "aliases": [
+                "inpaint",
+                "Inpaint"
+            ]
+        },
+        "model_patches": {
+            "description": "Model patches (ControlNet Universal, Unblur, etc.)",
+            "aliases": [
+                "model_patches",
+                "Model_patches",
+                "ModelPatches"
+            ]
+        },
+        "gligen": {
+            "description": "GLIGEN grounded generation models",
+            "aliases": [
+                "gligen",
+                "GLIGEN"
+            ]
+        },
+        "sams": {
+            "description": "Segment Anything Model (SAM) weights",
+            "aliases": [
+                "sams",
+                "Sams",
+                "SAM"
+            ]
+        },
+        "photomaker": {
+            "description": "PhotoMaker identity-preserving models",
+            "aliases": [
+                "photomaker",
+                "PhotoMaker"
+            ]
+        },
+        "classifiers": {
+            "description": "Classifier models (aesthetic scoring, NSFW detection, etc.)",
+            "aliases": [
+                "classifiers",
+                "Classifiers"
             ]
         }
     }

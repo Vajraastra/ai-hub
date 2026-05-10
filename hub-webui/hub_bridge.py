@@ -431,38 +431,6 @@ class HubBridge:
             "clean":  not lines,
         }
 
-    # ── Herramientas externas ────────────────────────────────────────────
-
-    def launch_tool(self, tool_id: str) -> dict:
-        """Lanza Model Vault o LoRA Merger como ventana independiente."""
-        try:
-            if tool_id == "model-vault":
-                script = os.path.join(_ROOT_DIR, "apps", "model_vault", "run_vault.sh")
-                if os.path.isfile(script):
-                    subprocess.Popen(["bash", script], start_new_session=True)
-                    return {"ok": True}
-                # Fallback: lanzar main.py directamente con el ui_venv
-                main_py = os.path.join(_ROOT_DIR, "apps", "model_vault", "main.py")
-                subprocess.Popen(
-                    [_UI_VENV_PY, main_py],
-                    start_new_session=True,
-                    env={**os.environ, "PYTHONPATH": f"{_ROOT_DIR}:{_HUB_DIR}"},
-                )
-                return {"ok": True}
-
-            elif tool_id == "lora-merger":
-                main_py = os.path.join(_ROOT_DIR, "apps", "lora_merger", "main.py")
-                subprocess.Popen(
-                    [_UI_VENV_PY, main_py],
-                    start_new_session=True,
-                    env={**os.environ, "PYTHONPATH": f"{_ROOT_DIR}:{_HUB_DIR}"},
-                )
-                return {"ok": True}
-
-            return {"ok": False, "error": f"Herramienta desconocida: {tool_id}"}
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
-
     # ── Acciones de apps ────────────────────────────────────────────────
 
     def launch(self, app_id: str) -> bool:

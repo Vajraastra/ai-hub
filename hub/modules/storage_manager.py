@@ -34,6 +34,12 @@ DEFAULT_MODEL_SUBDIRS = [
     "style_models",
     "hypernetworks",
     "ultralytics",
+    "inpaint",
+    "model_patches",
+    "gligen",
+    "sams",
+    "photomaker",
+    "classifiers",
     "_inbox",
 ]
 

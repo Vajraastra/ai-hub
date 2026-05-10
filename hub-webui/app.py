@@ -19,9 +19,10 @@ for path in [HUB_DIR, PROJECT_ROOT]:
     if path not in sys.path:
         sys.path.insert(0, path)
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel
 import uvicorn
 
@@ -78,6 +79,23 @@ bridge.on_log(_on_log)
 
 # ── FastAPI ─────────────────────────────────────────────────────────────────
 api = FastAPI(title="AI Hub WebUI")
+
+
+_NO_CACHE_PATHS = {"/", "/merger", "/vault"}
+
+class _NoCacheStatic(BaseHTTPMiddleware):
+    """Fuerza no-cache en todas las rutas HTML y estáticos para evitar cache persistente de WebKit2GTK."""
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        path = request.url.path
+        if path.startswith("/static/") or path in _NO_CACHE_PATHS:
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        return response
+
+
+api.add_middleware(_NoCacheStatic)
 api.mount("/static", StaticFiles(directory=os.path.join(POC_DIR, "static")), name="static")
 api.include_router(merger_router)
 api.include_router(vault_router)
@@ -290,10 +308,30 @@ def main():
 
     import io, contextlib
 
+    # Deshabilitar cache de disco en WebKit2GTK — evita que sirva JS/HTML viejos
+    try:
+        import gi
+        gi.require_version("WebKit2", "4.1")
+        from gi.repository import WebKit2
+        WebKit2.WebContext.get_default().set_cache_model(
+            WebKit2.CacheModel.DOCUMENT_VIEWER  # sin cache persistente
+        )
+    except Exception:
+        try:
+            import gi
+            gi.require_version("WebKit2", "4.0")
+            from gi.repository import WebKit2
+            WebKit2.WebContext.get_default().set_cache_model(
+                WebKit2.CacheModel.DOCUMENT_VIEWER
+            )
+        except Exception:
+            pass  # no es WebKit2GTK, continuar igual
+
     webview_ok = False
     try:
         with contextlib.redirect_stderr(io.StringIO()):
             import webview
+
             window = webview.create_window(
                 "AI Hub",
                 url,

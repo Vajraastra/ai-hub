@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v=20260505_2">
   <style>
     /* ── Layout tool ───────────────────────────────────────────── */
     body { overflow: hidden; }
@@ -164,36 +164,122 @@
     .weight-val { font-size:12px; color:var(--text-primary);
                    font-family:'JetBrains Mono',monospace; width:36px; text-align:right; }
 
-    /* Sección merge + progreso */
+    /* ── Sección merge + progreso ──────────────────────────────────────── */
     #merge-section {
       background:var(--bg-card); border:1px solid var(--border);
-      border-radius:8px; padding:14px;
+      border-radius:8px; padding:14px; display:flex; flex-direction:column; gap:10px;
     }
+
+    /* Botón principal */
     #btn-merge {
-      width:100%; padding:10px; font-size:14px; font-weight:600;
+      width:100%; padding:11px; font-size:14px; font-weight:600;
       border-radius:8px; cursor:pointer; border:none;
-      background:linear-gradient(135deg, var(--accent-purple), var(--accent-magenta));
+      background:linear-gradient(135deg, var(--accent-violet), var(--accent-magenta));
       color:#fff; transition:opacity .15s, transform .1s;
     }
     #btn-merge:hover:not(:disabled) { opacity:.9; transform:translateY(-1px); }
-    #btn-merge:disabled { opacity:.4; cursor:not-allowed; transform:none; }
+    #btn-merge:disabled { opacity:.35; cursor:not-allowed; transform:none; }
 
-    #merge-progress { display:none; margin-top:12px; }
-    #merge-progress-bar {
-      height:6px; border-radius:3px; background:rgba(255,255,255,.07);
-      overflow:hidden; margin-bottom:6px;
+    /* Panel activo del merge — visible solo durante el proceso */
+    #merge-active {
+      display:none; flex-direction:column; gap:10px;
     }
-    #merge-progress-fill {
-      height:100%; width:0%; border-radius:3px;
-      background:linear-gradient(90deg, var(--accent-purple), var(--accent-cyan));
-      transition:width .2s ease;
+
+    /* Cuadro de progreso */
+    #merge-progress-wrap {
+      background:var(--bg-surface); border:1px solid var(--border-bright);
+      border-radius:8px; padding:14px; display:flex; flex-direction:column; gap:10px;
     }
-    #merge-progress-text {
-      font-size:11px; color:var(--text-secondary); font-family:'JetBrains Mono',monospace;
+    .merge-hdr {
+      display:flex; align-items:center; justify-content:space-between; gap:8px;
     }
-    #merge-result { display:none; margin-top:10px; }
-    .merge-ok   { color:var(--accent-cyan); font-size:12px; }
-    .merge-fail { color:var(--status-error); font-size:12px; }
+    #merge-status-label {
+      font-size:12px; font-weight:600; color:var(--text-primary);
+    }
+    #merge-pct-badge {
+      font-size:13px; font-weight:700; font-family:var(--font-mono);
+      color:var(--accent-cyan); background:rgba(84,239,234,.1);
+      padding:2px 9px; border-radius:20px; flex-shrink:0;
+    }
+
+    /* Barra de progreso */
+    #merge-bar-track {
+      height:12px; border-radius:6px; background:rgba(255,255,255,.06);
+      overflow:hidden; position:relative;
+    }
+    #merge-bar-fill {
+      height:100%; width:0%; border-radius:6px; position:relative; overflow:hidden;
+      background:linear-gradient(90deg, var(--accent-violet), var(--accent-cyan));
+      transition:width .5s cubic-bezier(.4,0,.2,1);
+    }
+    /* Shimmer animado mientras el merge está en curso */
+    #merge-bar-fill::after {
+      content:''; position:absolute; inset:0;
+      background:linear-gradient(90deg,
+        transparent 0%, rgba(255,255,255,.3) 50%, transparent 100%);
+      animation:bar-shimmer 1.8s infinite linear;
+      transform:translateX(-100%);
+    }
+    @keyframes bar-shimmer {
+      0%   { transform:translateX(-100%); }
+      100% { transform:translateX(200%); }
+    }
+
+    /* Texto de capa actual */
+    #merge-layer-text {
+      font-size:11px; font-family:var(--font-mono); color:var(--text-secondary);
+      white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-height:16px;
+    }
+
+    /* Botón cancelar */
+    #btn-cancel {
+      width:100%; padding:8px; font-size:12px; font-weight:600; border-radius:6px;
+      cursor:pointer; border:1px solid rgba(255,69,101,.3);
+      background:rgba(255,69,101,.08); color:var(--accent-red);
+      transition:background .15s, border-color .15s;
+    }
+    #btn-cancel:hover { background:rgba(255,69,101,.18); border-color:var(--accent-red); }
+
+    /* ── Estado "merging": bloquear toda la UI de configuración ─────────── */
+    /* Dimear panel izquierdo (lista de LoRAs) */
+    body.merging #left-panel {
+      opacity:.35; pointer-events:none; user-select:none;
+      transition:opacity .3s;
+    }
+    /* Dimear todas las config-section excepto merge-section */
+    body.merging .config-section,
+    body.merging #weights-section,
+    body.merging #suggestion-box {
+      opacity:.3; pointer-events:none; user-select:none;
+      transition:opacity .3s;
+    }
+    /* Ocultar botón merge y mostrar panel activo */
+    body.merging #btn-merge  { display:none; }
+    body.merging #merge-active { display:flex !important; }
+
+    /* ── Resultado final ─────────────────────────────────────────────────── */
+    #merge-result { display:none; }
+
+    .merge-ok {
+      padding:12px; border-radius:8px;
+      background:rgba(57,255,133,.08); border:1px solid rgba(57,255,133,.2);
+      display:flex; flex-direction:column; gap:5px;
+    }
+    .merge-ok-title {
+      font-size:13px; font-weight:600; color:var(--accent-green);
+    }
+    .merge-ok-path {
+      font-size:10px; font-family:var(--font-mono); color:var(--text-secondary);
+      word-break:break-all; line-height:1.4;
+    }
+
+    .merge-fail {
+      padding:12px; border-radius:8px;
+      background:rgba(255,69,101,.1); border:1px solid rgba(255,69,101,.3);
+      display:flex; flex-direction:column; gap:5px;
+    }
+    .merge-fail-title { font-size:13px; font-weight:600; color:var(--accent-red); }
+    .merge-fail-msg   { font-size:11px; color:var(--text-secondary); word-break:break-all; }
 
     /* Sugerencia */
     #suggestion-box {
@@ -253,9 +339,11 @@
 
   <!-- Header -->
   <header id="tool-header">
-    <button class="back-btn" onclick="location.href='/'">← AI Hub</button>
-    <h1>LoRA Merger</h1>
-    <span id="val-status">Sin LoRAs</span>
+    <button class="back-btn" onclick="location.href='/'" data-i18n="merger.back">← AI Hub</button>
+    <h1 data-i18n="merger.title">LoRA Merger</h1>
+    <span id="val-status" data-i18n="merger.no_loras">Sin LoRAs</span>
+    <div class="spacer"></div>
+    <button class="btn btn-outline" data-i18n-lang-btn style="font-size:11px;padding:3px 9px">EN</button>
   </header>
 
   <!-- Cuerpo principal -->
@@ -264,8 +352,8 @@
     <!-- Panel izquierdo: lista de LoRAs -->
     <div id="left-panel">
       <div id="left-toolbar">
-        <span id="lora-count">0 LoRAs</span>
-        <button class="btn btn-outline" id="btn-add">+ Agregar</button>
+        <span id="lora-count" data-i18n="merger.no_loras">Sin LoRAs</span>
+        <button class="btn btn-outline" id="btn-add" data-i18n="merger.btn_add">+ Agregar</button>
         <button class="btn btn-outline" id="btn-suggest" style="display:none">
           ✦ Sugerir
         </button>
@@ -286,9 +374,9 @@
 
       <!-- Método -->
       <div class="config-section">
-        <div class="config-section-title">Método de merge</div>
+        <div class="config-section-title" data-i18n="merger.section_method">Método de merge</div>
         <div class="config-row">
-          <label>Algoritmo</label>
+          <label data-i18n="merger.label_algorithm">Algoritmo</label>
           <select id="cfg-method">
             <option value="weighted_sum">Weighted Sum</option>
             <option value="slerp">SLERP</option>
@@ -325,10 +413,10 @@
 
       <!-- Pesos por LoRA -->
       <div class="config-section" id="weights-section">
-        <div class="config-section-title">Pesos por LoRA</div>
+        <div class="config-section-title" data-i18n="merger.section_weights">Pesos por LoRA</div>
         <div id="weights-list"></div>
         <div style="margin-top:8px">
-          <button class="btn btn-outline" id="btn-normalize" style="font-size:11px;padding:4px 10px">
+          <button class="btn btn-outline" id="btn-normalize" style="font-size:11px;padding:4px 10px" data-i18n="merger.normalize">
             Normalizar (suma = 1)
           </button>
         </div>
@@ -336,18 +424,18 @@
 
       <!-- Filtro de capas + rank -->
       <div class="config-section">
-        <div class="config-section-title">Capas y rank</div>
+        <div class="config-section-title" data-i18n="merger.section_layers">Capas y rank</div>
         <div class="config-row">
-          <label>Filtro de capas</label>
+          <label data-i18n="merger.label_layer_filter">Filtro de capas</label>
           <select id="cfg-layer-filter">
-            <option value="full">Todas las capas</option>
-            <option value="attn-only">Solo Atención</option>
-            <option value="mlp-only">Solo MLP</option>
-            <option value="attn-mlp">Atención + MLP</option>
+            <option value="full" data-i18n="merger.layer.full">Todas las capas</option>
+            <option value="attn-only" data-i18n="merger.layer.attn_only">Solo Atención</option>
+            <option value="mlp-only" data-i18n="merger.layer.mlp_only">Solo MLP</option>
+            <option value="attn-mlp" data-i18n="merger.layer.attn_mlp">Atención + MLP</option>
           </select>
         </div>
         <div class="config-row">
-          <label>Rank objetivo</label>
+          <label data-i18n="merger.label_rank">Rank objetivo</label>
           <input type="number" id="cfg-rank" min="1" max="512" placeholder="auto"
                  style="max-width:90px">
         </div>
@@ -355,35 +443,49 @@
 
       <!-- Output -->
       <div class="config-section">
-        <div class="config-section-title">Salida</div>
+        <div class="config-section-title" data-i18n="merger.section_output">Salida</div>
         <div class="config-row">
-          <label>Directorio</label>
+          <label data-i18n="merger.label_out_dir">Directorio</label>
           <input type="text" id="cfg-output-dir" placeholder="/ruta/de/salida">
         </div>
         <div class="config-row">
-          <label>Nombre</label>
+          <label data-i18n="merger.label_out_name">Nombre</label>
           <input type="text" id="cfg-output-name" placeholder="merged_lora.safetensors">
         </div>
         <div class="config-row">
-          <label>Precisión</label>
+          <label data-i18n="merger.label_precision">Precisión</label>
           <select id="cfg-dtype">
-            <option value="bf16">BF16 (recomendado)</option>
-            <option value="f16">F16</option>
-            <option value="f32">F32</option>
+            <option value="bf16" data-i18n="merger.dtype.bf16">BF16 (recomendado)</option>
+            <option value="f16" data-i18n="merger.dtype.f16">F16</option>
+            <option value="f32" data-i18n="merger.dtype.f32">F32</option>
           </select>
         </div>
       </div>
 
       <!-- Merge + progreso -->
       <div id="merge-section">
-        <button class="btn" id="btn-merge" disabled>Merge</button>
-        <div id="merge-progress">
-          <div id="merge-progress-bar">
-            <div id="merge-progress-fill"></div>
+
+        <!-- Botón principal (visible cuando no hay merge en curso) -->
+        <button id="btn-merge" disabled data-i18n="merger.btn_merge">Mergear LoRAs</button>
+
+        <!-- Panel activo (visible SOLO durante el merge) -->
+        <div id="merge-active">
+          <div id="merge-progress-wrap">
+            <div class="merge-hdr">
+              <span id="merge-status-label" data-i18n="merger.merging">Procesando capas...</span>
+              <span id="merge-pct-badge">0%</span>
+            </div>
+            <div id="merge-bar-track">
+              <div id="merge-bar-fill"></div>
+            </div>
+            <div id="merge-layer-text" data-i18n="merger.initializing">Iniciando...</div>
           </div>
-          <div id="merge-progress-text">Preparando...</div>
+          <button id="btn-cancel" onclick="cancelMerge()" data-i18n="merger.btn_cancel">✕ Cancelar merge</button>
         </div>
+
+        <!-- Resultado final (éxito o error) -->
         <div id="merge-result"></div>
+
       </div>
 
     </div><!-- #right-panel -->
@@ -394,15 +496,15 @@
 <div id="browser-overlay">
   <div id="browser-box">
     <div id="browser-header">
-      <button class="browser-parent-btn" id="browser-up">↑ Subir</button>
+      <button class="browser-parent-btn" id="browser-up" data-i18n="merger.browser_up">↑ Subir</button>
       <input type="text" id="browser-path-input" placeholder="/ruta/a/directorio">
-      <button class="btn btn-outline" id="browser-go" style="flex-shrink:0">Ir</button>
+      <button class="btn btn-outline" id="browser-go" style="flex-shrink:0" data-i18n="merger.browser_go">Ir</button>
     </div>
     <div id="browser-list"></div>
     <div id="browser-footer">
-      <span id="browser-selected-count">0 seleccionados</span>
-      <button class="btn btn-outline" onclick="closeBrowser()">Cancelar</button>
-      <button class="btn btn-primary" id="browser-confirm">Agregar seleccionados</button>
+      <span id="browser-selected-count" data-i18n="merger.browser_selected">0 seleccionados</span>
+      <button class="btn btn-outline" onclick="closeBrowser()" data-i18n="merger.browser_cancel">Cancelar</button>
+      <button class="btn btn-primary" id="browser-confirm" data-i18n="merger.browser_add">Agregar seleccionados</button>
     </div>
   </div>
 </div>
@@ -410,6 +512,7 @@
 <!-- Toast -->
 <div id="toast"></div>
 
-<script src="/static/merger.js"></script>
+<script src="/static/locale.js"></script>
+<script src="/static/merger.js?v=20260505_2"></script>
 </body>
 </html>

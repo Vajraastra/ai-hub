@@ -13,11 +13,11 @@ let browserCurrentPath = "";
 // ════════════════════════════════════════════════════════════════
 let _toastTimer = null;
 function showToast(msg) {
-  const t = $("toast");
-  t.textContent = msg;
-  t.classList.add("show");
+  const el = $("toast");
+  el.textContent = msg;
+  el.classList.add("show");
   clearTimeout(_toastTimer);
-  _toastTimer = setTimeout(() => t.classList.remove("show"), 3200);
+  _toastTimer = setTimeout(() => el.classList.remove("show"), 3200);
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -54,7 +54,7 @@ function renderLoraList() {
   if (!loras.length) {
     list.innerHTML = `<div class="lora-empty">
       <span class="big-icon">🔀</span>
-      <span>Agrega archivos .safetensors<br>para comenzar el merge</span>
+      <span>${t("merger.empty").replace("\n", "<br>")}</span>
     </div>`;
     return;
   }
@@ -70,7 +70,7 @@ function renderLoraList() {
         <div class="lora-card-top">
           <div class="lora-info">
             <div class="lora-name">${escapeHtml(lora.name)}</div>
-            <div class="lora-meta">Analizando...</div>
+            <div class="lora-meta">${t("merger.analyzing")}</div>
           </div>
           <button class="lora-remove" onclick="removeLora(${i})">✕</button>
         </div>
@@ -108,7 +108,7 @@ function renderLoraList() {
           <button class="lora-remove" onclick="removeLora(${i})" title="Eliminar">✕</button>
         </div>
         ${blocks.length ? `<div class="impact-section">
-          <div class="impact-section-label">Impacto por bloque</div>
+          <div class="impact-section-label">${t("merger.impact_title")}</div>
           ${barsHtml}
         </div>` : ""}`;
 
@@ -183,7 +183,9 @@ function normalizeWeights() {
 // ════════════════════════════════════════════════════════════════
 function updateUI() {
   const count = loras.length;
-  $("lora-count").textContent = `${count} LoRA${count !== 1 ? "s" : ""}`;
+  $("lora-count").textContent = count !== 1
+    ? t("merger.lora_count_plural", { count })
+    : t("merger.lora_count", { count });
 
   const loaded = loras.filter(l => !l.loading && !l.error);
   $("btn-suggest").style.display = loaded.length >= 2 ? "inline-flex" : "none";
@@ -192,13 +194,13 @@ function updateUI() {
   $("btn-merge").disabled = !canMerge;
 
   if (!count) {
-    setValStatus("Sin LoRAs", "");
+    setValStatus(t("merger.no_loras"), "");
     return;
   }
 
   const loading = loras.some(l => l.loading);
   if (loading) {
-    setValStatus("Analizando...", "");
+    setValStatus(t("merger.status_analyzing"), "");
     return;
   }
 
@@ -206,13 +208,13 @@ function updateUI() {
   const archIds  = [...new Set(loaded.map(l => l.info?.arch_id).filter(Boolean))];
 
   if (errors.length) {
-    setValStatus(`${errors.length} error(es)`, "err");
+    setValStatus(t("merger.status_errors", { count: errors.length }), "err");
   } else if (archIds.length > 1) {
-    setValStatus("Arqs. mixtas — cuidado", "warn");
+    setValStatus(t("merger.status_mixed_arch"), "warn");
   } else if (loaded.length >= 2) {
-    setValStatus("Listos para merge", "ok");
+    setValStatus(t("merger.status_ready"), "ok");
   } else {
-    setValStatus("Agrega al menos 2 LoRAs", "");
+    setValStatus(t("merger.status_need_more"), "");
   }
 }
 
@@ -225,17 +227,9 @@ function setValStatus(text, cls) {
 // ════════════════════════════════════════════════════════════════
 // Método — parámetros avanzados
 // ════════════════════════════════════════════════════════════════
-const methodDescs = {
-  weighted_sum: "Suma ponderada de deltas. Resultado = ∑ wi × ΔWi",
-  slerp:        "Interpolación esférica. Transición suave en espacio de alta dimensión. Solo 2 LoRAs.",
-  ties:         "Elimina parámetros con baja magnitud y resuelve conflictos de signo por votación.",
-  dare:         "Poda aleatoria de parámetros por magnitud y reescala los restantes.",
-  dare_ties:    "DARE seguido de TIES: poda + resolución de conflictos combinados.",
-};
-
 function onMethodChange() {
   const m = $("cfg-method").value;
-  $("method-desc").textContent = methodDescs[m] || "";
+  $("method-desc").textContent = t(`merger.method.${m}`) || "";
   $("adv-slerp").style.display = m === "slerp"                         ? "" : "none";
   $("adv-dare").style.display  = m === "dare"  || m === "dare_ties"    ? "" : "none";
   $("adv-ties").style.display  = m === "ties"  || m === "dare_ties"    ? "" : "none";
@@ -255,71 +249,74 @@ function closeBrowser() {
 }
 
 async function loadBrowserPath(path) {
-  const res  = await fetch(`/api/merger/browse?path=${encodeURIComponent(path)}`);
-  const data = await res.json();
+  try {
+    const res  = await fetch(`/api/merger/browse?path=${encodeURIComponent(path)}`);
+    const data = await res.json();
 
-  if (data.error) { showToast("❌ " + data.error); return; }
+    if (data.error) { showToast("❌ " + data.error); return; }
 
-  browserCurrentPath = data.path;
-  $("browser-path-input").value = data.path;
-  $("browser-up").disabled = !data.parent;
+    browserCurrentPath = data.path;
+    $("browser-path-input").value = data.path;
+    $("browser-up").disabled = !data.parent;
 
-  const list = $("browser-list");
-  list.innerHTML = "";
+    const list = $("browser-list");
+    list.innerHTML = "";
 
-  // Directorios
-  data.dirs.forEach(dir => {
-    const el = document.createElement("div");
-    el.className = "browser-entry";
-    el.innerHTML = `<span class="browser-icon">📁</span>
-                    <span class="browser-name">${escapeHtml(dir)}</span>`;
-    el.addEventListener("click", () => loadBrowserPath(data.path + "/" + dir));
-    list.appendChild(el);
-  });
+    // Directorios
+    data.dirs.forEach(dir => {
+      const el = document.createElement("div");
+      el.className = "browser-entry";
+      el.innerHTML = `<span class="browser-icon">📁</span>
+                      <span class="browser-name">${escapeHtml(dir)}</span>`;
+      el.addEventListener("click", () => loadBrowserPath(data.path + "/" + dir));
+      list.appendChild(el);
+    });
 
-  // Archivos .safetensors
-  data.files.forEach(file => {
-    const alreadyLoaded = loras.some(l => l.path === file.path);
-    const el = document.createElement("div");
-    el.className = "browser-entry";
-    el.innerHTML = `
-      <input type="checkbox" class="browser-check" ${browserSelected.has(file.path) ? "checked" : ""}
-             ${alreadyLoaded ? "disabled" : ""}>
-      <span class="browser-icon">🔷</span>
-      <span class="browser-name">${escapeHtml(file.name)}</span>
-      <span class="browser-size">${file.size_mb} MB</span>`;
-    if (!alreadyLoaded) {
-      const cb = el.querySelector("input[type=checkbox]");
-      el.addEventListener("click", e => {
-        if (e.target !== cb) cb.click();
-      });
-      cb.addEventListener("change", () => {
-        if (cb.checked) browserSelected.add(file.path);
-        else            browserSelected.delete(file.path);
-        $("browser-selected-count").textContent = `${browserSelected.size} seleccionados`;
-      });
-    } else {
-      el.style.opacity = ".4";
-      el.title = "Ya está en la lista";
+    // Archivos .safetensors
+    data.files.forEach(file => {
+      const alreadyLoaded = loras.some(l => l.path === file.path);
+      const el = document.createElement("div");
+      el.className = "browser-entry";
+      el.innerHTML = `
+        <input type="checkbox" class="browser-check" ${browserSelected.has(file.path) ? "checked" : ""}
+               ${alreadyLoaded ? "disabled" : ""}>
+        <span class="browser-icon">🔷</span>
+        <span class="browser-name">${escapeHtml(file.name)}</span>
+        <span class="browser-size">${file.size_mb} MB</span>`;
+      if (!alreadyLoaded) {
+        const cb = el.querySelector("input[type=checkbox]");
+        el.addEventListener("click", e => {
+          if (e.target !== cb) cb.click();
+        });
+        cb.addEventListener("change", () => {
+          if (cb.checked) browserSelected.add(file.path);
+          else            browserSelected.delete(file.path);
+          $("browser-selected-count").textContent =
+            t("merger.browser_selected", { count: browserSelected.size });
+        });
+      } else {
+        el.style.opacity = ".4";
+        el.title = t("merger.already_loaded");
+      }
+      list.appendChild(el);
+    });
+
+    if (!data.dirs.length && !data.files.length) {
+      list.innerHTML = `<div style="padding:20px;text-align:center;color:var(--text-dim);font-size:13px">
+        ${t("merger.browser_empty")}</div>`;
     }
-    list.appendChild(el);
-  });
 
-  if (!data.dirs.length && !data.files.length) {
-    list.innerHTML = `<div style="padding:20px;text-align:center;color:var(--text-dim);font-size:13px">
-      Sin directorios ni archivos .safetensors aquí.</div>`;
+    $("browser-selected-count").textContent =
+      t("merger.browser_selected", { count: browserSelected.size });
+  } catch (_) {
+    showToast("❌ " + t("merger.error_browse"));
   }
-
-  $("browser-selected-count").textContent = `${browserSelected.size} seleccionados`;
 }
 
-async function confirmBrowserSelection() {
-  if (!browserSelected.size) return;
-  const paths = [...browserSelected];
-  closeBrowser();
-  browserSelected.clear();
+async function addLorasFromPaths(paths) {
+  paths = paths.filter(p => !loras.some(l => l.path === p));
+  if (!paths.length) return;
 
-  // Añadir como loading
   const startIdx = loras.length;
   paths.forEach(path => {
     loras.push({
@@ -331,7 +328,6 @@ async function confirmBrowserSelection() {
   renderLoraList();
   updateUI();
 
-  // Analizar en el backend
   try {
     const res  = await fetch("/api/merger/analyze", {
       method: "POST",
@@ -346,21 +342,49 @@ async function confirmBrowserSelection() {
       loras[idx].info     = r.info;
       loras[idx].analysis = r.analysis;
       loras[idx].error    = r.error || null;
-      loras[idx].weight   = 1 / loras.length;
     });
-    // Redistribuir pesos uniformemente
     const n = loras.length;
     loras.forEach(l => l.weight = 1 / n);
-  } catch (e) {
+  } catch (_) {
     for (let i = startIdx; i < loras.length; i++) {
       loras[i].loading = false;
-      loras[i].error   = "Error de conexión con el backend";
+      loras[i].error   = t("merger.error_analyze");
     }
   }
 
   renderLoraList();
   updateWeightsPanel();
   updateUI();
+}
+
+async function confirmBrowserSelection() {
+  if (!browserSelected.size) return;
+  const paths = [...browserSelected];
+  closeBrowser();
+  browserSelected.clear();
+  await addLorasFromPaths(paths);
+}
+
+async function openNativeFilePicker() {
+  let initDir = "";
+  try {
+    const s = await fetch("/api/settings").then(r => r.json());
+    initDir = s.paths?.models || "";
+  } catch (_) {}
+
+  try {
+    const res = await fetch(`/api/merger/pick-files?initial_dir=${encodeURIComponent(initDir)}`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data.paths && data.paths.length) {
+        await addLorasFromPaths(data.paths);
+        return;
+      }
+      if (data.available) return;
+    }
+  } catch (_) {}
+
+  openBrowser();
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -371,7 +395,7 @@ async function getSuggestion() {
   if (paths.length < 2) return;
 
   $("btn-suggest").disabled = true;
-  $("btn-suggest").textContent = "...";
+  $("btn-suggest").textContent = t("merger.btn_suggesting");
 
   try {
     const res  = await fetch("/api/merger/suggest", {
@@ -381,7 +405,6 @@ async function getSuggestion() {
     });
     const s = await res.json();
 
-    // Aplicar sugerencias a la UI
     $("cfg-method").value = s.method || "weighted_sum";
     onMethodChange();
 
@@ -395,20 +418,130 @@ async function getSuggestion() {
 
     const box = $("suggestion-box");
     box.style.display = "";
-    box.innerHTML = `<strong>✦ Sugerencia:</strong> ${escapeHtml(s.method_label)} — ${escapeHtml(s.explanation)}` +
+    box.innerHTML = `<strong>${t("merger.suggestion_label")}</strong> ${escapeHtml(s.method_label)} — ${escapeHtml(s.explanation)}` +
       (s.warnings?.length ? `<br><span style="color:var(--accent-amber)">${s.warnings.map(escapeHtml).join("; ")}</span>` : "");
 
-  } catch (e) {
-    showToast("❌ Error obteniendo sugerencia.");
+  } catch (_) {
+    showToast("❌ " + t("merger.error_suggestion"));
   } finally {
     $("btn-suggest").disabled = false;
-    $("btn-suggest").textContent = "✦ Sugerir";
+    $("btn-suggest").textContent = t("merger.btn_suggest");
   }
 }
 
 // ════════════════════════════════════════════════════════════════
-// Merge
+// Merge — polling + lock de UI
 // ════════════════════════════════════════════════════════════════
+let _mergePoller   = null;
+let _mergeSession  = null;
+
+function _lockMergeUI() {
+  document.body.classList.add("merging");
+  [
+    "cfg-method", "cfg-layer-filter", "cfg-rank",
+    "cfg-output-dir", "cfg-output-name", "cfg-dtype",
+    "cfg-slerp-t", "cfg-dare-density", "cfg-ties-k",
+    "btn-add", "btn-suggest", "btn-normalize",
+  ].forEach(id => { const el = $(id); if (el) el.disabled = true; });
+  document.querySelectorAll(".weight-slider, .weight-val input").forEach(el => {
+    el.disabled = true;
+  });
+}
+
+function _unlockMergeUI() {
+  document.body.classList.remove("merging");
+  [
+    "cfg-method", "cfg-layer-filter", "cfg-rank",
+    "cfg-output-dir", "cfg-output-name", "cfg-dtype",
+    "cfg-slerp-t", "cfg-dare-density", "cfg-ties-k",
+    "btn-add", "btn-suggest", "btn-normalize",
+  ].forEach(id => { const el = $(id); if (el) el.disabled = false; });
+  document.querySelectorAll(".weight-slider, .weight-val input").forEach(el => {
+    el.disabled = false;
+  });
+  updateUI();
+}
+
+function _stopPoller() {
+  if (_mergePoller) { clearInterval(_mergePoller); _mergePoller = null; }
+}
+
+function _startPoller(session_id) {
+  _stopPoller();
+  _mergeSession = session_id;
+  _mergePoller  = setInterval(async () => {
+    try {
+      const res = await fetch(`/api/merger/status/${session_id}`);
+      if (!res.ok) {
+        _stopPoller();
+        _finishMergeError(t("merger.error_status"));
+        return;
+      }
+      const ev = await res.json();
+
+      if (ev.type === "progress") {
+        const cur = ev.current || 0;
+        const tot = ev.total   || 0;
+        const pct = tot ? Math.round(cur / tot * 100) : 2;
+
+        $("merge-bar-fill").style.width  = `${Math.max(pct, 2)}%`;
+        $("merge-pct-badge").textContent = `${pct}%`;
+        $("merge-layer-text").textContent = tot
+          ? t("merger.layer_text", { cur, tot, layer: ev.layer || "" })
+          : (ev.layer || t("merger.merging"));
+        $("merge-status-label").textContent = t("merger.merging");
+      }
+
+      if (ev.type === "done") {
+        _stopPoller();
+        $("merge-bar-fill").style.width  = "100%";
+        $("merge-pct-badge").textContent = "100%";
+        if (ev.output_path) {
+          _finishMergeOk(ev.output_path);
+        } else {
+          _finishMergeError(ev.error || t("merger.unknown_error"));
+        }
+      }
+    } catch (_) {
+      // Error de red transitorio — el merge sigue corriendo, ignorar
+    }
+  }, 600);
+}
+
+function _finishMergeOk(outputPath) {
+  _unlockMergeUI();
+  $("merge-status-label").textContent = t("merger.completed");
+  $("merge-result").style.display = "";
+  $("merge-result").innerHTML = `
+    <div class="merge-ok">
+      <div class="merge-ok-title">${t("merger.merge_ok_title")}</div>
+      <div class="merge-ok-path">${escapeHtml(outputPath)}</div>
+    </div>`;
+}
+
+function _finishMergeError(msg) {
+  _unlockMergeUI();
+  $("merge-status-label").textContent = t("merger.error");
+  $("merge-pct-badge").textContent = "!";
+  $("merge-pct-badge").style.color = "var(--accent-red)";
+  $("merge-pct-badge").style.background = "rgba(255,69,101,.12)";
+  $("merge-result").style.display = "";
+  $("merge-result").innerHTML = `
+    <div class="merge-fail">
+      <div class="merge-fail-title">${t("merger.merge_error_title")}</div>
+      <div class="merge-fail-msg">${escapeHtml(msg)}</div>
+    </div>`;
+}
+
+async function cancelMerge() {
+  if (!_mergeSession) return;
+  $("btn-cancel").disabled = true;
+  $("btn-cancel").textContent = t("merger.canceling");
+  try {
+    await fetch(`/api/merger/cancel/${_mergeSession}`, { method: "POST" });
+  } catch (_) {}
+}
+
 async function startMerge() {
   const paths = loras.filter(l => !l.loading && !l.error).map(l => l.path);
   if (paths.length < 2) return;
@@ -416,6 +549,11 @@ async function startMerge() {
   const outputDir  = $("cfg-output-dir").value.trim();
   const outputName = $("cfg-output-name").value.trim() || "merged_lora.safetensors";
   const outputPath = outputDir ? `${outputDir}/${outputName}` : outputName;
+
+  if (!outputDir) {
+    showToast("⚠ " + t("merger.no_output_dir"));
+    return;
+  }
 
   const weights = loras
     .filter(l => !l.loading && !l.error)
@@ -426,73 +564,40 @@ async function startMerge() {
     weights,
     target_rank:  $("cfg-rank").value ? parseInt($("cfg-rank").value) : null,
     layer_filter: $("cfg-layer-filter").value,
-    dare_density: parseFloat($("cfg-dare-density").value),
-    ties_k:       parseFloat($("cfg-ties-k").value),
-    slerp_t:      parseFloat($("cfg-slerp-t").value),
+    dare_density: parseFloat($("cfg-dare-density").value) || 0.5,
+    ties_k:       parseFloat($("cfg-ties-k").value)       || 0.2,
+    slerp_t:      parseFloat($("cfg-slerp-t").value)      || 0.5,
     output_path:  outputPath,
     output_dtype: $("cfg-dtype").value,
   };
 
-  // Validar output path
-  if (!outputDir) {
-    showToast("⚠ Especifica un directorio de salida.");
-    return;
-  }
+  $("merge-result").style.display = "none";
+  $("merge-result").innerHTML = "";
+  $("merge-pct-badge").style.color = "";
+  $("merge-pct-badge").style.background = "";
+  $("merge-pct-badge").textContent = "0%";
+  $("merge-bar-fill").style.width = "2%";
+  $("merge-layer-text").textContent = t("merger.initializing");
+  $("merge-status-label").textContent = t("merger.merge_starting");
+  $("btn-cancel").disabled = false;
+  $("btn-cancel").textContent = t("merger.btn_cancel");
 
-  $("btn-merge").disabled = true;
-  $("merge-progress").style.display = "";
-  $("merge-result").style.display   = "none";
-  $("merge-progress-fill").style.width = "0%";
-  $("merge-progress-text").textContent = "Iniciando...";
+  _lockMergeUI();
 
   try {
-    const res     = await fetch("/api/merger/merge", {
+    const res = await fetch("/api/merger/merge", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ paths, config }),
     });
+    if (!res.ok) {
+      _finishMergeError(t("merger.error_start"));
+      return;
+    }
     const { session_id } = await res.json();
-
-    const sse = new EventSource(`/api/merger/progress/${session_id}`);
-    sse.onmessage = e => {
-      const ev = JSON.parse(e.data);
-      if (ev.type === "ping") return;
-
-      if (ev.type === "progress") {
-        const pct = ev.total ? Math.round(ev.current / ev.total * 100) : 0;
-        $("merge-progress-fill").style.width = `${pct}%`;
-        $("merge-progress-text").textContent =
-          `${ev.current}/${ev.total}  ${ev.layer || ""}`;
-      }
-
-      if (ev.type === "done") {
-        sse.close();
-        $("merge-progress-fill").style.width = "100%";
-        $("merge-result").style.display = "";
-        if (ev.output_path) {
-          $("merge-result").innerHTML =
-            `<div class="merge-ok">✅ Merge completado:<br>
-             <span style="font-family:JetBrains Mono,monospace;font-size:11px">
-               ${escapeHtml(ev.output_path)}
-             </span></div>`;
-        } else {
-          $("merge-result").innerHTML =
-            `<div class="merge-fail">❌ ${escapeHtml(ev.error || "Error desconocido")}</div>`;
-        }
-        $("btn-merge").disabled = false;
-        $("merge-progress-text").textContent = "Finalizado.";
-      }
-    };
-    sse.onerror = () => {
-      sse.close();
-      $("merge-result").style.display = "";
-      $("merge-result").innerHTML =
-        `<div class="merge-fail">❌ Error de conexión con el stream de progreso.</div>`;
-      $("btn-merge").disabled = false;
-    };
-  } catch (e) {
-    showToast("❌ Error iniciando el merge.");
-    $("btn-merge").disabled = false;
+    _startPoller(session_id);
+  } catch (_) {
+    _finishMergeError(t("merger.error_conn"));
   }
 }
 
@@ -510,7 +615,7 @@ function escapeHtml(str) {
 // Init
 // ════════════════════════════════════════════════════════════════
 document.addEventListener("DOMContentLoaded", () => {
-  $("btn-add").addEventListener("click", openBrowser);
+  $("btn-add").addEventListener("click", openNativeFilePicker);
   $("btn-suggest").addEventListener("click", getSuggestion);
   $("btn-merge").addEventListener("click", startMerge);
   $("btn-normalize").addEventListener("click", normalizeWeights);
@@ -530,7 +635,6 @@ document.addEventListener("DOMContentLoaded", () => {
     if (e.target === $("browser-overlay")) closeBrowser();
   });
 
-  // Cargar outputs path del hub como default del output-dir
   fetch("/api/settings").then(r => r.json()).then(d => {
     const outDir = d.paths?.outputs || "";
     if (outDir) $("cfg-output-dir").value = outDir;
