@@ -36,9 +36,9 @@ async function loadModels(search = "", cat = "all", sort = "recent") {
     filteredModels = allModels;
     renderGrid();
     renderCounts();
-  } catch (e) {
+  } catch (_) {
     $("model-grid").innerHTML =
-      `<div class="grid-empty"><span class="big-icon">❌</span>Error cargando modelos.</div>`;
+      `<div class="grid-empty"><span class="big-icon">❌</span>${t("vault.load_error")}</div>`;
   }
 }
 
@@ -51,13 +51,19 @@ function refresh() {
 // ════════════════════════════════════════════════════════════════
 function renderGrid() {
   const grid = $("model-grid");
-  $("model-count").textContent = `${filteredModels.length} modelo${filteredModels.length !== 1 ? "s" : ""}`;
+  const cnt = filteredModels.length;
+  $("model-count").textContent = cnt !== 1
+    ? t("vault.models_count_plural", { count: cnt })
+    : t("vault.models_count", { count: cnt });
 
   if (!filteredModels.length) {
+    const emptyMsg = currentSearch
+      ? t("vault.empty_search", { query: currentSearch })
+      : t("vault.empty") + ".";
     grid.innerHTML = `<div class="grid-empty">
       <span class="big-icon">📦</span>
-      Sin modelos${currentSearch ? ` para "${escapeHtml(currentSearch)}"` : ""}.
-      ${!allModels.length ? "<br>Configura el directorio de modelos en Ajustes y pulsa Sincronizar." : ""}
+      ${escapeHtml(emptyMsg)}
+      ${!allModels.length ? `<br>${t("vault.empty_hint")}` : ""}
     </div>`;
     return;
   }
@@ -128,16 +134,16 @@ async function openDetails(hash) {
 
   $("details-panel").classList.add("open");
   $("details-content").innerHTML =
-    `<div style="padding:20px;text-align:center;color:var(--text-dim)">Cargando...</div>`;
+    `<div style="padding:20px;text-align:center;color:var(--text-dim)">${t("vault.loading")}</div>`;
 
   try {
     const res = await fetch(`/api/vault/models/${hash}`);
-    if (!res.ok) { showToast("❌ Modelo no encontrado."); return; }
+    if (!res.ok) { showToast("❌ " + t("vault.detail_not_found")); return; }
     const m = await res.json();
     renderDetails(m);
-  } catch {
+  } catch (_) {
     $("details-content").innerHTML =
-      `<div style="color:var(--status-error);font-size:12px">❌ Error cargando detalles.</div>`;
+      `<div style="color:var(--status-error);font-size:12px">❌ ${t("vault.detail_error")}</div>`;
   }
 }
 
@@ -153,10 +159,15 @@ function renderDetails(m) {
     ? `/api/vault/thumbnail?path=${encodeURIComponent(m.file_path)}`
     : null;
 
-  const triggers = (m.triggers || "").split(",").map(t => t.trim()).filter(Boolean);
+  const triggers = (m.triggers || "").split(",").map(s => s.trim()).filter(Boolean);
   const triggerHtml = triggers.length
-    ? triggers.map(t => `<span class="trigger-chip">${escapeHtml(t)}</span>`).join("")
-    : `<span style="color:var(--text-dim);font-size:12px">Sin trigger words.</span>`;
+    ? triggers.map(s => `<span class="trigger-chip">${escapeHtml(s)}</span>`).join("")
+    : `<span style="color:var(--text-dim);font-size:12px">${t("vault.detail_no_triggers")}</span>`;
+
+  const civitaiTags = (m.civitai_tags || "").split(",").map(s => s.trim()).filter(Boolean);
+  const civitaiTagsHtml = civitaiTags.length
+    ? civitaiTags.map(s => `<span class="civitai-tag-chip">${escapeHtml(s)}</span>`).join("")
+    : null;
 
   $("details-content").innerHTML = `
     ${thumbUrl
@@ -165,46 +176,50 @@ function renderDetails(m) {
     <div class="detail-name">${escapeHtml(displayName)}</div>
 
     <div class="detail-row">
-      <span class="detail-lbl">Tipo</span>
+      <span class="detail-lbl">${t("vault.detail_type")}</span>
       <span class="detail-val">${escapeHtml(m.model_type || "—")}</span>
     </div>
     <div class="detail-row">
-      <span class="detail-lbl">Base model</span>
+      <span class="detail-lbl">${t("vault.detail_base")}</span>
       <span class="detail-val">${escapeHtml(m.base_model || "—")}</span>
     </div>
     <div class="detail-row">
-      <span class="detail-lbl">Versión</span>
+      <span class="detail-lbl">${t("vault.detail_version")}</span>
       <span class="detail-val">${escapeHtml(m.version_name || "—")}</span>
     </div>
     <div class="detail-row">
-      <span class="detail-lbl">Creador</span>
+      <span class="detail-lbl">${t("vault.detail_creator")}</span>
       <span class="detail-val">${escapeHtml(m.creator_name || "—")}</span>
     </div>
     <div class="detail-row">
-      <span class="detail-lbl">Archivo</span>
+      <span class="detail-lbl">${t("vault.detail_file")}</span>
       <span class="detail-val" style="font-family:'JetBrains Mono',monospace;font-size:11px;word-break:break-all">
         ${escapeHtml(m.name || "—")}
       </span>
     </div>
 
     ${m.description ? `
-    <div class="detail-section-title">Descripción</div>
+    <div class="detail-section-title">${t("vault.detail_description")}</div>
     <div style="font-size:12px;color:var(--text-secondary);line-height:1.5">
       ${escapeHtml(m.description).substring(0, 400)}${m.description.length > 400 ? "…" : ""}
     </div>` : ""}
 
-    <div class="detail-section-title">Trigger words</div>
+    <div class="detail-section-title">${t("vault.detail_triggers")}</div>
     <div>${triggerHtml}</div>
 
-    <div class="detail-section-title">Tags personalizados</div>
-    <input type="text" id="detail-tags" value="${escapeHtml(m.custom_tags || "")}"
-           placeholder="tag1, tag2, ...">
+    ${civitaiTagsHtml ? `
+    <div class="detail-section-title">${t("vault.detail_civitai_tags")}</div>
+    <div>${civitaiTagsHtml}</div>` : ""}
 
-    <div class="detail-section-title">Notas</div>
-    <textarea id="detail-notes" placeholder="Notas personales sobre este modelo...">${escapeHtml(m.user_notes || "")}</textarea>
+    <div class="detail-section-title">${t("vault.detail_custom_tags")}</div>
+    <input type="text" id="detail-tags" value="${escapeHtml(m.custom_tags || "")}"
+           placeholder="${escapeHtml(t("vault.detail_custom_tags_placeholder"))}">
+
+    <div class="detail-section-title">${t("vault.detail_notes")}</div>
+    <textarea id="detail-notes" placeholder="${escapeHtml(t("vault.detail_notes_placeholder"))}">${escapeHtml(m.user_notes || "")}</textarea>
     <div style="display:flex;gap:8px;margin-top:8px">
       <button class="btn btn-primary" style="flex:1;font-size:12px"
-              onclick="saveModelData('${m.hash}')">Guardar</button>
+              onclick="saveModelData('${m.hash}')">${t("vault.detail_save")}</button>
     </div>`;
 }
 
@@ -218,10 +233,10 @@ async function saveModelData(hash) {
       body: JSON.stringify({ user_notes: notes, custom_tags: tags }),
     });
     const data = await res.json();
-    if (data.ok) showToast("✅ Guardado.");
-    else         showToast("❌ Error guardando.");
-  } catch {
-    showToast("❌ Error de conexión.");
+    if (data.ok) showToast("✅ " + t("vault.saved"));
+    else         showToast("❌ " + t("vault.save_error"));
+  } catch (_) {
+    showToast("❌ " + t("vault.conn_error"));
   }
 }
 
@@ -231,10 +246,10 @@ async function saveModelData(hash) {
 async function startScan() {
   const btn = $("btn-scan");
   btn.disabled = true;
-  btn.textContent = "Escaneando...";
+  btn.textContent = t("vault.scanning") + "...";
   $("scan-progress").classList.add("visible");
   $("scan-bar-fill").style.width = "0%";
-  $("scan-label").textContent = "Iniciando...";
+  $("scan-label").textContent = t("vault.scan_starting");
   $("scan-fraction").textContent = "";
 
   try {
@@ -257,8 +272,8 @@ async function startScan() {
         sse.close();
         $("scan-progress").classList.remove("visible");
         btn.disabled = false;
-        btn.textContent = "↻ Sincronizar";
-        showToast(`✅ Scan completo. ${ev.total} modelos indexados.`);
+        btn.textContent = t("vault.btn_scan");
+        showToast("✅ " + t("vault.scan_complete", { total: ev.total }));
         refresh();
       }
 
@@ -266,7 +281,7 @@ async function startScan() {
         sse.close();
         $("scan-progress").classList.remove("visible");
         btn.disabled = false;
-        btn.textContent = "↻ Sincronizar";
+        btn.textContent = t("vault.btn_scan");
         showToast(`❌ ${ev.error}`);
       }
     };
@@ -274,14 +289,119 @@ async function startScan() {
       sse.close();
       $("scan-progress").classList.remove("visible");
       btn.disabled = false;
-      btn.textContent = "↻ Sincronizar";
-      showToast("❌ Error de conexión con el stream de scan.");
+      btn.textContent = t("vault.btn_scan");
+      showToast("❌ " + t("vault.scan_error"));
     };
-  } catch {
+  } catch (_) {
     $("scan-progress").classList.remove("visible");
     btn.disabled = false;
-    btn.textContent = "↻ Sincronizar";
-    showToast("❌ Error iniciando el scan.");
+    btn.textContent = t("vault.btn_scan");
+    showToast("❌ " + t("vault.scan_start_error"));
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+// Civitai Tag Sync
+// ════════════════════════════════════════════════════════════════
+async function syncCivitai() {
+  // Paso 1: consultar pendientes SIN iniciar el thread
+  let pending = 0;
+  try {
+    const res  = await fetch("/api/vault/civitai-pending");
+    const data = await res.json();
+    pending = data.pending ?? 0;
+  } catch (_) {
+    showToast("❌ " + t("vault.civitai_pending_error"));
+    return;
+  }
+
+  if (pending === 0) {
+    showToast("✅ " + t("vault.civitai_all_synced"));
+    return;
+  }
+
+  const etaMin = Math.ceil(pending * 1.5 / 60);
+  const ok = confirm(t("vault.civitai_confirm", { count: pending, eta: etaMin }));
+  if (!ok) return;
+
+  await _runCivitaiSync(false);
+}
+
+async function forceSyncCivitai() {
+  let total = allModels.length || 100;
+  const etaMin = Math.ceil(total * 1.5 / 60);
+  const ok = confirm(t("vault.civitai_force_confirm", { eta: etaMin }));
+  if (!ok) return;
+  await _runCivitaiSync(true);
+}
+
+async function _runCivitaiSync(force) {
+  const btn = force ? $("btn-civitai-force") : $("btn-civitai-sync");
+
+  // Iniciar el sync
+  let session_id;
+  try {
+    const res  = await fetch(`/api/vault/civitai-sync?force=${force}`, { method: "POST" });
+    const info = await res.json();
+    session_id = info.session_id;
+  } catch (_) {
+    showToast("❌ " + t("vault.civitai_start_error"));
+    return;
+  }
+
+  const btnLabel = t(force ? "vault.btn_resync_all" : "vault.btn_sync_civitai");
+  btn.disabled = true;
+  btn.textContent = t("vault.scanning") + "...";
+  $("scan-progress").classList.add("visible");
+  $("scan-bar-fill").style.width = "0%";
+  $("scan-label").textContent = t("vault.civitai_connecting");
+  $("scan-fraction").textContent = "";
+
+  try {
+    const sse = new EventSource(`/api/vault/civitai-progress/${session_id}`);
+    sse.onmessage = e => {
+      const ev = JSON.parse(e.data);
+      if (ev.type === "ping") return;
+
+      if (ev.type === "progress") {
+        const pct = ev.total ? Math.round(ev.current / ev.total * 100) : 0;
+        $("scan-bar-fill").style.width = `${pct}%`;
+        $("scan-label").textContent = ev.name || "";
+        $("scan-fraction").textContent = ev.total ? `${ev.current}/${ev.total}` : "";
+      }
+
+      if (ev.type === "done") {
+        sse.close();
+        $("scan-progress").classList.remove("visible");
+        btn.disabled = false;
+        btn.textContent = btnLabel;
+        showToast("☁ " + t("vault.civitai_done", {
+          synced: ev.synced ?? 0, skipped: ev.skipped ?? 0,
+          not_found: ev.not_found ?? 0, errors: ev.errors ?? 0
+        }));
+        refresh();
+      }
+
+      if (ev.type === "error") {
+        sse.close();
+        $("scan-progress").classList.remove("visible");
+        btn.disabled = false;
+        btn.textContent = btnLabel;
+        showToast(`❌ ${ev.error}`);
+      }
+    };
+    sse.onerror = () => {
+      sse.close();
+      $("scan-progress").classList.remove("visible");
+      btn.disabled = false;
+      btn.textContent = btnLabel;
+      showToast("❌ " + t("vault.civitai_stream_error"));
+    };
+  } catch (_) {
+    $("scan-progress").classList.remove("visible");
+    btn.disabled = false;
+    btn.textContent = btnLabel;
+    showToast("❌ " + t("vault.civitai_start_error"));
   }
 }
 
@@ -304,6 +424,7 @@ function applyFilters() {
       (m.display_name  || "").toLowerCase().includes(ql) ||
       (m.creator_name  || "").toLowerCase().includes(ql) ||
       (m.custom_tags   || "").toLowerCase().includes(ql) ||
+      (m.civitai_tags  || "").toLowerCase().includes(ql) ||
       (m.base_model    || "").toLowerCase().includes(ql) ||
       (m.triggers      || "").toLowerCase().includes(ql)
     );
@@ -366,4 +487,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Scan
   $("btn-scan").addEventListener("click", startScan);
+
+  // Civitai sync
+  $("btn-civitai-sync").addEventListener("click", syncCivitai);
+  $("btn-civitai-force").addEventListener("click", forceSyncCivitai);
 });

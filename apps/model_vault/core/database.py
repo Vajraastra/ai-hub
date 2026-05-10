@@ -108,6 +108,24 @@ class VaultDatabase:
                     last_scan=CURRENT_TIMESTAMP
             """, model_data)
 
+    def update_civitai_data(self, model_hash: str, data: dict):
+        """Actualiza solo campos Civitai; no toca user_notes ni custom_tags."""
+        fields = {
+            "name", "display_name", "base_model", "model_type",
+            "version_id", "model_id", "version_name", "triggers",
+            "description", "creator_name", "civitai_tags",
+        }
+        updates = {k: v for k, v in data.items() if k in fields}
+        if not updates:
+            return
+        set_clause = ", ".join(f"{k}=:{k}" for k in updates)
+        updates["_hash"] = model_hash
+        with self._get_conn() as conn:
+            conn.execute(
+                f"UPDATE models SET {set_clause}, last_scan=CURRENT_TIMESTAMP WHERE hash=:_hash",
+                updates,
+            )
+
     def update_custom_tags(self, model_hash, tags):
         with self._get_conn() as conn:
             conn.execute("UPDATE models SET custom_tags = ? WHERE hash = ?", (tags, model_hash))

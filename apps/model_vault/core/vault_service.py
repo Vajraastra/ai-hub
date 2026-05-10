@@ -130,6 +130,71 @@ class VaultService:
                     # Attempt to download, download_image already filters for videos/formats
                     if self.client.download_image(image_url, preview_path):
                         break # Found a valid one
+    def sync_all(self, progress_cb=None, force=False) -> dict:
+        """
+        Re-sincroniza con Civitai todos los modelos ya registrados en DB.
+        Salta los que ya tienen civitai_tags a menos que force=True.
+        progress_cb(current, total, model_name) para actualizar UI.
+        Retorna stats: {"synced": N, "skipped": N, "not_found": N, "errors": N}
+        """
+        models = self.db.get_all_models()
+        # Solo procesar modelos cuyo archivo existe
+        models = [m for m in models if m.get("file_path") and os.path.isfile(m["file_path"])]
+
+        stats = {"synced": 0, "skipped": 0, "not_found": 0, "errors": 0}
+        total = len(models)
+
+        for i, model in enumerate(models):
+            if progress_cb:
+                progress_cb(i + 1, total, model.get("display_name") or model.get("name", ""))
+
+            if not force and model.get("civitai_tags"):
+                stats["skipped"] += 1
+                continue
+
+            try:
+                version_data = self.client.get_model_version_by_hash(model["hash"])
+                if not version_data:
+                    stats["not_found"] += 1
+                    time.sleep(0.7)
+                    continue
+
+                meta = self.client.extract_metadata(version_data)
+
+                # Tags y creador requieren la llamada completa al modelo
+                model_id = version_data.get("modelId")
+                if model_id and (not meta.get("tags") or meta.get("creator") == "Unknown"):
+                    full_info = self.client.get_model_info(model_id)
+                    if full_info:
+                        if not meta.get("tags"):
+                            meta["tags"] = full_info.get("tags", [])
+                        if meta.get("creator") == "Unknown" and full_info.get("creator"):
+                            meta["creator"] = full_info["creator"].get("username", "Unknown")
+                    time.sleep(0.4)
+
+                civitai_data = {
+                    "name": os.path.basename(model["file_path"]),
+                    "display_name": meta.get("modelName") or model.get("display_name"),
+                    "base_model": meta["baseModel"],
+                    "model_type": meta["modelType"],
+                    "version_id": meta["modelVersionId"],
+                    "model_id": version_data.get("modelId"),
+                    "version_name": meta["versionName"],
+                    "triggers": self.processor.format_triggers(meta["triggers"]),
+                    "description": self.processor.clean_html(meta.get("description", "")),
+                    "creator_name": meta.get("creator", "Unknown"),
+                    "civitai_tags": ", ".join(meta.get("tags", [])) if meta.get("tags") else "",
+                }
+                self.db.update_civitai_data(model["hash"], civitai_data)
+                stats["synced"] += 1
+                time.sleep(0.7)
+
+            except Exception as e:
+                print(f"[sync_all] Error en {model.get('name')}: {e}")
+                stats["errors"] += 1
+
+        return stats
+
     def check_for_updates(self, model_hash):
         """
         Compares local version with the latest available on Civitai

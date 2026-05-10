@@ -34,6 +34,8 @@ vault_router = APIRouter(prefix="/api/vault", tags=["vault"])
 
 _scan_sessions: dict[str, queue.Queue] = {}
 _scan_lock = threading.Lock()
+_civitai_sessions: dict[str, queue.Queue] = {}
+_civitai_lock = threading.Lock()
 _pool = ThreadPoolExecutor(max_workers=2)
 
 
@@ -105,6 +107,7 @@ async def get_models(q: str = "", cat: str = "", sort: str = "recent"):
                       or ql in (m.get("display_name") or "").lower()
                       or ql in (m.get("creator_name") or "").lower()
                       or ql in (m.get("custom_tags") or "").lower()
+                      or ql in (m.get("civitai_tags") or "").lower()
                       or ql in (m.get("base_model") or "").lower()
                       or ql in (m.get("triggers") or "").lower()]
 
@@ -220,6 +223,87 @@ async def scan_progress(session_id: str):
         finally:
             with _scan_lock:
                 _scan_sessions.pop(session_id, None)
+
+    return StreamingResponse(
+        _gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@vault_router.get("/civitai-pending")
+async def get_civitai_pending():
+    """Retorna cuántos modelos no tienen civitai_tags aún, sin iniciar sync."""
+    loop = asyncio.get_event_loop()
+
+    def _count():
+        svc = _get_service()
+        models = svc.db.get_all_models()
+        return sum(1 for m in models if not (m.get("civitai_tags") or "").strip())
+
+    pending = await loop.run_in_executor(_pool, _count)
+    return {"pending": pending}
+
+
+@vault_router.post("/civitai-sync")
+async def start_civitai_sync(force: bool = False):
+    """Inicia sync de tags Civitai para todos los modelos en DB. Devuelve session_id y pending count."""
+    loop = asyncio.get_event_loop()
+
+    def _prepare():
+        svc = _get_service()
+        models = svc.db.get_all_models()
+        if force:
+            return len(models)
+        return sum(1 for m in models if not (m.get("civitai_tags") or "").strip())
+
+    pending = await loop.run_in_executor(_pool, _prepare)
+
+    session_id = str(uuid.uuid4())
+    q: queue.Queue = queue.Queue()
+    with _civitai_lock:
+        _civitai_sessions[session_id] = q
+
+    def _run():
+        try:
+            svc = _get_service()
+
+            def _cb(current, total, name):
+                q.put({"type": "progress", "current": current, "total": total, "name": name})
+
+            stats = svc.sync_all(progress_cb=_cb, force=force)
+            q.put({"type": "done", **stats})
+        except Exception as e:
+            import traceback
+            q.put({"type": "error", "error": f"{e}\n{traceback.format_exc()}"})
+
+    threading.Thread(target=_run, daemon=True).start()
+    return {"session_id": session_id, "pending": pending}
+
+
+@vault_router.get("/civitai-progress/{session_id}")
+async def civitai_progress(session_id: str):
+    """SSE stream del progreso del sync de Civitai."""
+    q = _civitai_sessions.get(session_id)
+    if not q:
+        return Response(status_code=404)
+
+    async def _gen():
+        loop = asyncio.get_event_loop()
+        try:
+            while True:
+                try:
+                    event = await loop.run_in_executor(
+                        None, lambda: q.get(timeout=30)
+                    )
+                    yield f"data: {json.dumps(event)}\n\n"
+                    if event.get("type") in ("done", "error"):
+                        break
+                except queue.Empty:
+                    yield 'data: {"type":"ping"}\n\n'
+        finally:
+            with _civitai_lock:
+                _civitai_sessions.pop(session_id, None)
 
     return StreamingResponse(
         _gen(),

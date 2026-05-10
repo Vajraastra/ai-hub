@@ -152,6 +152,11 @@
       color:var(--accent-cyan); font-size:11px; padding:2px 7px;
       border-radius:4px; margin:2px 2px 2px 0; cursor:default;
     }
+    .civitai-tag-chip {
+      display:inline-block; background:rgba(96,13,181,.2);
+      color:var(--accent-purple); font-size:11px; padding:2px 7px;
+      border-radius:4px; margin:2px 2px 2px 0; cursor:default;
+    }
 
     #detail-notes {
       width:100%; height:80px; resize:vertical;
@@ -172,7 +177,7 @@
       display:none; position:fixed; top:52px; left:0; right:0; z-index:50;
       padding:6px 16px; background:rgba(9,2,27,.95);
       border-bottom:1px solid var(--border);
-      display:flex; align-items:center; gap:10px; font-size:12px;
+      align-items:center; gap:10px; font-size:12px;
     }
     #scan-progress.visible { display:flex; }
     #scan-bar-track {
@@ -199,22 +204,25 @@
 
   <!-- Header -->
   <header id="tool-header">
-    <button class="back-btn" onclick="location.href='/'">← AI Hub</button>
+    <button class="back-btn" onclick="location.href='/'" data-i18n="vault.back">← AI Hub</button>
     <h1>📦 Model Vault</h1>
-    <input type="text" id="search-box" placeholder="🔍 Buscar por nombre, arch, creador, tags...">
+    <input type="text" id="search-box" data-i18n-placeholder="vault.search_placeholder" placeholder="Buscar por nombre, arch, creador, tags...">
     <select id="sort-select">
-      <option value="recent">Más recientes</option>
-      <option value="name">A–Z</option>
-      <option value="arch">Arquitectura</option>
+      <option value="recent" data-i18n="vault.sort_recent">Más recientes</option>
+      <option value="name" data-i18n="vault.sort_name">A–Z</option>
+      <option value="arch" data-i18n="vault.sort_arch">Arquitectura</option>
     </select>
     <span id="model-count">—</span>
     <div class="spacer"></div>
-    <button class="btn btn-outline" id="btn-scan">↻ Sincronizar</button>
+    <button class="btn btn-outline" id="btn-civitai-sync" data-i18n="vault.btn_sync_civitai" data-i18n-title="vault.btn_sync_civitai">☁ Sync Civitai</button>
+    <button class="btn btn-outline" id="btn-civitai-force" data-i18n="vault.btn_resync_all" data-i18n-title="vault.btn_resync_all">☁ Re-sync Todo</button>
+    <button class="btn btn-outline" id="btn-scan" data-i18n="vault.btn_scan">↻ Sincronizar</button>
+    <button class="btn btn-outline" data-i18n-lang-btn style="font-size:11px;padding:3px 9px">EN</button>
   </header>
 
   <!-- Barra de progreso de scan (oculta por defecto) -->
   <div id="scan-progress">
-    <span style="color:var(--accent-cyan);flex-shrink:0">Escaneando</span>
+    <span style="color:var(--accent-cyan);flex-shrink:0" data-i18n="vault.scanning">Escaneando</span>
     <div id="scan-bar-track"><div id="scan-bar-fill"></div></div>
     <span id="scan-label">...</span>
     <span id="scan-fraction" style="color:var(--text-dim);flex-shrink:0;font-family:'JetBrains Mono',monospace"></span>
@@ -225,27 +233,27 @@
 
     <!-- Sidebar categorías -->
     <nav id="sidebar">
-      <div class="sidebar-title">Tipo</div>
+      <div class="sidebar-title" data-i18n="vault.sidebar_type">Tipo</div>
       <button class="cat-btn active" data-cat="all">
-        Todos <span class="cat-count" id="cnt-all">0</span>
+        <span data-i18n="vault.cat_all">Todos</span> <span class="cat-count" id="cnt-all">0</span>
       </button>
       <button class="cat-btn" data-cat="checkpoint">
-        Checkpoint <span class="cat-count" id="cnt-checkpoint">0</span>
+        <span data-i18n="vault.cat_checkpoint">Checkpoint</span> <span class="cat-count" id="cnt-checkpoint">0</span>
       </button>
       <button class="cat-btn" data-cat="lora">
-        LoRA <span class="cat-count" id="cnt-lora">0</span>
+        <span data-i18n="vault.cat_lora">LoRA</span> <span class="cat-count" id="cnt-lora">0</span>
       </button>
       <button class="cat-btn" data-cat="locon">
-        LyCORIS <span class="cat-count" id="cnt-locon">0</span>
+        <span data-i18n="vault.cat_lycoris">LyCORIS</span> <span class="cat-count" id="cnt-locon">0</span>
       </button>
       <button class="cat-btn" data-cat="textualinversion">
-        Embedding <span class="cat-count" id="cnt-textualinversion">0</span>
+        <span data-i18n="vault.cat_embedding">Embedding</span> <span class="cat-count" id="cnt-textualinversion">0</span>
       </button>
       <button class="cat-btn" data-cat="vae">
-        VAE <span class="cat-count" id="cnt-vae">0</span>
+        <span data-i18n="vault.cat_vae">VAE</span> <span class="cat-count" id="cnt-vae">0</span>
       </button>
       <button class="cat-btn" data-cat="upscaler">
-        Upscaler <span class="cat-count" id="cnt-upscaler">0</span>
+        <span data-i18n="vault.cat_upscaler">Upscaler</span> <span class="cat-count" id="cnt-upscaler">0</span>
       </button>
     </nav>
 
@@ -275,6 +283,7 @@
 <!-- Toast -->
 <div id="toast"></div>
 
+<script src="/static/locale.js"></script>
 <script src="/static/vault.js"></script>
 </body>
 </html>
