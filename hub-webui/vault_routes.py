@@ -7,6 +7,7 @@ import sys
 import uuid
 import json
 import queue
+import shutil
 import asyncio
 import threading
 from typing import Optional
@@ -69,10 +70,27 @@ def _find_thumbnail(file_path: str) -> Optional[str]:
             return candidate
     return None
 
-def _enrich(m: dict) -> dict:
-    """Añade has_thumbnail al dict de un modelo."""
+def _get_models_root() -> str:
+    return _load_config().get("paths", {}).get("models", "")
+
+def _enrich(m: dict, models_root: str = "") -> dict:
+    """Añade has_thumbnail y subfolder al dict de un modelo."""
     m = dict(m)
     m["has_thumbnail"] = bool(_find_thumbnail(m.get("file_path", "")))
+
+    subfolder = ""
+    file_path = m.get("file_path", "")
+    if file_path and models_root:
+        try:
+            rel = os.path.relpath(file_path, models_root)
+            parts = rel.replace("\\", "/").split("/")
+            # parts[0]=carpeta_categoria, parts[-1]=archivo
+            # path completo del subfolder (soporta anidamiento arbitrario)
+            if len(parts) > 2:
+                subfolder = "/".join(parts[1:-1])
+        except Exception:
+            pass
+    m["subfolder"] = subfolder
     return m
 
 
@@ -81,6 +99,13 @@ def _enrich(m: dict) -> dict:
 class UpdateModelPayload(BaseModel):
     user_notes:  Optional[str] = None
     custom_tags: Optional[str] = None
+
+class MoveEntry(BaseModel):
+    hash:             str
+    target_subfolder: str   # "" = raíz de la categoría
+
+class ApplyMovesPayload(BaseModel):
+    moves: list[MoveEntry]
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -118,7 +143,8 @@ async def get_models(q: str = "", cat: str = "", sort: str = "recent"):
             models.sort(key=lambda m: (m.get("base_model") or "").lower())
         # "recent" usa el orden por defecto del DB (date_added DESC)
 
-        return [_enrich(m) for m in models]
+        models_root = _get_models_root()
+        return [_enrich(m, models_root) for m in models]
 
     models = await loop.run_in_executor(_pool, _load)
     return {"models": models, "total": len(models)}
@@ -141,7 +167,8 @@ async def get_model_detail(model_hash: str):
     def _load():
         svc = _get_service()
         m   = svc.db.get_model_by_hash(model_hash)
-        return _enrich(m) if m else None
+        models_root = _get_models_root()
+        return _enrich(m, models_root) if m else None
 
     m = await loop.run_in_executor(_pool, _load)
     if not m:
@@ -310,3 +337,61 @@ async def civitai_progress(session_id: str):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@vault_router.post("/apply-moves")
+async def apply_moves(payload: ApplyMovesPayload):
+    """Mueve archivos de modelos a subfolders destino y actualiza la DB."""
+    loop = asyncio.get_event_loop()
+
+    def _run():
+        svc         = _get_service()
+        models_root = _get_models_root()
+        moved  = 0
+        errors = []
+
+        for entry in payload.moves:
+            try:
+                m = svc.db.get_model_by_hash(entry.hash)
+                if not m:
+                    errors.append(f"{entry.hash[:8]}: no encontrado")
+                    continue
+
+                file_path  = m["file_path"]
+                rel        = os.path.relpath(file_path, models_root)
+                parts      = rel.replace("\\", "/").split("/")
+                cat_folder = parts[0]
+                filename   = parts[-1]
+
+                if entry.target_subfolder:
+                    new_path = os.path.join(models_root, cat_folder,
+                                            entry.target_subfolder, filename)
+                else:
+                    new_path = os.path.join(models_root, cat_folder, filename)
+
+                if os.path.normpath(new_path) == os.path.normpath(file_path):
+                    continue
+
+                new_dir   = os.path.dirname(new_path)
+                os.makedirs(new_dir, exist_ok=True)
+
+                # Mover archivos compañeros (preview, json, etc.) que comparten el nombre base
+                src_dir   = os.path.dirname(file_path)
+                base_name = os.path.splitext(os.path.basename(file_path))[0]
+                main_name = os.path.basename(file_path)
+                for fname in os.listdir(src_dir):
+                    if fname != main_name and fname.startswith(base_name + "."):
+                        companion = os.path.join(src_dir, fname)
+                        if os.path.isfile(companion):
+                            shutil.move(companion, os.path.join(new_dir, fname))
+
+                shutil.move(file_path, new_path)
+                svc.db.update_file_path(entry.hash, new_path)
+                moved += 1
+
+            except Exception as e:
+                errors.append(f"{entry.hash[:8]}: {e}")
+
+        return {"moved": moved, "errors": len(errors), "error_detail": errors}
+
+    return await loop.run_in_executor(_pool, _run)

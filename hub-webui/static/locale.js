@@ -57,7 +57,7 @@
         sort_recent:"Más recientes", sort_name:"A–Z", sort_arch:"Arquitectura",
         btn_sync_civitai:"☁ Sync Civitai", btn_resync_all:"☁ Re-sync Todo", btn_scan:"↻ Sincronizar",
         scanning:"Escaneando", models_count:"{count} modelo", models_count_plural:"{count} modelos",
-        sidebar_type:"Tipo", cat_all:"Todos", cat_checkpoint:"Checkpoint", cat_lora:"LoRA", cat_lycoris:"LyCORIS", cat_embedding:"Embedding", cat_vae:"VAE", cat_upscaler:"Upscaler",
+        sidebar_type:"Tipo", cat_all:"Todos", cat_checkpoint:"Checkpoint", cat_lora:"LoRA", cat_lycoris:"LyCORIS", cat_embedding:"Embedding", cat_vae:"VAE", cat_upscaler:"Upscaler", subfolder_root:"(raíz)",
         loading:"Cargando modelos...", empty:"Sin modelos", empty_search:"Sin modelos para \"{query}\".", empty_hint:"Configura el directorio de modelos en Ajustes y pulsa Sincronizar.",
         detail_type:"Tipo", detail_base:"Base model", detail_version:"Versión", detail_creator:"Creador", detail_file:"Archivo",
         detail_description:"Descripción", detail_triggers:"Trigger words", detail_no_triggers:"Sin trigger words.",
@@ -71,7 +71,10 @@
         civitai_force_confirm:"Force Sync re-sincronizará TODOS los modelos con Civitai.\nTiempo estimado: ~{eta} minuto(s).\n\n¿Continuar?",
         civitai_start_error:"Error iniciando Civitai sync.", civitai_connecting:"Conectando con Civitai...",
         civitai_done:"Civitai sync completo — {synced} actualizados, {skipped} skip, {not_found} no encontrados, {errors} errores",
-        civitai_stream_error:"Error de conexión con Civitai sync."
+        civitai_stream_error:"Error de conexión con Civitai sync.",
+        move_already_there:"El modelo ya está en esa carpeta.",
+        move_cross_cat_warn:"Este modelo es de tipo \"{from}\" pero la carpeta destino es \"{to}\".\n¿Estás seguro de que quieres moverlo ahí?",
+        copy_webui:"Copiar para WebUI", copied:"Copiado", copy_failed:"No se pudo copiar al portapapeles"
       },
       merger: {
         title:"LoRA Merger", back:"← AI Hub", no_loras:"Sin LoRAs",
@@ -156,7 +159,7 @@
         sort_recent:"Most recent", sort_name:"A–Z", sort_arch:"Architecture",
         btn_sync_civitai:"☁ Sync Civitai", btn_resync_all:"☁ Re-sync All", btn_scan:"↻ Scan",
         scanning:"Scanning", models_count:"{count} model", models_count_plural:"{count} models",
-        sidebar_type:"Type", cat_all:"All", cat_checkpoint:"Checkpoint", cat_lora:"LoRA", cat_lycoris:"LyCORIS", cat_embedding:"Embedding", cat_vae:"VAE", cat_upscaler:"Upscaler",
+        sidebar_type:"Type", cat_all:"All", cat_checkpoint:"Checkpoint", cat_lora:"LoRA", cat_lycoris:"LyCORIS", cat_embedding:"Embedding", cat_vae:"VAE", cat_upscaler:"Upscaler", subfolder_root:"(root)",
         loading:"Loading models...", empty:"No models", empty_search:"No models for \"{query}\".", empty_hint:"Configure the models directory in Settings and press Scan.",
         detail_type:"Type", detail_base:"Base model", detail_version:"Version", detail_creator:"Creator", detail_file:"File",
         detail_description:"Description", detail_triggers:"Trigger words", detail_no_triggers:"No trigger words.",
@@ -170,7 +173,10 @@
         civitai_force_confirm:"Force Sync will re-sync ALL models with Civitai.\nEstimated time: ~{eta} minute(s).\n\nContinue?",
         civitai_start_error:"Error starting Civitai sync.", civitai_connecting:"Connecting to Civitai...",
         civitai_done:"Civitai sync complete — {synced} updated, {skipped} skipped, {not_found} not found, {errors} errors",
-        civitai_stream_error:"Connection error with Civitai sync."
+        civitai_stream_error:"Connection error with Civitai sync.",
+        move_already_there:"Model is already in that folder.",
+        move_cross_cat_warn:"This model is of type \"{from}\" but the target folder is \"{to}\".\nAre you sure you want to move it there?",
+        copy_webui:"Copy for WebUI", copied:"Copied", copy_failed:"Could not copy to clipboard"
       },
       merger: {
         title:"LoRA Merger", back:"← AI Hub", no_loras:"No LoRAs",

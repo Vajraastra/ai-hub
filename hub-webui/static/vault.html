@@ -45,7 +45,7 @@
     #vault-body { display:flex; flex:1; overflow:hidden; }
 
     #sidebar {
-      width:150px; flex-shrink:0; border-right:1px solid var(--border);
+      width:165px; flex-shrink:0; border-right:1px solid var(--border);
       overflow-y:auto; padding:10px 8px;
       display:flex; flex-direction:column; gap:2px;
     }
@@ -67,6 +67,38 @@
     }
     .cat-btn.active .cat-count { color:var(--accent-purple); }
 
+    /* flecha de expansión */
+    .cat-expand {
+      font-size:8px; color:var(--text-dim); display:inline-block;
+      transition:transform .18s; line-height:1; margin-left:3px;
+    }
+    .cat-btn.expanded .cat-expand { transform:rotate(90deg); }
+
+    /* subfolders */
+    .subfolder-list { display:flex; flex-direction:column; gap:1px; margin-bottom:2px; }
+    .subfolder-list[hidden] { display:none; }
+
+    .subfolder-btn {
+      background:none; border:none; width:100%; text-align:left;
+      color:var(--text-dim); font-size:11px; padding:4px 8px 4px 20px;
+      border-radius:5px; cursor:pointer;
+      display:flex; align-items:center; justify-content:space-between;
+      transition:background .1s, color .1s;
+    }
+    .subfolder-btn:hover  { background:rgba(255,255,255,.04); color:var(--text-secondary); }
+    .subfolder-btn.active { background:rgba(96,13,181,.15); color:var(--accent-cyan); }
+
+    .subfolder-label {
+      overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1;
+    }
+    .subfolder-btn.is-root .subfolder-label { font-style:italic; }
+
+    .subfolder-count {
+      font-size:10px; color:var(--text-dim);
+      font-family:'JetBrains Mono',monospace; flex-shrink:0; margin-left:4px;
+    }
+    .subfolder-btn.active .subfolder-count { color:var(--accent-purple); }
+
     /* ── Grid de modelos ────────────────────────────────────────── */
     #main-area { flex:1; display:flex; overflow:hidden; }
 
@@ -80,7 +112,7 @@
     /* Tarjeta de modelo */
     .model-card {
       background:var(--bg-card); border:1px solid var(--border);
-      border-radius:8px; overflow:hidden; cursor:pointer;
+      border-radius:8px; overflow:hidden; cursor:pointer; position:relative;
       transition:border-color .15s, transform .1s;
     }
     .model-card:hover { border-color:var(--accent-purple); transform:translateY(-1px); }
@@ -191,6 +223,56 @@
     #scan-label { color:var(--text-secondary); white-space:nowrap; overflow:hidden;
                    text-overflow:ellipsis; max-width:300px; }
 
+    /* ── Drag & Drop ────────────────────────────────────────────── */
+    .model-card[draggable="true"] { cursor: grab; }
+    .model-card.dragging { opacity: 0.35; }
+
+    /* subfolder resaltado cuando se arrastra encima */
+    .subfolder-btn.drop-target {
+      background: rgba(84,239,234,.18) !important;
+      color: var(--accent-cyan) !important;
+      box-shadow: inset 0 0 0 1px var(--accent-cyan);
+    }
+    .subfolder-btn.drop-target .subfolder-count { color: var(--accent-cyan) !important; }
+
+    /* badge que indica a dónde se va a mover */
+    .move-badge {
+      display:block; font-size:9px; padding:1px 5px; margin-top:3px;
+      background:rgba(236,0,240,.18); color:#EC00F0;
+      border-radius:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    }
+    .model-card.pending-move { border-color:rgba(236,0,240,.5); }
+    .model-card.pending-move:hover { border-color:#EC00F0; }
+
+    /* ── Copy for WebUI ────────────────────────────────────────── */
+    .card-copy-btn {
+      position:absolute; bottom:6px; right:6px; z-index:2;
+      background:rgba(9,2,27,.88); border:1px solid var(--border);
+      color:var(--text-dim); border-radius:4px;
+      width:22px; height:22px; font-size:13px; line-height:1;
+      display:flex; align-items:center; justify-content:center;
+      cursor:pointer; opacity:0; transition:opacity .15s, color .1s, border-color .1s;
+    }
+    .model-card:hover .card-copy-btn { opacity:1; }
+    .card-copy-btn:hover { color:var(--accent-cyan); border-color:var(--accent-cyan); }
+
+    .copy-webui-row {
+      display:flex; gap:6px; align-items:center; margin-top:6px;
+    }
+    .copy-weight-input {
+      width:62px; background:var(--bg-input); border:1px solid var(--border);
+      color:var(--text-primary); border-radius:6px; padding:5px 7px;
+      font-size:12px; font-family:'JetBrains Mono',monospace; text-align:center;
+    }
+    .copy-weight-input:focus { outline:none; border-color:var(--accent-purple); }
+    .copy-string-preview {
+      flex:1; font-size:11px; color:var(--accent-cyan);
+      font-family:'JetBrains Mono',monospace;
+      white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+      padding:5px 8px; background:rgba(84,239,234,.06);
+      border-radius:6px; border:1px solid rgba(84,239,234,.15);
+    }
+
     /* Empty state */
     .grid-empty {
       grid-column:1/-1; padding:40px 0; text-align:center;
@@ -231,31 +313,8 @@
   <!-- Cuerpo -->
   <div id="vault-body">
 
-    <!-- Sidebar categorías -->
-    <nav id="sidebar">
-      <div class="sidebar-title" data-i18n="vault.sidebar_type">Tipo</div>
-      <button class="cat-btn active" data-cat="all">
-        <span data-i18n="vault.cat_all">Todos</span> <span class="cat-count" id="cnt-all">0</span>
-      </button>
-      <button class="cat-btn" data-cat="checkpoint">
-        <span data-i18n="vault.cat_checkpoint">Checkpoint</span> <span class="cat-count" id="cnt-checkpoint">0</span>
-      </button>
-      <button class="cat-btn" data-cat="lora">
-        <span data-i18n="vault.cat_lora">LoRA</span> <span class="cat-count" id="cnt-lora">0</span>
-      </button>
-      <button class="cat-btn" data-cat="locon">
-        <span data-i18n="vault.cat_lycoris">LyCORIS</span> <span class="cat-count" id="cnt-locon">0</span>
-      </button>
-      <button class="cat-btn" data-cat="textualinversion">
-        <span data-i18n="vault.cat_embedding">Embedding</span> <span class="cat-count" id="cnt-textualinversion">0</span>
-      </button>
-      <button class="cat-btn" data-cat="vae">
-        <span data-i18n="vault.cat_vae">VAE</span> <span class="cat-count" id="cnt-vae">0</span>
-      </button>
-      <button class="cat-btn" data-cat="upscaler">
-        <span data-i18n="vault.cat_upscaler">Upscaler</span> <span class="cat-count" id="cnt-upscaler">0</span>
-      </button>
-    </nav>
+    <!-- Sidebar categorías — generado dinámicamente por vault.js -->
+    <nav id="sidebar"></nav>
 
     <!-- Área principal: grid + detalles -->
     <div id="main-area">

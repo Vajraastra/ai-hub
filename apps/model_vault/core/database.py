@@ -134,6 +134,13 @@ class VaultDatabase:
         with self._get_conn() as conn:
             conn.execute("UPDATE models SET user_notes = ? WHERE hash = ?", (notes, model_hash))
 
+    def update_file_path(self, model_hash, new_path):
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE models SET file_path = ?, last_scan = CURRENT_TIMESTAMP WHERE hash = ?",
+                (new_path, model_hash),
+            )
+
     def get_all_models(self):
         with self._get_conn() as conn:
             conn.row_factory = sqlite3.Row
