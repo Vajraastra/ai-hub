@@ -38,9 +38,9 @@ let wsReconnectTimer = null;
 
 function connectWS() {
   ws = new WebSocket(`ws://${location.host}/ws`);
-  ws.onopen  = () => { setWsDot("connected", "conectado"); clearTimeout(wsReconnectTimer); };
-  ws.onclose = () => { setWsDot("", "reconectando..."); wsReconnectTimer = setTimeout(connectWS, 2000); };
-  ws.onerror = () => setWsDot("error", "error");
+  ws.onopen  = () => { setWsDot("connected", t("ws.connected")); clearTimeout(wsReconnectTimer); };
+  ws.onclose = () => { setWsDot("", t("ws.reconnecting")); wsReconnectTimer = setTimeout(connectWS, 2000); };
+  ws.onerror = () => setWsDot("error", t("ws.error"));
   ws.onmessage = e => {
     const msg = JSON.parse(e.data);
     if (msg.type === "init") {
@@ -89,7 +89,7 @@ function renderApps() {
   const container = $("apps-list");
   const total = appsState.length;
   const installed = appsState.filter(a => a.status !== "not_installed").length;
-  $("apps-count").textContent = `${installed} de ${total} instaladas`;
+  $("apps-count").textContent = t("apps.count", { installed, total });
 
   appsState.forEach(app => {
     let card = $(`card-${app.id}`);
@@ -106,20 +106,20 @@ function renderApps() {
 
 function buildCardHTML(app, effectiveStatus) {
   const statusMap = {
-    running:       ["running",       "● Corriendo"],
-    installed:     ["installed",     "○ Instalada"],
-    not_installed: ["not_installed", "○ No instalada"],
-    launching:     ["busy",          "Iniciando..."],
-    installing:    ["busy",          "Instalando..."],
-    updating:      ["busy",          "Actualizando..."],
-    uninstalling:  ["busy",          "Desinstalando..."],
-    stopping:      ["busy",          "Deteniendo..."],
+    running:       ["running",       t("apps.status.running")],
+    installed:     ["installed",     t("apps.status.installed")],
+    not_installed: ["not_installed", t("apps.status.not_installed")],
+    launching:     ["busy",          t("apps.status.launching")],
+    installing:    ["busy",          t("apps.status.installing")],
+    updating:      ["busy",          t("apps.status.updating")],
+    uninstalling:  ["busy",          t("apps.status.uninstalling")],
+    stopping:      ["busy",          t("apps.status.stopping")],
   };
   const [pillCls, pillText] = statusMap[effectiveStatus] || ["", effectiveStatus];
   const initial = app.name[0].toUpperCase();
   const badge = app.port
-    ? `<span class="app-badge webui">🌐 WebUI</span>`
-    : `<span class="app-badge desktop">🖥 Desktop</span>`;
+    ? `<span class="app-badge webui">🌐 ${t("apps.badge_webui")}</span>`
+    : `<span class="app-badge desktop">🖥 ${t("apps.badge_desktop")}</span>`;
 
   const meta = app.status === "running" && (app.port || app.pid)
     ? `<span class="meta-row">${app.port ? `🔌 ${app.port}` : ""}${app.pid ? `  🔑 ${app.pid}` : ""}</span>`
@@ -135,21 +135,21 @@ function buildCardHTML(app, effectiveStatus) {
     <div class="progress-bar"><div class="progress-fill"></div></div>`;
   } else if (app.status === "running") {
     btns = `<div class="btn-row">
-      <button class="btn btn-stop" onclick="appAction('stop','${app.id}')">⏹ Detener</button>
-      <button class="btn btn-icon" onclick="openAppSettings('${app.id}')" title="Ajustes">⚙</button>
+      <button class="btn btn-stop" onclick="appAction('stop','${app.id}')">${t("apps.btn.stop")}</button>
+      <button class="btn btn-icon" onclick="openAppSettings('${app.id}')" title="${t("apps.btn.settings")}">${t("apps.btn.settings")}</button>
     </div>`;
   } else if (app.status === "installed") {
     const dis = app.any_running ? "disabled" : "";
-    const tip = app.any_running ? `title="Otra app activa. Deténla primero."` : "";
+    const tip = app.any_running ? `title="${t("apps.blocked")}"` : "";
     btns = `<div class="btn-row">
-      <button class="btn btn-launch" onclick="appAction('launch','${app.id}')" ${dis} ${tip}>▶ Lanzar</button>
-      <button class="btn btn-icon"   onclick="appAction('update','${app.id}')"   title="Actualizar">↑</button>
-      <button class="btn btn-icon"   onclick="openAppSettings('${app.id}')"      title="Ajustes">⚙</button>
-      <button class="btn btn-icon danger" onclick="confirmUninstall('${app.id}','${app.name}')" title="Desinstalar">✕</button>
+      <button class="btn btn-launch" onclick="appAction('launch','${app.id}')" ${dis} ${tip}>${t("apps.btn.launch")}</button>
+      <button class="btn btn-icon"   onclick="appAction('update','${app.id}')"   title="${t("apps.btn.update")}">${t("apps.btn.update")}</button>
+      <button class="btn btn-icon"   onclick="openAppSettings('${app.id}')"      title="${t("apps.btn.settings")}">${t("apps.btn.settings")}</button>
+      <button class="btn btn-icon danger" onclick="confirmUninstall('${app.id}','${app.name}')" title="${t("apps.btn.uninstall")}">${t("apps.btn.uninstall")}</button>
     </div>`;
   } else {
     btns = `<div class="btn-row">
-      <button class="btn btn-install" onclick="appAction('install','${app.id}')">↓ Instalar</button>
+      <button class="btn btn-install" onclick="appAction('install','${app.id}')">${t("apps.btn.install")}</button>
     </div>`;
   }
 
@@ -185,15 +185,15 @@ async function appAction(action, appId) {
   try {
     const res  = await fetch(urls[action], { method: "POST" });
     const data = await res.json();
-    if (data.ok === false) showToast("⚠ Operación no disponible en este momento.");
-  } catch {
-    showToast("❌ Error de conexión con el backend.");
+    if (data.ok === false) showToast("⚠ " + t("apps.op_unavailable"));
+  } catch (_) {
+    showToast("❌ " + t("apps.op_error"));
   }
 }
 
 function confirmUninstall(appId, appName) {
   showConfirm(
-    `¿Desinstalar <strong>${appName}</strong>?<br><br>Se eliminará su directorio completo. Esta acción no se puede deshacer.`,
+    t("apps.uninstall_confirm", { name: `<strong>${appName}</strong>` }),
     () => appAction("uninstall", appId)
   );
 }
@@ -205,10 +205,10 @@ async function launchTool(toolId) {
   try {
     const res  = await fetch(`/api/tools/${toolId}/launch`, { method: "POST" });
     const data = await res.json();
-    if (data.ok) showToast("✅ Herramienta iniciada.");
-    else showToast(`❌ ${data.error || "No se pudo iniciar."}`);
-  } catch {
-    showToast("❌ Error al lanzar la herramienta.");
+    if (data.ok) showToast("✅ " + t("tools.launched"));
+    else showToast(`❌ ${data.error || t("tools.launch_error")}`);
+  } catch (_) {
+    showToast("❌ " + t("tools.error"));
   }
 }
 
@@ -218,30 +218,30 @@ async function launchTool(toolId) {
 async function runCleanup() {
   const btn = $("btn-cleanup");
   btn.disabled = true;
-  btn.textContent = "Limpiando...";
+  btn.textContent = t("apps.cleaning");
   try {
     const res  = await fetch("/api/cleanup", { method: "POST" });
     const data = await res.json();
     if (data.clean) {
-      showToast("✅ Sin procesos stale. Puertos libres.");
+      showToast("✅ " + t("cleanup.clean"));
     } else {
       const lines = data.lines.map(l =>
         `<div class="cleanup-line">${l.icon} ${l.text}</div>`
       ).join("");
       showModal(
-        "Resultado de limpieza",
+        t("cleanup.title"),
         `<p style="font-size:12px;color:var(--text-secondary);margin-bottom:10px">
-           ${data.killed} proceso(s) terminado(s)
+           ${t("cleanup.killed", { count: data.killed })}
          </p>
          <div class="cleanup-lines">${lines}</div>`,
         false
       );
     }
-  } catch {
-    showToast("❌ Error durante la limpieza.");
+  } catch (_) {
+    showToast("❌ " + t("cleanup.error"));
   } finally {
     btn.disabled = false;
-    btn.textContent = "🧹 Limpiar procesos";
+    btn.textContent = t("apps.cleanup");
   }
 }
 
@@ -284,17 +284,16 @@ async function loadSettings() {
     $("set-arch").textContent   = d.gpu?.arch      || "—";
     $("set-cuda").textContent   = d.cuda?.tag      || "—";
     $("set-torch").textContent  = d.cuda?.torch_version || "—";
-    // Limpiar estado previo de validación al recargar
     _hidePathStatus();
-  } catch {
-    showToast("❌ Error cargando ajustes.");
+  } catch (_) {
+    showToast("❌ " + t("settings.load_error"));
   }
 }
 
 async function saveSettings() {
   const btn = $("btn-save-settings");
   btn.disabled = true;
-  btn.textContent = "Guardando...";
+  btn.textContent = t("settings.saving");
   try {
     const res = await fetch("/api/settings", {
       method: "POST",
@@ -306,13 +305,13 @@ async function saveSettings() {
       }),
     });
     const data = await res.json();
-    if (data.ok) showToast("Ajustes guardados.");
+    if (data.ok) showToast(t("settings.saved"));
     else showToast(`Error: ${data.error}`);
-  } catch {
-    showToast("Error guardando ajustes.");
+  } catch (_) {
+    showToast(t("settings.save_error"));
   } finally {
     btn.disabled = false;
-    btn.textContent = "Guardar cambios";
+    btn.textContent = t("settings.save");
   }
 }
 
@@ -336,7 +335,7 @@ async function validateModelsPath() {
 
   const btn = $("btn-validate-models-path");
   btn.disabled = true;
-  btn.textContent = "Verificando...";
+  btn.textContent = t("settings.validating");
 
   try {
     const res  = await fetch("/api/settings/validate-models-path", {
@@ -346,32 +345,30 @@ async function validateModelsPath() {
     });
     const d = await res.json();
     _renderPathStatus(d, path);
-  } catch {
-    _showPathStatus(`<div class="path-status error">Error al verificar el path.</div>`);
+  } catch (_) {
+    _showPathStatus(`<div class="path-status error">${t("settings.path.error")}</div>`);
   } finally {
     btn.disabled = false;
-    btn.textContent = "Verificar";
+    btn.textContent = t("settings.validate");
   }
 }
 
 function _renderPathStatus(d, path) {
   if (d.state === "ok") {
     _showPathStatus(`
-      <div class="path-status ok">
-        Directorio encontrado con estructura canónica completa.
-      </div>`);
+      <div class="path-status ok">${t("settings.path.ok")}</div>`);
     return;
   }
 
   if (d.state === "not_found") {
     _showPathStatus(`
       <div class="path-status warn">
-        El directorio <code>${path}</code> no existe.
+        ${t("settings.path.not_found", { path: `<code>${path}</code>` })}
         <div style="margin-top:8px">
           <button class="btn btn-primary btn-sm" onclick="_createModelsPath('${_esc(path)}')">
-            Crear estructura canónica
+            ${t("settings.path.create_canonical")}
           </button>
-          <button class="btn btn-outline btn-sm" onclick="_hidePathStatus()">Cancelar</button>
+          <button class="btn btn-outline btn-sm" onclick="_hidePathStatus()">${t("settings.path.cancel")}</button>
         </div>
       </div>`);
     return;
@@ -380,27 +377,25 @@ function _renderPathStatus(d, path) {
   // State: "incomplete" or "empty"
   let html = `<div class="path-status warn">`;
   if (d.missing_dirs && d.missing_dirs.length) {
-    html += `<p>Faltan ${d.missing_dirs.length} carpeta(s) canónica(s):
-             <code>${d.missing_dirs.join(", ")}</code>.</p>
-             <p>Se añadirán automáticamente al guardar.</p>`;
+    html += `<p>${t("settings.path.missing", { count: d.missing_dirs.length, dirs: `<code>${d.missing_dirs.join(", ")}</code>` })}</p>
+             <p>${t("settings.path.will_add")}</p>`;
   }
   if (d.orphan_count > 0) {
-    html += `<p style="margin-top:6px">Se detectaron <strong>${d.orphan_count}</strong>
-             modelo(s) fuera del árbol canónico.</p>`;
+    html += `<p style="margin-top:6px">${t("settings.path.orphans", { count: `<strong>${d.orphan_count}</strong>` })}</p>`;
     if (d.orphan_preview && d.orphan_preview.length) {
       const previews = d.orphan_preview.map(p => `<li><code>${p}</code></li>`).join("");
       html += `<ul style="margin:4px 0 8px 16px;font-size:11px;color:#aaa">${previews}</ul>`;
     }
     html += `<div style="margin-top:8px">
       <button class="btn btn-primary btn-sm" onclick="_reorganizeOrphans('${_esc(path)}')">
-        Mover a Inbox para organizar
+        ${t("settings.path.move_inbox")}
       </button>
-      <button class="btn btn-outline btn-sm" onclick="_hidePathStatus()">Ignorar por ahora</button>
+      <button class="btn btn-outline btn-sm" onclick="_hidePathStatus()">${t("settings.path.ignore")}</button>
     </div>`;
   } else {
     html += `<div style="margin-top:8px">
       <button class="btn btn-primary btn-sm" onclick="_applyModelsPath('${_esc(path)}', false)">
-        Aplicar y añadir carpetas faltantes
+        ${t("settings.path.apply")}
       </button>
     </div>`;
   }
@@ -417,8 +412,7 @@ async function _createModelsPath(path) {
   const d = await res.json();
   if (d.ok) {
     _showPathStatus(`<div class="path-status ok">
-      Directorio creado con ${d.missing_added.length} carpeta(s) canónica(s).
-      Guarda los ajustes para activar el cambio.
+      ${t("settings.path.created", { count: d.missing_added.length })}
     </div>`);
   } else {
     _showPathStatus(`<div class="path-status error">Error: ${d.error}</div>`);
@@ -434,8 +428,8 @@ async function _applyModelsPath(path, createIfMissing) {
   const d = await res.json();
   if (d.ok) {
     const msg = d.missing_added.length
-      ? `${d.missing_added.length} carpeta(s) añadida(s). Guarda los ajustes para activar.`
-      : "Estructura canónica completa. Guarda los ajustes para activar.";
+      ? t("settings.path.added", { count: d.missing_added.length })
+      : t("settings.path.complete");
     _showPathStatus(`<div class="path-status ok">${msg}</div>`);
   } else {
     _showPathStatus(`<div class="path-status error">Error: ${d.error}</div>`);
@@ -443,7 +437,7 @@ async function _applyModelsPath(path, createIfMissing) {
 }
 
 async function _reorganizeOrphans(path) {
-  _showPathStatus(`<div class="path-status warn">Moviendo modelos a Inbox...</div>`);
+  _showPathStatus(`<div class="path-status warn">${t("settings.path.moving")}</div>`);
   const res = await fetch("/api/settings/reorganize-orphans", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -457,8 +451,7 @@ async function _reorganizeOrphans(path) {
     </div>`);
   } else {
     _showPathStatus(`<div class="path-status ok">
-      ${d.moved} modelo(s) movidos a _inbox/.
-      Abre la tab Inbox en Model Vault para clasificarlos.
+      ${t("settings.path.moved", { count: d.moved })}
     </div>`);
   }
 }
@@ -472,12 +465,12 @@ function _esc(s) {
 // ════════════════════════════════════════════════════════════════
 async function loadEventLog() {
   const list = $("log-list");
-  list.innerHTML = `<div class="empty-state"><span style="font-size:22px">↻</span><span>Cargando...</span></div>`;
+  list.innerHTML = `<div class="empty-state"><span style="font-size:22px">↻</span><span>${t("log.loading")}</span></div>`;
   try {
     const res  = await fetch("/api/log?lines=200");
     const data = await res.json();
     if (!data.entries.length) {
-      list.innerHTML = `<div class="empty-state"><span style="font-size:22px">📋</span><span>Sin eventos registrados aún.</span></div>`;
+      list.innerHTML = `<div class="empty-state"><span style="font-size:22px">📋</span><span>${t("log.empty")}</span></div>`;
       return;
     }
     list.innerHTML = data.entries.map(e => {
@@ -489,8 +482,8 @@ async function loadEventLog() {
         <span class="log-msg">${e.message || ""}</span>
       </div>`;
     }).join("");
-  } catch {
-    list.innerHTML = `<div class="empty-state"><span>❌ Error cargando log.</span></div>`;
+  } catch (_) {
+    list.innerHTML = `<div class="empty-state"><span>❌ ${t("log.error")}</span></div>`;
   }
 }
 
@@ -504,24 +497,24 @@ async function openAppSettings(appId) {
     currentAppSettings = data;
 
     const appName = appsState.find(a => a.id === appId)?.name || appId;
-    $("modal-title").textContent = `Ajustes — ${appName}`;
+    $("modal-title").textContent = t("settings.modal_title", { name: appName });
 
     let html = "";
 
     // Port override
     html += `<div class="field">
-      <label>Puerto (override)</label>
+      <label>${t("settings.port_label")}</label>
       <input type="number" id="ms-port" placeholder="${data.default_port || 'auto'}"
              value="${data.port_override || ''}"
              style="max-width:140px">
-      <span class="field-hint">Puerto predeterminado: ${data.default_port || 'N/A'}</span>
+      <span class="field-hint">${t("settings.port_hint", { port: data.default_port || 'N/A' })}</span>
     </div>`;
 
     // Flags disponibles
     if (data.flags && data.flags.length) {
       html += `<div>
         <label style="font-size:12px;color:var(--text-secondary);display:block;margin-bottom:8px">
-          Flags de lanzamiento
+          ${t("settings.flags_label")}
         </label>
         <div class="flags-list" id="flags-list">`;
 
@@ -549,16 +542,16 @@ async function openAppSettings(appId) {
 
     // Args libres
     html += `<div class="field">
-      <label>Args adicionales</label>
-      <textarea id="ms-free-args" placeholder="--argumento=valor  (uno por línea o separados por espacio)"
+      <label>${t("settings.args_label")}</label>
+      <textarea id="ms-free-args" placeholder="${t("settings.args_placeholder")}"
       >${data.free_args || ''}</textarea>
-      <span class="field-hint">Argumentos que no están listados como flags arriba.</span>
+      <span class="field-hint">${t("settings.args_hint")}</span>
     </div>`;
 
     $("modal-body").innerHTML = html;
     openModal();
-  } catch (e) {
-    showToast("❌ Error cargando ajustes de la app.");
+  } catch (_) {
+    showToast("❌ " + t("settings.modal_load_error"));
   }
 }
 
@@ -574,7 +567,6 @@ async function saveAppSettings() {
   if (!currentAppSettings) return;
   const appId = currentAppSettings.app_id;
 
-  // Recopilar flags activos
   const flagItems = document.querySelectorAll("#flags-list .flag-item");
   const activeFlags = [];
   flagItems.forEach((el, i) => {
@@ -604,10 +596,10 @@ async function saveAppSettings() {
       }),
     });
     const data = await res.json();
-    if (data.ok) { closeModal(); showToast("✅ Ajustes guardados."); }
+    if (data.ok) { closeModal(); showToast("✅ " + t("settings.modal_saved")); }
     else showToast(`❌ ${data.error}`);
-  } catch {
-    showToast("❌ Error guardando ajustes.");
+  } catch (_) {
+    showToast("❌ " + t("settings.modal_error"));
   }
 }
 
@@ -651,11 +643,11 @@ function closeConfirm() {
 // ════════════════════════════════════════════════════════════════
 let _toastTimer = null;
 function showToast(msg) {
-  const t = $("toast");
-  t.textContent = msg;
-  t.classList.add("show");
+  const el = $("toast");
+  el.textContent = msg;
+  el.classList.add("show");
   clearTimeout(_toastTimer);
-  _toastTimer = setTimeout(() => t.classList.remove("show"), 3200);
+  _toastTimer = setTimeout(() => el.classList.remove("show"), 3200);
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -673,8 +665,8 @@ document.addEventListener("DOMContentLoaded", () => {
   $("terminal-copy").addEventListener("click", () => {
     const text = logBuffer.map(el => el.textContent).join("\n");
     navigator.clipboard.writeText(text).then(
-      () => showToast("✅ Log copiado al portapapeles."),
-      () => showToast("❌ No se pudo copiar.")
+      () => showToast("✅ " + t("terminal.copied")),
+      () => showToast("❌ " + t("terminal.copy_error"))
     );
   });
 
@@ -685,7 +677,6 @@ document.addEventListener("DOMContentLoaded", () => {
   $("btn-save-settings").addEventListener("click", saveSettings);
   $("btn-reload-settings").addEventListener("click", loadSettings);
   $("btn-validate-models-path").addEventListener("click", validateModelsPath);
-  // Limpiar estado de validación cuando el usuario modifica el campo manualmente
   $("set-models-path").addEventListener("input", _hidePathStatus);
   $("btn-refresh-log").addEventListener("click", loadEventLog);
 

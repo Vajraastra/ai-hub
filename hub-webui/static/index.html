@@ -17,16 +17,17 @@
     <span class="logo">AI Hub</span>
     <div class="top-sep"></div>
     <div id="sysinfo">
-      <span style="color:var(--text-secondary);font-size:11px">GPU</span>
+      <span style="color:var(--text-secondary);font-size:11px" data-i18n="sysinfo.gpu">GPU</span>
       <span class="val" id="sys-gpu">—</span>
       <div class="top-sep"></div>
-      <span style="color:var(--text-secondary);font-size:11px">CUDA</span>
+      <span style="color:var(--text-secondary);font-size:11px" data-i18n="sysinfo.cuda">CUDA</span>
       <span class="val" id="sys-cuda">—</span>
       <div class="top-sep"></div>
-      <span style="color:var(--text-secondary);font-size:11px">Libre</span>
+      <span style="color:var(--text-secondary);font-size:11px" data-i18n="sysinfo.free">Libre</span>
       <span class="val" id="sys-disk">—</span>
     </div>
     <div class="spacer"></div>
+    <button class="btn btn-outline" data-i18n-lang-btn style="font-size:11px;padding:3px 9px">EN</button>
     <div id="active-badge">
       <span class="dot"></span>
       <span id="active-app-name"></span>
@@ -35,10 +36,10 @@
 
   <!-- Tab bar -->
   <nav id="tab-bar">
-    <button class="tab-btn active" data-tab="apps">Aplicaciones</button>
-    <button class="tab-btn" data-tab="tools">Herramientas</button>
-    <button class="tab-btn" data-tab="settings">Ajustes</button>
-    <button class="tab-btn" data-tab="log">Log de Eventos</button>
+    <button class="tab-btn active" data-tab="apps" data-i18n="nav.apps">Aplicaciones</button>
+    <button class="tab-btn" data-tab="tools" data-i18n="nav.tools">Herramientas</button>
+    <button class="tab-btn" data-tab="settings" data-i18n="nav.settings">Ajustes</button>
+    <button class="tab-btn" data-tab="log" data-i18n="nav.log">Log de Eventos</button>
   </nav>
 
   <!-- ── Tab: Aplicaciones ────────────────────────────────────────────── -->
@@ -47,7 +48,7 @@
       <div id="apps-toolbar">
         <span style="font-size:12px;color:var(--text-secondary)" id="apps-count"></span>
         <div class="spacer"></div>
-        <button class="btn btn-outline" id="btn-cleanup">🧹 Limpiar procesos</button>
+        <button class="btn btn-outline" id="btn-cleanup" data-i18n="apps.cleanup">🧹 Limpiar procesos</button>
       </div>
       <div id="apps-scroll">
         <div id="apps-list"></div>
@@ -55,9 +56,9 @@
       <!-- Terminal -->
       <div id="terminal-wrapper">
         <div id="terminal-header">
-          <span id="terminal-title">Log de salida</span>
-          <button id="terminal-copy">Copiar</button>
-          <button id="terminal-clear">Limpiar</button>
+          <span id="terminal-title" data-i18n="terminal.title">Log de salida</span>
+          <button id="terminal-copy" data-i18n="terminal.copy">Copiar</button>
+          <button id="terminal-clear" data-i18n="terminal.clear">Limpiar</button>
         </div>
         <div id="terminal-output"></div>
       </div>
@@ -67,19 +68,19 @@
   <!-- ── Tab: Herramientas ─────────────────────────────────────────────── -->
   <div class="tab-panel" id="tab-tools">
     <div id="tools-area">
-      <p class="tools-section-title">Herramientas del Hub</p>
+      <p class="tools-section-title" data-i18n="tools.section_title">Herramientas del Hub</p>
       <div class="tool-cards">
         <div class="tool-card">
           <span class="tool-card-icon">📦</span>
           <span class="tool-card-name">Model Vault</span>
-          <span class="tool-card-desc">Gestiona y organiza modelos. Integración con Civitai.</span>
-          <button class="btn btn-outline" onclick="window.open('/vault','_blank')">Abrir</button>
+          <span class="tool-card-desc" data-i18n="tools.vault_desc">Gestiona y organiza modelos. Integración con Civitai.</span>
+          <button class="btn btn-outline" onclick="window.open('/vault','_blank')" data-i18n="tools.open">Abrir</button>
         </div>
         <div class="tool-card">
           <span class="tool-card-icon">🔀</span>
           <span class="tool-card-name">LoRA Merger</span>
-          <span class="tool-card-desc">Combina LoRAs con métodos avanzados: slerp, TIES, DARE.</span>
-          <button class="btn btn-outline" onclick="window.open('/merger','_blank')">Abrir</button>
+          <span class="tool-card-desc" data-i18n="tools.merger_desc">Combina LoRAs con métodos avanzados: slerp, TIES, DARE.</span>
+          <button class="btn btn-outline" onclick="window.open('/merger','_blank')" data-i18n="tools.open">Abrir</button>
         </div>
       </div>
     </div>
@@ -90,49 +91,48 @@
     <div id="settings-area">
       <!-- GPU info -->
       <div class="settings-section">
-        <p class="settings-section-title">Sistema</p>
+        <p class="settings-section-title" data-i18n="settings.title_system">Sistema</p>
         <div class="info-grid" id="gpu-info-grid">
-          <span class="lbl">GPU</span><span class="val" id="set-gpu">—</span>
-          <span class="lbl">VRAM</span><span class="val" id="set-vram">—</span>
-          <span class="lbl">Arquitectura</span><span class="val" id="set-arch">—</span>
-          <span class="lbl">CUDA Tag</span><span class="val" id="set-cuda">—</span>
-          <span class="lbl">PyTorch</span><span class="val" id="set-torch">—</span>
+          <span class="lbl" data-i18n="settings.gpu">GPU</span><span class="val" id="set-gpu">—</span>
+          <span class="lbl" data-i18n="settings.vram">VRAM</span><span class="val" id="set-vram">—</span>
+          <span class="lbl" data-i18n="settings.arch">Arquitectura</span><span class="val" id="set-arch">—</span>
+          <span class="lbl" data-i18n="settings.cuda_tag">CUDA Tag</span><span class="val" id="set-cuda">—</span>
+          <span class="lbl" data-i18n="settings.pytorch">PyTorch</span><span class="val" id="set-torch">—</span>
         </div>
       </div>
 
       <!-- Paths -->
       <div class="settings-section">
-        <p class="settings-section-title">Rutas</p>
+        <p class="settings-section-title" data-i18n="settings.title_paths">Rutas</p>
         <div class="field">
-          <label>Directorio de Modelos</label>
+          <label data-i18n="settings.models_dir">Directorio de Modelos</label>
           <div style="display:flex;gap:8px;align-items:center;">
-            <input type="text" id="set-models-path" placeholder="/ruta/a/modelos" style="flex:1">
-            <button class="btn btn-outline" id="btn-validate-models-path" style="white-space:nowrap">Verificar</button>
+            <input type="text" id="set-models-path" data-i18n-placeholder="settings.models_placeholder" placeholder="/ruta/a/modelos" style="flex:1">
+            <button class="btn btn-outline" id="btn-validate-models-path" style="white-space:nowrap" data-i18n="settings.validate">Verificar</button>
           </div>
-          <span class="field-hint">Ruta donde están almacenados los checkpoints, LoRAs, VAEs, etc.</span>
-          <!-- Área de estado del path — se muestra solo cuando hay algo que reportar -->
+          <span class="field-hint" data-i18n="settings.models_hint">Ruta donde están almacenados los checkpoints, LoRAs, VAEs, etc.</span>
           <div id="models-path-status" style="display:none;margin-top:10px;"></div>
         </div>
         <div class="field">
-          <label>Directorio de Salidas</label>
-          <input type="text" id="set-outputs-path" placeholder="/ruta/a/outputs">
-          <span class="field-hint">Dónde se guardan las imágenes generadas.</span>
+          <label data-i18n="settings.outputs_dir">Directorio de Salidas</label>
+          <input type="text" id="set-outputs-path" data-i18n-placeholder="settings.outputs_placeholder" placeholder="/ruta/a/outputs">
+          <span class="field-hint" data-i18n="settings.outputs_hint">Dónde se guardan las imágenes generadas.</span>
         </div>
       </div>
 
       <!-- API Keys -->
       <div class="settings-section">
-        <p class="settings-section-title">Servicios</p>
+        <p class="settings-section-title" data-i18n="settings.title_services">Servicios</p>
         <div class="field">
-          <label>Civitai API Key</label>
+          <label data-i18n="settings.civitai_key">Civitai API Key</label>
           <input type="password" id="set-civitai-key" placeholder="••••••••••••••••">
-          <span class="field-hint">Necesaria para descargar modelos y ver thumbnails de Civitai.</span>
+          <span class="field-hint" data-i18n="settings.civitai_hint">Necesaria para descargar modelos y ver thumbnails de Civitai.</span>
         </div>
       </div>
 
       <div class="settings-actions">
-        <button class="btn btn-primary" id="btn-save-settings">Guardar cambios</button>
-        <button class="btn btn-outline" id="btn-reload-settings">Descartar</button>
+        <button class="btn btn-primary" id="btn-save-settings" data-i18n="settings.save">Guardar cambios</button>
+        <button class="btn btn-outline" id="btn-reload-settings" data-i18n="settings.discard">Descartar</button>
       </div>
     </div>
   </div>
@@ -141,9 +141,9 @@
   <div class="tab-panel" id="tab-log">
     <div id="log-area">
       <div id="log-toolbar">
-        <span style="font-size:12px;color:var(--text-secondary)">Eventos recientes</span>
+        <span style="font-size:12px;color:var(--text-secondary)" data-i18n="log.title">Eventos recientes</span>
         <div class="spacer"></div>
-        <button class="btn btn-outline" id="btn-refresh-log">↻ Actualizar</button>
+        <button class="btn btn-outline" id="btn-refresh-log" data-i18n="log.refresh">↻ Actualizar</button>
       </div>
       <div id="log-list"></div>
     </div>
@@ -155,7 +155,7 @@
 <footer id="statusbar">
   <div id="ws-indicator">
     <span class="ws-dot"></span>
-    <span id="ws-label">conectando...</span>
+    <span id="ws-label" data-i18n="ws.connecting">conectando...</span>
   </div>
   <span>AI Hub WebUI</span>
 </footer>
@@ -169,8 +169,8 @@
     </div>
     <div id="modal-body"></div>
     <div id="modal-footer">
-      <button class="btn btn-outline" id="modal-cancel">Cancelar</button>
-      <button class="btn btn-primary" id="modal-save">Guardar</button>
+      <button class="btn btn-outline" id="modal-cancel" data-i18n="modal.cancel">Cancelar</button>
+      <button class="btn btn-primary" id="modal-save" data-i18n="modal.save">Guardar</button>
     </div>
   </div>
 </div>
@@ -180,8 +180,8 @@
   <div id="confirm-box">
     <p id="confirm-msg"></p>
     <div id="confirm-footer">
-      <button class="btn btn-outline" id="confirm-no">Cancelar</button>
-      <button class="btn btn-stop" id="confirm-yes">Confirmar</button>
+      <button class="btn btn-outline" id="confirm-no" data-i18n="confirm.cancel">Cancelar</button>
+      <button class="btn btn-stop" id="confirm-yes" data-i18n="confirm.confirm">Confirmar</button>
     </div>
   </div>
 </div>
@@ -189,6 +189,7 @@
 <!-- Toast -->
 <div id="toast"></div>
 
+<script src="/static/locale.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>
