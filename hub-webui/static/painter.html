@@ -1,0 +1,718 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Painter — AI Hub</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+  <style>
+    body { overflow: hidden; }
+
+    /* ── Layout raíz ───────────────────────────────────────────── */
+    #painter {
+      display: grid;
+      grid-template-rows: 48px 1fr 26px;
+      height: 100vh;
+      background: var(--bg-base);
+    }
+
+    /* ── Header ────────────────────────────────────────────────── */
+    #p-header {
+      display: flex; align-items: center; gap: 8px;
+      padding: 0 12px; border-bottom: 1px solid var(--border);
+      background: var(--bg-card); flex-shrink: 0;
+    }
+    #p-header h1 { font-size: 14px; font-weight: 600; color: var(--accent-cyan); }
+    .back-btn {
+      background: none; border: 1px solid var(--border); color: var(--text-secondary);
+      border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer;
+    }
+    .back-btn:hover { color: var(--text-primary); border-color: var(--accent-purple); }
+    #arch-select {
+      background: var(--bg-input); border: 1px solid var(--border);
+      color: var(--text-secondary); border-radius: 6px; padding: 4px 8px;
+      font-size: 12px; font-family: inherit;
+    }
+    #accept-reject {
+      display: none; gap: 6px; align-items: center;
+      background: rgba(84,239,234,.08); border: 1px solid var(--accent-cyan);
+      border-radius: 8px; padding: 4px 10px;
+    }
+    #accept-reject.visible { display: flex; }
+    .btn-accept {
+      background: var(--accent-cyan); color: #000; border: none;
+      border-radius: 6px; padding: 5px 14px; font-size: 12px;
+      font-weight: 600; cursor: pointer;
+    }
+    .btn-reject {
+      background: none; border: 1px solid var(--accent-red); color: var(--accent-red);
+      border-radius: 6px; padding: 5px 14px; font-size: 12px; cursor: pointer;
+    }
+    .hdr-icon-btn {
+      background: none; border: 1px solid var(--border); color: var(--text-secondary);
+      border-radius: 6px; padding: 4px 8px; font-size: 13px; cursor: pointer;
+    }
+    .hdr-icon-btn:hover { border-color: var(--accent-purple); color: var(--text-primary); }
+    .hdr-icon-btn:disabled { opacity: .35; cursor: default; }
+
+    /* ── Main row ──────────────────────────────────────────────── */
+    #p-main {
+      display: grid;
+      grid-template-columns: 48px 1fr 300px;
+      overflow: hidden;
+    }
+
+    /* ── Herramientas ──────────────────────────────────────────── */
+    #p-tools {
+      display: flex; flex-direction: column; align-items: center;
+      gap: 4px; padding: 8px 0;
+      border-right: 1px solid var(--border); background: var(--bg-card);
+      overflow-y: auto;
+    }
+    .tool-btn {
+      width: 34px; height: 34px; border-radius: 8px;
+      background: none; border: 1px solid var(--border);
+      color: var(--text-secondary); font-size: 14px; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .tool-btn:hover { border-color: var(--accent-purple); color: var(--text-primary); }
+    .tool-btn.active {
+      background: var(--accent-violet); border-color: var(--accent-purple);
+      color: var(--text-primary);
+    }
+    .tool-divider {
+      width: 28px; height: 1px; background: var(--border); margin: 2px 0;
+    }
+    #brush-size-wrap {
+      display: flex; flex-direction: column; align-items: center; gap: 4px;
+      margin-top: 4px;
+    }
+    #brush-size-label { font-size: 9px; color: var(--text-dim); }
+    input[type=range][orient=vertical], input[type=range].vertical {
+      writing-mode: vertical-lr; direction: rtl;
+      width: 22px; height: 80px; cursor: pointer;
+      accent-color: var(--accent-purple);
+    }
+
+    /* ── Size dialog ───────────────────────────────────────────── */
+    #canvas-size-modal {
+      position: fixed; inset: 0; z-index: 500;
+      background: rgba(15,0,35,.88); backdrop-filter: blur(4px);
+      align-items: center; justify-content: center;
+    }
+    .csm-box {
+      background: var(--bg-card); border: 1px solid var(--border);
+      border-radius: 14px; padding: 24px 28px;
+      width: 520px; max-width: 92vw;
+    }
+    .csm-title { font-size:15px; font-weight:700; color:var(--text-primary); margin:0 0 4px; }
+    .csm-sub   { font-size:12px; color:var(--text-secondary); margin:0 0 16px; }
+    #csm-grid  { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-bottom:10px; }
+    .csm-card  {
+      display:flex; flex-direction:column; align-items:center; gap:5px;
+      padding:10px 6px; border:1px solid var(--border);
+      border-radius:8px; cursor:pointer; background:var(--bg-input);
+      transition: border-color .12s, background .12s;
+    }
+    .csm-card:hover   { border-color:var(--accent-purple); background:rgba(96,13,181,.1); }
+    .csm-card.selected { border-color:var(--accent-cyan); background:rgba(84,239,234,.07); }
+    .csm-label { font-size:11px; font-weight:700; color:var(--text-primary); }
+    .csm-desc  { font-size:10px; color:var(--text-dim); }
+    #csm-custom { margin-top:6px; }
+    .csm-custom-row { display:flex; align-items:center; gap:8px; justify-content:center; }
+    .csm-custom-row input { width:76px; }
+    .csm-x { color:var(--text-dim); font-size:14px; }
+
+    /* ── Canvas wrap ───────────────────────────────────────────── */
+    #p-canvas-wrap {
+      position: relative; overflow: hidden;
+      background: repeating-conic-gradient(#111 0% 25%, #0a0a0a 0% 50%) 0 0 / 20px 20px;
+      display: flex; align-items: center; justify-content: center;
+    }
+    #canvas-bg, #canvas-fg {
+      position: absolute; top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      image-rendering: pixelated;
+    }
+    #canvas-bg { z-index: 1; }
+    #canvas-fg {
+      z-index: 2; cursor: none;
+      outline: 1px solid rgba(96,13,181,.7);
+      box-shadow: 0 0 0 1px rgba(84,239,234,.13), 0 8px 32px rgba(0,0,0,.5);
+    }
+
+    /* ── Overlays ──────────────────────────────────────────────── */
+    .canvas-overlay {
+      position: absolute; inset: 0; z-index: 10;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 12px;
+      background: rgba(15,0,35,.88); padding: 24px; text-align: center;
+    }
+    .canvas-overlay h2 { font-size: 16px; color: var(--text-primary); }
+    .canvas-overlay p  { font-size: 13px; color: var(--text-secondary); max-width: 340px; }
+    #setup-log {
+      width: 100%; max-width: 420px; max-height: 180px; overflow-y: auto;
+      background: var(--bg-input); border: 1px solid var(--border);
+      border-radius: 6px; padding: 8px 12px; font-size: 11px;
+      font-family: var(--font-mono); text-align: left;
+    }
+    #setup-log .ok      { color: var(--accent-cyan); }
+    #setup-log .warning { color: var(--accent-amber); }
+    #setup-log .error   { color: var(--accent-red); }
+    #setup-log .info    { color: var(--text-secondary); }
+
+    #progress-overlay {
+      display: none;
+      position: absolute; inset: 0; z-index: 10;
+      align-items: flex-end; justify-content: center;
+      padding-bottom: 24px; pointer-events: none;
+    }
+    #progress-overlay.visible { display: flex; }
+    #progress-bar-wrap {
+      background: rgba(15,0,35,.9); border: 1px solid var(--border);
+      border-radius: 10px; padding: 10px 16px;
+      display: flex; flex-direction: column; gap: 6px;
+      min-width: 280px; pointer-events: all;
+    }
+    #progress-label { font-size: 12px; color: var(--text-secondary); }
+    #progress-bar-bg {
+      height: 6px; background: var(--bg-input); border-radius: 3px; overflow: hidden;
+    }
+    #progress-bar-fill {
+      height: 100%; background: var(--accent-cyan); border-radius: 3px;
+      transition: width .2s; width: 0%;
+    }
+    #btn-cancel-job {
+      align-self: flex-end; background: none;
+      border: 1px solid var(--accent-red); color: var(--accent-red);
+      border-radius: 6px; padding: 3px 10px; font-size: 11px; cursor: pointer;
+    }
+
+    /* ── Panel IA ──────────────────────────────────────────────── */
+    #p-panel {
+      display: flex; flex-direction: column;
+      border-left: 1px solid var(--border); background: var(--bg-card);
+      overflow: hidden;
+    }
+    #panel-tabs {
+      display: flex; border-bottom: 1px solid var(--border); flex-shrink: 0;
+    }
+    .panel-tab {
+      flex: 1; padding: 10px 0; font-size: 11px; font-weight: 600;
+      background: none; border: none; color: var(--text-secondary);
+      cursor: pointer; border-bottom: 2px solid transparent;
+      text-transform: uppercase; letter-spacing: .05em;
+    }
+    .panel-tab.active { color: var(--accent-cyan); border-bottom-color: var(--accent-cyan); }
+    .panel-body { display: none; flex: 1; overflow-y: auto; padding: 12px; flex-direction: column; gap: 10px; }
+    .panel-body.active { display: flex; }
+
+    /* ── Controles del panel ───────────────────────────────────── */
+    .ctrl-group { display: flex; flex-direction: column; gap: 4px; }
+    .ctrl-label {
+      font-size: 10px; font-weight: 600; color: var(--text-dim);
+      text-transform: uppercase; letter-spacing: .05em;
+    }
+    .ctrl-select, .ctrl-input {
+      background: var(--bg-input); border: 1px solid var(--border);
+      color: var(--text-primary); border-radius: 6px;
+      padding: 6px 8px; font-size: 12px; font-family: inherit; width: 100%;
+    }
+    .ctrl-select:focus, .ctrl-input:focus {
+      outline: none; border-color: var(--accent-purple);
+    }
+    .ctrl-textarea {
+      background: var(--bg-input); border: 1px solid var(--border);
+      color: var(--text-primary); border-radius: 6px;
+      padding: 6px 8px; font-size: 12px; font-family: inherit;
+      width: 100%; resize: vertical; min-height: 64px;
+    }
+    .ctrl-textarea:focus { outline: none; border-color: var(--accent-purple); }
+    .ctrl-row { display: flex; gap: 6px; }
+    .ctrl-row .ctrl-group { flex: 1; }
+    .ctrl-range { width: 100%; accent-color: var(--accent-purple); }
+    .ctrl-range-row {
+      display: flex; align-items: center; gap: 8px;
+    }
+    .ctrl-range-row input[type=range] { flex: 1; }
+    .ctrl-range-row .range-val {
+      font-size: 11px; font-family: var(--font-mono);
+      color: var(--accent-cyan); min-width: 32px; text-align: right;
+    }
+    .seed-row { display: flex; gap: 4px; }
+    .seed-row .ctrl-input { flex: 1; }
+    .seed-row button {
+      background: none; border: 1px solid var(--border); color: var(--text-secondary);
+      border-radius: 6px; padding: 0 10px; font-size: 14px; cursor: pointer; flex-shrink: 0;
+    }
+    .seed-row button:hover { border-color: var(--accent-purple); color: var(--text-primary); }
+    .panel-divider { height: 1px; background: var(--border); margin: 2px 0; }
+    .btn-generate {
+      background: linear-gradient(135deg, var(--accent-violet), var(--accent-magenta));
+      border: none; color: #fff; border-radius: 8px;
+      padding: 10px; font-size: 13px; font-weight: 600;
+      cursor: pointer; width: 100%; margin-top: 4px;
+    }
+    .btn-generate:hover { opacity: .9; }
+    .btn-generate:disabled { opacity: .4; cursor: default; }
+    .btn-action {
+      background: none; border: 1px solid var(--accent-cyan); color: var(--accent-cyan);
+      border-radius: 8px; padding: 8px; font-size: 12px; font-weight: 600;
+      cursor: pointer; width: 100%; margin-top: 4px;
+    }
+    .btn-action:hover { background: rgba(84,239,234,.1); }
+    .btn-action:disabled { opacity: .4; cursor: default; border-color: var(--border); color: var(--text-dim); }
+    .panel-note { font-size: 11px; color: var(--text-dim); font-style: italic; }
+
+    /* ── Status bar ────────────────────────────────────────────── */
+    #p-status {
+      display: flex; align-items: center; gap: 16px;
+      padding: 0 12px; border-top: 1px solid var(--border);
+      background: var(--bg-card); font-size: 11px;
+      font-family: var(--font-mono); color: var(--text-dim);
+    }
+    #p-status span { color: var(--text-secondary); }
+    #p-status .val { color: var(--accent-cyan); }
+
+    /* ── Accept / Reject flotante ──────────────────────────────── */
+    #accept-reject {
+      position: fixed; z-index: 200;
+      display: none; flex-direction: column; gap: 8px;
+      background: rgba(15,0,35,0.94);
+      border: 1px solid var(--accent-cyan);
+      border-radius: 12px; padding: 10px 16px;
+      box-shadow: 0 6px 28px rgba(0,0,0,0.6), 0 0 0 1px rgba(84,239,234,.15);
+      user-select: none; min-width: 210px;
+    }
+    #accept-reject.visible { display: flex; }
+    #ar-handle {
+      display: flex; align-items: center; justify-content: center; gap: 6px;
+      cursor: grab; padding-bottom: 6px;
+      border-bottom: 1px solid var(--border);
+    }
+    #ar-handle:active { cursor: grabbing; }
+    #ar-handle .ar-label { font-size: 11px; color: var(--text-secondary); }
+    #ar-handle .drag-dots { color: var(--text-dim); font-size: 16px; letter-spacing: -2px; }
+    #ar-actions { display: flex; gap: 8px; }
+    #ar-actions .btn-accept {
+      flex: 1; background: var(--accent-cyan); color: #000; border: none;
+      border-radius: 7px; padding: 7px 0; font-size: 13px;
+      font-weight: 700; cursor: pointer;
+    }
+    #ar-actions .btn-accept:hover { opacity: .85; }
+    #ar-actions .btn-reject {
+      flex: 1; background: none; border: 1px solid var(--accent-red);
+      color: var(--accent-red); border-radius: 7px; padding: 7px 0;
+      font-size: 13px; cursor: pointer;
+    }
+    #ar-actions .btn-reject:hover { background: rgba(236,0,240,.08); }
+
+    /* ── Regional ──────────────────────────────────────────────── */
+    #reg-toolbar { flex-direction:column; align-items:center; gap:3px; }
+    .reg-btn { font-size:10px; font-weight:700; transition: background .12s, color .12s; }
+    .reg-card { border-radius:7px; overflow:hidden; border:1px solid var(--border); margin-bottom:4px; }
+    .reg-card-header {
+      display:flex; align-items:center; gap:6px;
+      padding:6px 8px; cursor:pointer; background:var(--bg-input);
+    }
+    .reg-card-header:hover { background: rgba(96,13,181,.18); }
+    .reg-swatch { width:10px; height:10px; border-radius:2px; flex-shrink:0; }
+    .reg-card-label { font-size:11px; font-weight:700; color:var(--text-primary); }
+    .reg-mask-status { flex:1; text-align:right; font-style:italic; }
+    .reg-clear-btn {
+      background:none; border:none; color:var(--text-dim); cursor:pointer;
+      font-size:11px; padding:0 2px; line-height:1;
+    }
+    .reg-clear-btn:hover { color:var(--accent-red); }
+    .reg-card-body { padding:0 8px 8px; background:var(--bg-card); }
+    #reg-sampler-note { font-size:10px; font-style:italic; color:var(--accent-amber); margin-top:2px; }
+
+    /* ── Estilos (quality prompts) ────────────────────────────── */
+    #styles-section {
+      border-top: 1px solid var(--border);
+      background: var(--bg-base);
+      flex-shrink: 0;
+    }
+    #styles-header {
+      display: flex; align-items: center; gap: 6px;
+      padding: 8px 12px; cursor: pointer; user-select: none;
+    }
+    #styles-header:hover { background: rgba(84,239,234,.04); }
+    #styles-icon { font-size: 11px; color: var(--accent-cyan); }
+    #styles-active-name {
+      flex: 1; font-size: 11px; color: var(--text-secondary);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    #styles-active-name.has-style { color: var(--accent-cyan); font-weight: 600; }
+    #styles-clear-btn {
+      background: none; border: none; color: var(--text-dim);
+      cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px;
+    }
+    #styles-clear-btn:hover { color: var(--accent-red); }
+    #styles-toggle-arrow { font-size: 10px; color: var(--text-dim); transition: transform .15s; }
+    #styles-toggle-arrow.open { transform: rotate(180deg); }
+    #styles-panel {
+      padding: 0 12px 10px; display: flex; flex-direction: column; gap: 7px;
+    }
+    #styles-prompt {
+      width: 100%; box-sizing: border-box;
+      background: var(--bg-input); border: 1px solid var(--border);
+      color: var(--text-primary); border-radius: 6px;
+      padding: 6px 8px; font-size: 11px; resize: vertical; min-height: 56px;
+    }
+    #styles-prompt:focus { border-color: var(--accent-cyan); outline: none; }
+    #styles-name-row { display: flex; gap: 6px; }
+    #styles-name-input {
+      flex: 1; background: var(--bg-input); border: 1px solid var(--border);
+      color: var(--text-primary); border-radius: 6px; padding: 5px 8px;
+      font-size: 11px;
+    }
+    #styles-name-input:focus { border-color: var(--accent-cyan); outline: none; }
+    #styles-save-btn {
+      background: var(--accent-cyan); color: #000; border: none;
+      border-radius: 6px; padding: 5px 10px; font-size: 11px;
+      font-weight: 700; cursor: pointer; white-space: nowrap;
+    }
+    #styles-save-btn:hover { opacity: .85; }
+    #styles-list {
+      display: flex; flex-wrap: wrap; gap: 5px;
+    }
+    .style-chip {
+      display: flex; align-items: center; gap: 3px;
+      background: var(--bg-input); border: 1px solid var(--border);
+      border-radius: 20px; padding: 3px 10px 3px 10px;
+      font-size: 11px; color: var(--text-secondary); cursor: pointer;
+      transition: border-color .12s, color .12s;
+    }
+    .style-chip:hover { border-color: var(--accent-cyan); color: var(--accent-cyan); }
+    .style-chip.active { border-color: var(--accent-cyan); color: var(--accent-cyan); background: rgba(84,239,234,.08); }
+    .style-chip-del {
+      background: none; border: none; color: var(--text-dim);
+      cursor: pointer; font-size: 12px; padding: 0; line-height: 1;
+      margin-left: 2px;
+    }
+    .style-chip-del:hover { color: var(--accent-red); }
+
+    /* ── Toast ─────────────────────────────────────────────────── */
+    #p-toast {
+      position: fixed; bottom: 40px; left: 50%; transform: translateX(-50%);
+      background: var(--bg-card); border: 1px solid var(--border);
+      color: var(--text-primary); border-radius: 8px;
+      padding: 8px 18px; font-size: 12px; z-index: 100;
+      opacity: 0; transition: opacity .2s; pointer-events: none;
+    }
+    #p-toast.show { opacity: 1; }
+  </style>
+</head>
+<body>
+<div id="painter">
+
+  <!-- ── Header ──────────────────────────────────────────────────── -->
+  <header id="p-header">
+    <button class="back-btn" onclick="location.href='/'" data-i18n="painter.back">← AI Hub</button>
+    <h1 data-i18n="painter.title">Painter</h1>
+
+    <span style="font-size:10px;color:var(--text-dim)" data-i18n="painter.arch_label">Arquitectura</span>
+    <select id="arch-select" title="Arquitectura de modelos">
+      <option value="sdxl">SDXL / Pony / Illustrious</option>
+      <option value="flux" disabled>Flux (próximamente)</option>
+    </select>
+
+    <button class="hdr-icon-btn" id="btn-load-img" data-i18n="painter.btn_load">Cargar imagen</button>
+    <input type="file" id="file-input" accept="image/*" style="display:none">
+
+    <div style="flex:1"></div>
+
+
+    <button class="hdr-icon-btn" id="btn-undo" title="Ctrl+Z" disabled>↩</button>
+    <button class="hdr-icon-btn" id="btn-redo" title="Ctrl+Y" disabled>↪</button>
+    <button class="hdr-icon-btn" data-i18n-lang-btn style="font-size:11px">EN</button>
+  </header>
+
+  <!-- ── Main ───────────────────────────────────────────────────── -->
+  <div id="p-main">
+
+    <!-- Herramientas -->
+    <div id="p-tools">
+      <button class="tool-btn active" data-tool="brush"  title="Brush (B)">&#9679;</button>
+      <button class="tool-btn"        data-tool="rect"   title="Rect (R)">&#9645;</button>
+      <button class="tool-btn"        data-tool="lasso"  title="Lasso (L)">&#8978;</button>
+      <button class="tool-btn"        data-tool="eraser" title="Eraser (E)">&#9633;</button>
+      <div class="tool-divider"></div>
+      <button class="tool-btn" id="btn-clear-mask" title="Limpiar máscara" data-i18n-title="painter.btn_clear_mask">&#8855;</button>
+      <!-- R1-R4 — visible sólo en modo Regional -->
+      <div id="reg-toolbar" style="display:none;flex-direction:column;align-items:center;gap:3px">
+        <div class="tool-divider"></div>
+        <button class="tool-btn reg-btn" data-region="0" style="color:#FF4444;border-color:#FF4444">R1</button>
+        <button class="tool-btn reg-btn" data-region="1" style="color:#4488FF;border-color:#4488FF">R2</button>
+        <button class="tool-btn reg-btn" data-region="2" style="color:#44CC44;border-color:#44CC44">R3</button>
+        <button class="tool-btn reg-btn" data-region="3" style="color:#FFAA00;border-color:#FFAA00">R4</button>
+      </div>
+      <div class="tool-divider"></div>
+      <div id="brush-size-wrap">
+        <span id="brush-size-label">30</span>
+        <input type="range" id="brush-size" class="vertical" min="4" max="200" value="30" title="Tamaño de brush">
+      </div>
+    </div>
+
+    <!-- Canvas -->
+    <div id="p-canvas-wrap">
+
+      <!-- Setup overlay -->
+      <div class="canvas-overlay" id="setup-overlay">
+        <h2 data-i18n="painter.setup_checking">Verificando setup…</h2>
+        <div id="setup-log"></div>
+        <button class="btn btn-primary" id="btn-setup-retry" style="display:none" onclick="initSetup()">↻ Reintentar</button>
+        <p id="setup-msg" style="color:var(--accent-amber)"></p>
+      </div>
+
+      <!-- Progress overlay -->
+      <div id="progress-overlay">
+        <div id="progress-bar-wrap">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span id="progress-label" data-i18n="painter.generating">Generando…</span>
+            <button id="btn-cancel-job" data-i18n="painter.btn_cancel_job">✕ Cancelar</button>
+          </div>
+          <div id="progress-bar-bg">
+            <div id="progress-bar-fill"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Canvas layers -->
+      <canvas id="canvas-bg"></canvas>
+      <canvas id="canvas-fg"></canvas>
+    </div>
+
+    <!-- Panel IA -->
+    <div id="p-panel">
+      <div id="panel-tabs">
+        <button class="panel-tab active" data-tab="generate" data-i18n="painter.tab_generate">Generar</button>
+        <button class="panel-tab"        data-tab="upscale"  data-i18n="painter.tab_upscale">Upscale</button>
+        <button class="panel-tab"        data-tab="controlnet" data-i18n="painter.tab_controlnet">ControlNet</button>
+        <button class="panel-tab"        data-tab="regional">Regional</button>
+      </div>
+
+      <!-- Tab: Generar -->
+      <div class="panel-body active" id="tab-generate">
+        <div class="ctrl-group">
+          <label class="ctrl-label" data-i18n="painter.label_checkpoint">Checkpoint</label>
+          <select class="ctrl-select" id="sel-checkpoint"><option value="">Cargando…</option></select>
+        </div>
+        <div class="ctrl-group" style="flex:1">
+          <label class="ctrl-label" data-i18n="painter.label_prompt">Prompt</label>
+          <textarea class="ctrl-textarea" id="inp-prompt" style="min-height:110px;flex:1" placeholder="Descripción de la imagen…"></textarea>
+        </div>
+        <div class="ctrl-group">
+          <label class="ctrl-label" data-i18n="painter.label_negative">Negativo</label>
+          <textarea class="ctrl-textarea" id="inp-negative" style="min-height:52px" rows="2" placeholder="worst quality, blurry…"></textarea>
+        </div>
+        <div class="panel-divider"></div>
+        <div class="ctrl-row">
+          <div class="ctrl-group">
+            <label class="ctrl-label" data-i18n="painter.label_sampler">Sampler</label>
+            <select class="ctrl-select" id="sel-sampler"></select>
+          </div>
+          <div class="ctrl-group">
+            <label class="ctrl-label" data-i18n="painter.label_scheduler">Scheduler</label>
+            <select class="ctrl-select" id="sel-scheduler"></select>
+          </div>
+        </div>
+        <div class="ctrl-row">
+          <div class="ctrl-group">
+            <label class="ctrl-label" data-i18n="painter.label_steps">Pasos</label>
+            <input type="number" class="ctrl-input" id="inp-steps" value="25" min="1" max="150">
+          </div>
+          <div class="ctrl-group">
+            <label class="ctrl-label" data-i18n="painter.label_cfg">CFG</label>
+            <input type="number" class="ctrl-input" id="inp-cfg" value="7" min="1" max="30" step="0.5">
+          </div>
+        </div>
+        <div class="ctrl-group">
+          <label class="ctrl-label" data-i18n="painter.label_seed">Seed</label>
+          <div class="seed-row">
+            <input type="number" class="ctrl-input" id="inp-seed" value="-1">
+            <button id="btn-randomize" title="Seed aleatorio" data-i18n="painter.btn_randomize">↺</button>
+          </div>
+        </div>
+        <div class="ctrl-row">
+          <div class="ctrl-group">
+            <label class="ctrl-label" data-i18n="painter.label_denoise">Denoise</label>
+            <div class="ctrl-range-row">
+              <input type="range" class="ctrl-range" id="inp-denoise" min="0" max="1" step="0.01" value="0.85">
+              <span class="range-val" id="denoise-val">0.85</span>
+            </div>
+          </div>
+        </div>
+        <div class="ctrl-row">
+          <div class="ctrl-group">
+            <label class="ctrl-label" data-i18n="painter.label_feather">Feather</label>
+            <div class="ctrl-range-row">
+              <input type="range" class="ctrl-range" id="inp-feather" min="0" max="64" step="1" value="4">
+              <span class="range-val" id="feather-val">4</span>
+            </div>
+          </div>
+        </div>
+        <div class="panel-divider"></div>
+        <div class="ctrl-row">
+          <div class="ctrl-group">
+            <label class="ctrl-label" data-i18n="painter.label_width">Ancho</label>
+            <input type="number" class="ctrl-input" id="inp-width" value="1024" min="512" max="2048" step="8">
+          </div>
+          <div class="ctrl-group">
+            <label class="ctrl-label" data-i18n="painter.label_height">Alto</label>
+            <input type="number" class="ctrl-input" id="inp-height" value="1024" min="512" max="2048" step="8">
+          </div>
+        </div>
+        <div class="ctrl-group" id="inpaint-model-group" style="display:none">
+          <label class="ctrl-label" data-i18n="painter.label_inpaint_model">Modelo inpaint</label>
+          <select class="ctrl-select" id="sel-inpaint-model">
+            <option value="" data-i18n="painter.label_inpaint_none">(workflow básico)</option>
+          </select>
+        </div>
+        <button class="btn-generate" id="btn-generate" data-i18n="painter.btn_generate">Generar</button>
+        <button class="btn-action" id="btn-load-img-panel" data-i18n="painter.btn_load">↑ Cargar imagen</button>
+      </div>
+
+      <!-- Tab: Upscale -->
+      <div class="panel-body" id="tab-upscale">
+        <div class="ctrl-group">
+          <label class="ctrl-label" data-i18n="painter.label_upscaler">Upscaler</label>
+          <select class="ctrl-select" id="sel-upscaler"><option value="">Cargando…</option></select>
+        </div>
+        <p class="panel-note">El resultado puede ser 2x-4x más grande dependiendo del modelo.</p>
+        <button class="btn-action" id="btn-upscale" data-i18n="painter.btn_upscale">Upscale</button>
+      </div>
+
+      <!-- Tab: Regional Conditioning -->
+      <div class="panel-body" id="tab-regional">
+        <div class="ctrl-group">
+          <label class="ctrl-label" data-i18n="painter.label_checkpoint">Checkpoint</label>
+          <select class="ctrl-select" id="reg-checkpoint"><option value="">Cargando…</option></select>
+        </div>
+        <div class="ctrl-group">
+          <label class="ctrl-label">Prompt Global</label>
+          <textarea class="ctrl-textarea" id="reg-global-prompt" style="min-height:52px" placeholder="Prompt base — coherencia de toda la imagen…"></textarea>
+        </div>
+        <div class="ctrl-group">
+          <label class="ctrl-label" data-i18n="painter.label_negative">Negativo</label>
+          <textarea class="ctrl-textarea" id="reg-negative" style="min-height:36px" rows="2" placeholder="worst quality, blurry…"></textarea>
+        </div>
+        <div class="panel-divider"></div>
+        <!-- Regiones R1-R4 (generadas por JS) -->
+        <div id="reg-regions"></div>
+        <div class="panel-divider"></div>
+        <div class="ctrl-row">
+          <div class="ctrl-group">
+            <label class="ctrl-label" data-i18n="painter.label_steps">Pasos</label>
+            <input type="number" class="ctrl-input" id="reg-steps" value="25" min="1" max="150">
+          </div>
+          <div class="ctrl-group">
+            <label class="ctrl-label" data-i18n="painter.label_cfg">CFG</label>
+            <input type="number" class="ctrl-input" id="reg-cfg" value="7" min="1" max="30" step="0.5">
+          </div>
+        </div>
+        <div class="ctrl-group">
+          <label class="ctrl-label" data-i18n="painter.label_denoise">Denoise</label>
+          <div class="ctrl-range-row">
+            <input type="range" class="ctrl-range" id="reg-denoise" min="0" max="1" step="0.01" value="0.85">
+            <span class="range-val" id="reg-denoise-val">0.85</span>
+          </div>
+        </div>
+        <div class="ctrl-group">
+          <label class="ctrl-label" data-i18n="painter.label_seed">Seed</label>
+          <div class="seed-row">
+            <input type="number" class="ctrl-input" id="reg-seed" value="-1">
+            <button id="reg-btn-randomize" title="Seed aleatorio">↺</button>
+          </div>
+        </div>
+        <p id="reg-sampler-note">Sampler: Euler + Normal (forzado)</p>
+        <button class="btn-generate" id="btn-regional">Regional</button>
+      </div>
+
+      <!-- Tab: ControlNet -->
+      <div class="panel-body" id="tab-controlnet">
+        <p id="cn-disabled-msg" class="panel-note" style="display:none" data-i18n="painter.controlnet_disabled">Sin modelos ControlNet instalados.</p>
+        <div id="cn-controls">
+          <div class="ctrl-group">
+            <label class="ctrl-label" data-i18n="painter.label_cn_model">Modelo ControlNet</label>
+            <select class="ctrl-select" id="sel-cn-model"></select>
+          </div>
+          <div class="ctrl-group">
+            <label class="ctrl-label" data-i18n="painter.label_cn_strength">Strength</label>
+            <div class="ctrl-range-row">
+              <input type="range" class="ctrl-range" id="inp-cn-strength" min="0" max="2" step="0.05" value="1">
+              <span class="range-val" id="cn-strength-val">1.00</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- Estilos — widget global persistente -->
+      <div id="styles-section">
+        <div id="styles-header">
+          <span id="styles-icon">✦</span>
+          <span id="styles-active-name" data-i18n="painter.styles_none">Sin estilo</span>
+          <button id="styles-clear-btn" style="display:none" title="Quitar estilo">×</button>
+          <span id="styles-toggle-arrow">▾</span>
+        </div>
+        <div id="styles-panel" style="display:none">
+          <textarea id="styles-prompt" placeholder="masterpiece, best quality, ultra detailed…"></textarea>
+          <div class="styles-name-row">
+            <input type="text" id="styles-name-input" data-i18n-placeholder="painter.styles_name_ph">
+            <button id="styles-save-btn" data-i18n="painter.styles_save">Guardar</button>
+          </div>
+          <div id="styles-list"></div>
+        </div>
+      </div>
+    </div><!-- /p-panel -->
+  </div><!-- /p-main -->
+
+  <!-- ── Status bar ──────────────────────────────────────────────── -->
+  <footer id="p-status">
+    <span>Zoom: <span class="val" id="st-zoom">—</span></span>
+    <span>Doc: <span class="val" id="st-dims">—</span></span>
+    <span>Cursor: <span class="val" id="st-cursor">—</span></span>
+    <span>Tool: <span class="val" id="st-tool">Brush</span></span>
+    <span id="st-warning" style="color:var(--accent-amber);display:none"></span>
+  </footer>
+</div><!-- /painter -->
+
+<!-- Accept / Reject flotante y draggable -->
+<div id="accept-reject">
+  <div id="ar-handle">
+    <span class="drag-dots">⠿</span>
+    <span class="ar-label" id="ar-label" data-i18n="painter.preview_ready">Preview listo — ¿aceptar?</span>
+  </div>
+  <!-- Subtítulo de progreso — visible solo en modo regional secuencial -->
+  <div id="ar-reg-progress" style="display:none; text-align:center; font-size:11px; color:var(--accent-cyan); padding-bottom:4px; border-bottom:1px solid var(--border); margin-bottom:2px;"></div>
+  <div id="ar-actions">
+    <button class="btn-accept" id="btn-accept" data-i18n="painter.btn_accept">✓ Aceptar</button>
+    <button class="btn-reject" id="btn-reject" data-i18n="painter.btn_reject">✕ Rechazar</button>
+  </div>
+</div>
+
+<div id="p-toast"></div>
+
+<!-- Diálogo de tamaño de canvas -->
+<div id="canvas-size-modal" style="display:none">
+  <div class="csm-box">
+    <h3 class="csm-title">Nuevo canvas</h3>
+    <p class="csm-sub">Elige el tamaño de esta sesión. Solo cambia si cargas una imagen.</p>
+    <div id="csm-grid"><!-- presets generados por JS --></div>
+    <div id="csm-custom" style="display:none">
+      <div class="csm-custom-row">
+        <input type="number" id="csm-w" class="ctrl-input" value="1024" min="64" max="4096" step="8">
+        <span class="csm-x">×</span>
+        <input type="number" id="csm-h" class="ctrl-input" value="1024" min="64" max="4096" step="8">
+        <span style="font-size:10px;color:var(--text-dim)">px</span>
+      </div>
+    </div>
+    <button class="btn-generate" id="csm-confirm" style="margin-top:16px">Crear canvas</button>
+  </div>
+</div>
+
+<script src="/static/locale.js"></script>
+<script src="/static/painter.js"></script>
+</body>
+</html>

@@ -1,0 +1,1566 @@
+/* Painter — lógica principal */
+'use strict';
+
+const API = '/api/painter';
+
+// ── Estado global ─────────────────────────────────────────────────────────
+const S = {
+  arch:       'sdxl',
+  tool:       'brush',
+  brushSize:  30,
+  imgW: 0, imgH: 0,       // resolución de la imagen actual
+  scale:  1,              // factor CSS→imagen
+  hasMask:    false,
+  showMask:   true,   // false mientras se muestra un preview (máscara oculta pero no borrada)
+  hasImage:   false,
+  hasPreview: false,
+  activeJobId: null,
+  ws:         null,
+  models:     { checkpoints:[], controlnet:[], upscale_models:[], samplers:[], schedulers:[] },
+  session:    { has_current:false, history_size:0, redo_size:0 },
+  regional:   { active: false, activeIdx: 0 },
+};
+
+// ── Presets de tamaño de canvas ───────────────────────────────────────────
+const SIZE_PRESETS = [
+  { w: 512,  h: 512,  label: '512×512',   desc: 'SD 1.5' },
+  { w: 768,  h: 512,  label: '768×512',   desc: 'Landscape' },
+  { w: 512,  h: 768,  label: '512×768',   desc: 'Portrait' },
+  { w: 1024, h: 1024, label: '1024×1024', desc: 'SDXL ★' },
+  { w: 1216, h: 832,  label: '1216×832',  desc: 'SDXL Wide' },
+  { w: 832,  h: 1216, label: '832×1216',  desc: 'SDXL Tall' },
+  { w: 1344, h: 768,  label: '1344×768',  desc: 'Cinematic' },
+  { w: 768,  h: 1344, label: '768×1344',  desc: 'Vertical' },
+  { w: null, h: null, label: 'Custom',    desc: 'Libre' },
+];
+let _selectedSizeIdx = 3;  // default: 1024×1024
+
+// ── Regional Conditioning ─────────────────────────────────────────────────
+const REGION_COLORS = ['#FF4444', '#4488FF', '#44CC44', '#FFAA00'];
+let regionalMasks = [];  // [{canvas, ctx, hasPixels}]
+
+// Estado de la generación regional secuencial
+let _regSeq = {
+  active:      false,
+  queue:       [],    // [{prompt, mask_b64, regionIdx}] — regiones pendientes
+  total:       0,     // total de regiones a procesar
+  stepIdx:     0,     // 0-based: qué región estamos procesando ahora
+  baseB64:     null,  // imagen acumulada (resultado aceptado de la región anterior)
+  lastB64:     null,  // resultado del job actual (para capturarlo en onJobDone)
+  params:      {},    // params compartidos (checkpoint, neg, seed, steps, cfg, denoise, w, h)
+  seed:        0,     // semilla actual (se incrementa al regenerar)
+};
+
+// ── Canvas ────────────────────────────────────────────────────────────────
+let canvasBg, ctxBg, canvasFg, ctxFg, maskCanvas, ctxMask;
+let currentImg  = null;   // HTMLImageElement — imagen aceptada
+let previewImg  = null;   // HTMLImageElement — preview pendiente
+
+// ── Estilos (quality prompts) ─────────────────────────────────────────────
+let _styles          = [];       // [{name, prompt}] — lista guardada en disco
+let _activeStyleName = '';       // nombre del estilo activo ('' = ninguno)
+let _activeStylePrompt = '';     // prompt del estilo activo
+
+/** Devuelve el prompt con el estilo activo concatenado al final. */
+function withStyle(prompt) {
+  const s = _activeStylePrompt.trim();
+  if (!s) return prompt || '';
+  const p = (prompt || '').trim();
+  return p ? `${p}, ${s}` : s;
+}
+
+// ── Herramienta rect / lasso ──────────────────────────────────────────────
+let drawing = false, rectStart = null, rectEnd = null, lassoPoints = [];
+
+// ── Posición anterior del brush para trazos continuos ────────────────────
+let _prevBrushX = null, _prevBrushY = null;
+
+// ── Posición del cursor en espacio-imagen ─────────────────────────────────
+let _cursorX = -1, _cursorY = -1, _cursorVisible = false;
+
+// ── Init canvas ───────────────────────────────────────────────────────────
+function initCanvas() {
+  canvasBg   = document.getElementById('canvas-bg');
+  ctxBg      = canvasBg.getContext('2d');
+  canvasFg   = document.getElementById('canvas-fg');
+  ctxFg      = canvasFg.getContext('2d');
+  maskCanvas = document.createElement('canvas');
+  ctxMask    = maskCanvas.getContext('2d');
+
+  canvasFg.addEventListener('mousedown',  onMouseDown);
+  canvasFg.addEventListener('mousemove',  onMouseMove);
+  canvasFg.addEventListener('mouseup',    onMouseUp);
+  canvasFg.addEventListener('mouseleave', e => { _cursorVisible = false; onMouseUp(e); });
+  canvasFg.addEventListener('mouseenter', () => { _cursorVisible = true; });
+  canvasFg.addEventListener('contextmenu', e => e.preventDefault());
+  // Ocultar cursor CSS — lo dibujamos nosotros
+  canvasFg.style.cursor = 'none';
+}
+
+function resizeCanvases(w, h) {
+  S.imgW = w; S.imgH = h;
+  const wrap  = document.getElementById('p-canvas-wrap');
+  const maxW  = wrap.clientWidth  - 20;
+  const maxH  = wrap.clientHeight - 20;
+  S.scale     = Math.min(maxW / w, maxH / h, 1);
+  const cssW  = Math.round(w * S.scale);
+  const cssH  = Math.round(h * S.scale);
+
+  [canvasBg, canvasFg].forEach(c => {
+    c.width  = w; c.height = h;
+    c.style.width  = cssW + 'px';
+    c.style.height = cssH + 'px';
+  });
+  maskCanvas.width = w; maskCanvas.height = h;
+  updateStatusDims();
+}
+
+// ── Coordenadas CSS → imagen ──────────────────────────────────────────────
+function toImg(clientX, clientY) {
+  const r = canvasFg.getBoundingClientRect();
+  return [
+    Math.round((clientX - r.left)  / S.scale),
+    Math.round((clientY - r.top)   / S.scale),
+  ];
+}
+
+// ── Render ────────────────────────────────────────────────────────────────
+function render() {
+  ctxFg.clearRect(0, 0, S.imgW, S.imgH);
+  if (previewImg) ctxFg.drawImage(previewImg, 0, 0);
+  if (S.regional.active) {
+    drawRegionalOverlay();
+  } else if (S.hasMask && S.showMask) {
+    drawMaskOverlay();
+  }
+  if (S.imgW > 0 && _cursorVisible) drawToolPreview();
+  requestAnimationFrame(render);
+}
+
+function drawRegionalOverlay() {
+  REGION_COLORS.forEach((color, i) => {
+    const rm = regionalMasks[i];
+    if (!rm || !rm.hasPixels) return;
+    const tmp    = document.createElement('canvas');
+    tmp.width    = S.imgW; tmp.height = S.imgH;
+    const tCtx   = tmp.getContext('2d');
+    tCtx.drawImage(rm.canvas, 0, 0);
+    tCtx.globalCompositeOperation = 'source-in';
+    tCtx.fillStyle = color;
+    tCtx.fillRect(0, 0, S.imgW, S.imgH);
+    ctxFg.save();
+    ctxFg.globalAlpha = i === S.regional.activeIdx ? 0.55 : 0.35;
+    ctxFg.drawImage(tmp, 0, 0);
+    ctxFg.restore();
+  });
+}
+
+function drawToolPreview() {
+  const x = _cursorX, y = _cursorY;
+  ctxFg.save();
+
+  if (S.tool === 'brush' || S.tool === 'eraser') {
+    // Círculo que muestra el tamaño real del pincel
+    const r = S.brushSize / 2;
+    ctxFg.beginPath();
+    ctxFg.arc(x, y, r, 0, Math.PI * 2);
+    ctxFg.strokeStyle = 'rgba(255,255,255,0.85)';
+    ctxFg.lineWidth   = 1;
+    ctxFg.setLineDash([4, 3]);
+    ctxFg.stroke();
+    // Punto central
+    ctxFg.beginPath();
+    ctxFg.arc(x, y, 1.5, 0, Math.PI * 2);
+    ctxFg.fillStyle = 'rgba(255,255,255,0.9)';
+    ctxFg.fill();
+
+  } else if (S.tool === 'rect' && drawing && rectStart && rectEnd) {
+    const [x0, y0] = rectStart;
+    const [x1, y1] = rectEnd;
+    // Sombra negra para contraste sobre fondos claros
+    ctxFg.strokeStyle = 'rgba(0,0,0,0.6)';
+    ctxFg.lineWidth   = 3;
+    ctxFg.setLineDash([]);
+    ctxFg.strokeRect(x0, y0, x1 - x0, y1 - y0);
+    // Línea blanca punteada encima
+    ctxFg.strokeStyle = 'rgba(255,255,255,0.95)';
+    ctxFg.lineWidth   = 2;
+    ctxFg.setLineDash([6, 4]);
+    ctxFg.strokeRect(x0, y0, x1 - x0, y1 - y0);
+    // Dimensiones
+    const w = Math.abs(x1 - x0), h = Math.abs(y1 - y0);
+    ctxFg.setLineDash([]);
+    ctxFg.font        = 'bold 12px monospace';
+    ctxFg.fillStyle   = 'rgba(0,0,0,0.7)';
+    ctxFg.fillText(`${w}×${h}`, Math.min(x0, x1) + 4, Math.min(y0, y1) - 5);
+    ctxFg.fillStyle   = 'rgba(255,255,255,0.95)';
+    ctxFg.fillText(`${w}×${h}`, Math.min(x0, x1) + 3, Math.min(y0, y1) - 6);
+
+  } else if (S.tool === 'lasso' && lassoPoints.length > 1) {
+    // Sombra negra
+    ctxFg.strokeStyle = 'rgba(0,0,0,0.6)';
+    ctxFg.lineWidth   = 3;
+    ctxFg.setLineDash([]);
+    ctxFg.beginPath();
+    ctxFg.moveTo(lassoPoints[0][0], lassoPoints[0][1]);
+    lassoPoints.slice(1).forEach(([px, py]) => ctxFg.lineTo(px, py));
+    if (drawing) ctxFg.lineTo(x, y);
+    ctxFg.stroke();
+    // Línea blanca punteada encima
+    ctxFg.strokeStyle = 'rgba(255,255,255,0.95)';
+    ctxFg.lineWidth   = 2;
+    ctxFg.setLineDash([6, 4]);
+    ctxFg.beginPath();
+    ctxFg.moveTo(lassoPoints[0][0], lassoPoints[0][1]);
+    lassoPoints.slice(1).forEach(([px, py]) => ctxFg.lineTo(px, py));
+    if (drawing) ctxFg.lineTo(x, y);
+    ctxFg.stroke();
+    // Punto de inicio (cyan para indicar dónde cerrar)
+    ctxFg.setLineDash([]);
+    ctxFg.beginPath();
+    ctxFg.arc(lassoPoints[0][0], lassoPoints[0][1], 5, 0, Math.PI * 2);
+    ctxFg.fillStyle = '#54EFEA';
+    ctxFg.fill();
+    ctxFg.strokeStyle = '#000';
+    ctxFg.lineWidth = 1;
+    ctxFg.stroke();
+
+  } else if ((S.tool === 'rect' || S.tool === 'lasso') && !drawing) {
+    // Cruz de referencia cuando no está dibujando
+    const size = 9;
+    ctxFg.setLineDash([]);
+    ctxFg.lineWidth = 2;
+    ctxFg.strokeStyle = 'rgba(0,0,0,0.5)';
+    ctxFg.beginPath();
+    ctxFg.moveTo(x - size, y); ctxFg.lineTo(x + size, y);
+    ctxFg.moveTo(x, y - size); ctxFg.lineTo(x, y + size);
+    ctxFg.stroke();
+    ctxFg.strokeStyle = 'rgba(255,255,255,0.9)';
+    ctxFg.lineWidth = 1.5;
+    ctxFg.beginPath();
+    ctxFg.moveTo(x - size, y); ctxFg.lineTo(x + size, y);
+    ctxFg.moveTo(x, y - size); ctxFg.lineTo(x, y + size);
+    ctxFg.stroke();
+  }
+
+  ctxFg.restore();
+}
+
+function drawMaskOverlay() {
+  const tmp    = document.createElement('canvas');
+  tmp.width    = S.imgW; tmp.height = S.imgH;
+  const tmpCtx = tmp.getContext('2d');
+  tmpCtx.drawImage(maskCanvas, 0, 0);
+  tmpCtx.globalCompositeOperation = 'source-in';
+  tmpCtx.fillStyle = '#EC00F0';
+  tmpCtx.fillRect(0, 0, S.imgW, S.imgH);
+  ctxFg.save();
+  ctxFg.globalAlpha = 0.45;
+  ctxFg.drawImage(tmp, 0, 0);
+  ctxFg.restore();
+}
+
+// ── Herramientas ──────────────────────────────────────────────────────────
+function onMouseDown(e) {
+  if (S.hasPreview) return;
+  drawing = true;
+  _prevBrushX = null; _prevBrushY = null;  // inicio de trazo nuevo
+  const [x, y] = toImg(e.clientX, e.clientY);
+  if (S.tool === 'brush' || S.tool === 'eraser') {
+    paintBrush(x, y);
+  } else if (S.tool === 'rect') {
+    rectStart = [x, y];
+  } else if (S.tool === 'lasso') {
+    lassoPoints = [[x, y]];
+  }
+}
+
+function onMouseMove(e) {
+  const [x, y] = toImg(e.clientX, e.clientY);
+  _cursorX = x; _cursorY = y;
+  updateStatusCursor(x, y);
+  if (!drawing) return;
+  if (S.tool === 'brush' || S.tool === 'eraser') {
+    paintBrush(x, y);
+  } else if (S.tool === 'lasso') {
+    lassoPoints.push([x, y]);
+  } else if (S.tool === 'rect' && rectStart) {
+    rectEnd = [x, y];
+  }
+}
+
+function onMouseUp(e) {
+  if (!drawing) return;
+  drawing = false;
+  _prevBrushX = null; _prevBrushY = null;  // fin de trazo
+  const [x, y] = toImg(e.clientX, e.clientY);
+  if (S.tool === 'rect' && rectStart) {
+    commitRect(rectStart[0], rectStart[1], x, y, e.shiftKey, e.altKey);
+    rectStart = null; rectEnd = null;
+  } else if (S.tool === 'lasso' && lassoPoints.length > 2) {
+    commitLasso(e.shiftKey, e.altKey);
+    lassoPoints = [];
+  }
+  updateMaskState();
+}
+
+function getActiveMaskCtx() {
+  return S.regional.active ? regionalMasks[S.regional.activeIdx].ctx : ctxMask;
+}
+
+function paintBrush(x, y) {
+  const ctx = getActiveMaskCtx();
+  ctx.globalCompositeOperation = S.tool === 'eraser' ? 'destination-out' : 'source-over';
+  ctx.lineWidth   = S.brushSize;
+  ctx.lineCap     = 'round';
+  ctx.lineJoin    = 'round';
+  ctx.strokeStyle = 'white';
+  ctx.fillStyle   = 'white';
+
+  ctx.beginPath();
+  if (_prevBrushX !== null) {
+    // Trazo continuo desde el punto anterior al actual
+    ctx.moveTo(_prevBrushX, _prevBrushY);
+    ctx.lineTo(x, y);
+    ctx.stroke();
+  } else {
+    // Primer punto del trazo: círculo puntual
+    ctx.arc(x, y, S.brushSize / 2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  _prevBrushX = x; _prevBrushY = y;
+
+  if (S.regional.active) {
+    regionalMasks[S.regional.activeIdx].hasPixels =
+      checkRegionalMaskPixels(S.regional.activeIdx);
+    updateRegionCards();
+  }
+  updateMaskState();
+}
+
+function commitRect(x0, y0, x1, y1, add, subtract) {
+  const ctx = getActiveMaskCtx();
+  ctx.globalCompositeOperation = subtract ? 'destination-out' : 'source-over';
+  ctx.fillStyle = 'white';
+  ctx.fillRect(Math.min(x0, x1), Math.min(y0, y1),
+               Math.abs(x1 - x0), Math.abs(y1 - y0));
+  if (S.regional.active) {
+    regionalMasks[S.regional.activeIdx].hasPixels =
+      checkRegionalMaskPixels(S.regional.activeIdx);
+    updateRegionCards();
+  }
+}
+
+function commitLasso(add, subtract) {
+  const ctx = getActiveMaskCtx();
+  ctx.globalCompositeOperation = subtract ? 'destination-out' : 'source-over';
+  ctx.fillStyle = 'white';
+  ctx.beginPath();
+  ctx.moveTo(lassoPoints[0][0], lassoPoints[0][1]);
+  lassoPoints.slice(1).forEach(([x, y]) => ctx.lineTo(x, y));
+  ctx.closePath();
+  ctx.fill();
+  if (S.regional.active) {
+    regionalMasks[S.regional.activeIdx].hasPixels =
+      checkRegionalMaskPixels(S.regional.activeIdx);
+    updateRegionCards();
+  }
+}
+
+function clearMask() {
+  if (S.regional.active) {
+    clearRegionalMask(S.regional.activeIdx);
+    return;
+  }
+  ctxMask.clearRect(0, 0, S.imgW, S.imgH);
+  updateMaskState();
+}
+
+function updateMaskState() {
+  if (S.regional.active) return;
+  const d = ctxMask.getImageData(0, 0, S.imgW, S.imgH).data;
+  S.hasMask = d.some((v, i) => i % 4 === 3 && v > 0);
+  document.getElementById('inpaint-model-group').style.display =
+    S.hasMask ? '' : 'none';
+}
+
+function getMaskB64() {
+  return maskCanvas.toDataURL('image/png').split(',')[1];
+}
+
+function getCurrentB64() {
+  const tmp    = document.createElement('canvas');
+  tmp.width    = S.imgW; tmp.height = S.imgH;
+  tmp.getContext('2d').drawImage(canvasBg, 0, 0);
+  return tmp.toDataURL('image/png').split(',')[1];
+}
+
+// ── Diálogo de tamaño de canvas ───────────────────────────────────────────
+function buildSizeDialog() {
+  const grid = document.getElementById('csm-grid');
+  grid.innerHTML = '';
+  SIZE_PRESETS.forEach((p, i) => {
+    const card = document.createElement('div');
+    card.className = 'csm-card' + (i === _selectedSizeIdx ? ' selected' : '');
+    card.dataset.sizeIdx = i;
+    if (p.w !== null) {
+      const maxDim = 36, scale = Math.min(maxDim / p.w, maxDim / p.h);
+      const sw = Math.max(4, Math.round(p.w * scale));
+      const sh = Math.max(4, Math.round(p.h * scale));
+      card.innerHTML = `
+        <div style="width:${sw}px;height:${sh}px;background:rgba(96,13,181,.65);border-radius:2px"></div>
+        <span class="csm-label">${p.label}</span>
+        <span class="csm-desc">${p.desc}</span>`;
+    } else {
+      card.innerHTML = `
+        <div style="width:28px;height:28px;border:1px dashed rgba(96,13,181,.7);border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:16px;color:rgba(96,13,181,.9)">+</div>
+        <span class="csm-label">${p.label}</span>
+        <span class="csm-desc">${p.desc}</span>`;
+    }
+    card.addEventListener('click', () => {
+      _selectedSizeIdx = i;
+      grid.querySelectorAll('.csm-card').forEach((c, ci) =>
+        c.classList.toggle('selected', ci === i));
+      document.getElementById('csm-custom').style.display =
+        SIZE_PRESETS[i].w === null ? '' : 'none';
+    });
+    grid.appendChild(card);
+  });
+  document.getElementById('csm-custom').style.display =
+    SIZE_PRESETS[_selectedSizeIdx].w === null ? '' : 'none';
+}
+
+function showSizeDialog() {
+  buildSizeDialog();
+  document.getElementById('canvas-size-modal').style.display = 'flex';
+}
+
+function confirmSizeDialog() {
+  const preset = SIZE_PRESETS[_selectedSizeIdx];
+  let w, h;
+  if (preset.w === null) {
+    w = parseInt(document.getElementById('csm-w').value) || 1024;
+    h = parseInt(document.getElementById('csm-h').value) || 1024;
+    w = Math.round(w / 8) * 8;
+    h = Math.round(h / 8) * 8;
+  } else {
+    w = preset.w; h = preset.h;
+  }
+  w = Math.max(64, Math.min(4096, w));
+  h = Math.max(64, Math.min(4096, h));
+
+  document.getElementById('canvas-size-modal').style.display = 'none';
+  resizeCanvases(w, h);
+  document.getElementById('inp-width').value  = w;
+  document.getElementById('inp-height').value = h;
+  requestAnimationFrame(render);
+}
+
+// ── Cargar imagen ─────────────────────────────────────────────────────────
+function loadImageFile(file) {
+  const url = URL.createObjectURL(file);
+  const img = new Image();
+  img.onload = () => {
+    currentImg = img;
+    let w = img.naturalWidth, h = img.naturalHeight;
+    // snap a múltiplo de 8
+    w = Math.floor(w / 8) * 8;
+    h = Math.floor(h / 8) * 8;
+    resizeCanvases(w, h);
+    ctxBg.clearRect(0, 0, w, h);
+    ctxBg.drawImage(img, 0, 0, w, h);
+    clearMask();
+    document.getElementById('inp-width').value  = w;
+    document.getElementById('inp-height').value = h;
+    S.hasImage = true;
+    updateButtons();
+    URL.revokeObjectURL(url);
+  };
+  img.src = url;
+}
+
+function loadImageFromB64(b64) {
+  return new Promise(resolve => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.src    = 'data:image/png;base64,' + b64;
+  });
+}
+
+// ── API calls ─────────────────────────────────────────────────────────────
+async function apiPost(path, body) {
+  const r = await fetch(API + path, {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
+    throw new Error(e.detail || r.statusText);
+  }
+  return r.json();
+}
+
+async function apiGet(path) {
+  const r = await fetch(API + path);
+  if (!r.ok) throw new Error(r.statusText);
+  return r.json();
+}
+
+function getParams() {
+  return {
+    arch:             document.getElementById('arch-select').value,
+    checkpoint:       document.getElementById('sel-checkpoint').value,
+    prompt:           withStyle(document.getElementById('inp-prompt').value),
+    negative_prompt:  document.getElementById('inp-negative').value,
+    steps:            parseInt(document.getElementById('inp-steps').value),
+    cfg:              parseFloat(document.getElementById('inp-cfg').value),
+    sampler:          document.getElementById('sel-sampler').value,
+    scheduler:        document.getElementById('sel-scheduler').value,
+    seed:             parseInt(document.getElementById('inp-seed').value),
+    denoise:          parseFloat(document.getElementById('inp-denoise').value),
+    feather_radius:   parseInt(document.getElementById('inp-feather').value),
+  };
+}
+
+// ── Generar (txt2img) ─────────────────────────────────────────────────────
+async function doGenerate() {
+  if (!document.getElementById('sel-checkpoint').value) {
+    return toast(t('painter.no_checkpoint'));
+  }
+  const p = getParams();
+  p.width  = parseInt(document.getElementById('inp-width').value);
+  p.height = parseInt(document.getElementById('inp-height').value);
+  try {
+    const { job_id } = await apiPost('/generate', p);
+    await trackJob(job_id);
+  } catch (_) { toast(t('painter.conn_error')); }
+}
+
+// ── Inpaint ───────────────────────────────────────────────────────────────
+async function doInpaint() {
+  if (!S.hasImage) return toast(t('painter.no_image'));
+  if (!S.hasMask)  return toast(t('painter.no_mask'));
+  const p = getParams();
+  p.image_b64     = getCurrentB64();
+  p.mask_b64      = getMaskB64();
+  p.inpaint_model = document.getElementById('sel-inpaint-model').value || null;
+  try {
+    const { job_id } = await apiPost('/inpaint', p);
+    await trackJob(job_id);
+  } catch (_) { toast(t('painter.conn_error')); }
+}
+
+// ── Upscale ───────────────────────────────────────────────────────────────
+async function doUpscale() {
+  if (!S.hasImage) return toast(t('painter.no_image'));
+  const model = document.getElementById('sel-upscaler').value;
+  if (!model)  return toast(t('painter.no_checkpoint'));
+  const arch  = document.getElementById('arch-select').value;
+  try {
+    const { job_id } = await apiPost('/upscale', {
+      image_b64: getCurrentB64(), model_name: model, arch,
+    });
+    await trackJob(job_id);
+  } catch (_) { toast(t('painter.conn_error')); }
+}
+
+// ── Job tracking via WebSocket ────────────────────────────────────────────
+function trackJob(jobId) {
+  return new Promise(resolve => {
+    S.activeJobId = jobId;
+    showProgress(true);
+
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const ws    = new WebSocket(`${proto}://${location.host}${API}/progress/${jobId}`);
+    S.ws        = ws;
+
+    ws.onmessage = async ({ data }) => {
+      const ev = JSON.parse(data);
+      if (ev.type === 'progress') {
+        setProgress(ev.step, ev.total);
+      } else if (ev.type === 'done') {
+        ws.close();
+        await onJobDone(jobId);
+        resolve();
+      } else if (ev.type === 'error') {
+        ws.close();
+        showProgress(false);
+        toast(t('painter.job_error').replace('{msg}', ev.msg || ''));
+        S.activeJobId = null;
+        resolve();
+      }
+    };
+    ws.onerror = () => {
+      showProgress(false);
+      toast(t('painter.conn_error'));
+      resolve();
+    };
+  });
+}
+
+async function onJobDone(jobId) {
+  showProgress(false);
+  S.activeJobId = null;
+  try {
+    const r    = await fetch(`${API}/jobs/${jobId}/result`);
+    const blob = await r.blob();
+    const b64  = await blobToB64(blob);
+    previewImg = await loadImageFromB64(b64);
+    if (S.imgW === 0) resizeCanvases(previewImg.naturalWidth, previewImg.naturalHeight);
+    S.hasPreview = true;
+    S.showMask   = false;
+
+    if (_regSeq.active) {
+      _regSeq.lastB64 = b64;
+      _showRegSeqAR();
+    } else {
+      showAcceptReject(true);
+    }
+    updateButtons();
+  } catch (_) { toast(t('painter.conn_error')); }
+}
+
+function blobToB64(blob) {
+  return new Promise(resolve => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(fr.result.split(',')[1]);
+    fr.readAsDataURL(blob);
+  });
+}
+
+function showProgress(visible) {
+  document.getElementById('progress-overlay').classList.toggle('visible', visible);
+}
+
+function setProgress(step, total) {
+  const pct = total > 0 ? Math.round(step / total * 100) : 0;
+  document.getElementById('progress-bar-fill').style.width = pct + '%';
+  document.getElementById('progress-label').textContent =
+    t('painter.step_of').replace('{s}', step).replace('{t}', total);
+}
+
+// ── Accept / Reject ───────────────────────────────────────────────────────
+async function doAccept() {
+  if (_regSeq.active) { _acceptRegStep(); return; }
+  try {
+    const r = await apiPost('/session/accept', {});
+    if (r.image_b64) {
+      const img = await loadImageFromB64(r.image_b64);
+      currentImg = img;
+      ctxBg.clearRect(0, 0, S.imgW, S.imgH);
+      ctxBg.drawImage(img, 0, 0);
+    }
+    previewImg   = null;
+    S.hasPreview = false;
+    S.hasImage   = true;
+    S.session    = { has_current: r.has_current, history_size: r.history_size, redo_size: r.redo_size };
+    clearMask();
+    S.showMask   = true;
+    showAcceptReject(false);
+    updateButtons();
+    updateUndoRedo();
+    toast(t('painter.accept_ok'));
+  } catch (_) { toast(t('painter.conn_error')); }
+}
+
+async function doReject() {
+  if (_regSeq.active) { _regenRegStep(); return; }
+  try {
+    await apiPost('/session/reject', {});
+    previewImg   = null;
+    S.hasPreview = false;
+    S.showMask   = true;
+    showAcceptReject(false);
+    updateButtons();
+    toast(t('painter.reject_ok'));
+  } catch (_) { toast(t('painter.conn_error')); }
+}
+
+// ── Undo / Redo ───────────────────────────────────────────────────────────
+async function doUndo() {
+  try {
+    const r = await apiPost('/session/undo', {});
+    if (r.image_b64) {
+      const img = await loadImageFromB64(r.image_b64);
+      currentImg = img;
+      ctxBg.clearRect(0, 0, S.imgW, S.imgH);
+      ctxBg.drawImage(img, 0, 0);
+    }
+    S.session = { has_current: r.has_current, history_size: r.history_size, redo_size: r.redo_size };
+    clearMask();
+    updateUndoRedo();
+    toast(t('painter.undo_ok'));
+  } catch (e) {
+    if (e.message && e.message.includes('deshacer')) toast(t('painter.nothing_to_undo'));
+    else toast(t('painter.conn_error'));
+  }
+}
+
+async function doRedo() {
+  try {
+    const r = await apiPost('/session/redo', {});
+    if (r.image_b64) {
+      const img = await loadImageFromB64(r.image_b64);
+      currentImg = img;
+      ctxBg.clearRect(0, 0, S.imgW, S.imgH);
+      ctxBg.drawImage(img, 0, 0);
+    }
+    S.session = { has_current: r.has_current, history_size: r.history_size, redo_size: r.redo_size };
+    clearMask();
+    updateUndoRedo();
+    toast(t('painter.redo_ok'));
+  } catch (e) {
+    if (e.message && e.message.includes('rehacer')) toast(t('painter.nothing_to_redo'));
+    else toast(t('painter.conn_error'));
+  }
+}
+
+// ── Cancelar job ──────────────────────────────────────────────────────────
+async function doCancelJob() {
+  try {
+    await apiPost('/interrupt', {});
+    if (S.ws) S.ws.close();
+    showProgress(false);
+    S.activeJobId = null;
+    updateButtons();
+  } catch (_) { toast(t('painter.conn_error')); }
+}
+
+// ── UI helpers ────────────────────────────────────────────────────────────
+function showAcceptReject(visible) {
+  const el = document.getElementById('accept-reject');
+  if (visible) {
+    el.classList.add('visible');
+    // Posición inicial: bottom-center del canvas, mismo lugar que la barra de progreso
+    const wrap = document.getElementById('p-canvas-wrap');
+    const rect = wrap.getBoundingClientRect();
+    const elW  = el.offsetWidth || 210;
+    el.style.left   = Math.round(rect.left + rect.width / 2 - elW / 2) + 'px';
+    el.style.top    = Math.round(rect.bottom - 110) + 'px';
+    el.style.right  = 'auto';
+    el.style.bottom = 'auto';
+  } else {
+    el.classList.remove('visible');
+  }
+}
+
+function initDraggable() {
+  const el     = document.getElementById('accept-reject');
+  const handle = document.getElementById('ar-handle');
+  let dragging = false, ox = 0, oy = 0;
+
+  handle.addEventListener('mousedown', e => {
+    dragging = true;
+    const r = el.getBoundingClientRect();
+    ox = e.clientX - r.left;
+    oy = e.clientY - r.top;
+    // Fijar desde top/left, eliminar posibles right/bottom
+    el.style.right  = 'auto';
+    el.style.bottom = 'auto';
+    e.preventDefault();
+  });
+
+  document.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    let nx = e.clientX - ox;
+    let ny = e.clientY - oy;
+    // Clamp dentro del viewport
+    nx = Math.max(0, Math.min(window.innerWidth  - el.offsetWidth,  nx));
+    ny = Math.max(0, Math.min(window.innerHeight - el.offsetHeight, ny));
+    el.style.left = nx + 'px';
+    el.style.top  = ny + 'px';
+  });
+
+  document.addEventListener('mouseup', () => { dragging = false; });
+}
+
+function updateButtons() {
+  const busy    = !!S.activeJobId;
+  const hasCkpt = !!document.getElementById('sel-checkpoint').value;
+  const btnGen  = document.getElementById('btn-generate');
+  btnGen.disabled  = busy || !hasCkpt;
+  btnGen.textContent = S.hasMask
+    ? t('painter.btn_inpaint')
+    : t('painter.btn_generate');
+  document.getElementById('btn-upscale').disabled = busy || !S.hasImage;
+  updateUndoRedo();
+}
+
+function updateUndoRedo() {
+  document.getElementById('btn-undo').disabled = S.session.history_size === 0;
+  document.getElementById('btn-redo').disabled = S.session.redo_size    === 0;
+}
+
+// ── Status bar ────────────────────────────────────────────────────────────
+function updateStatusDims() {
+  document.getElementById('st-dims').textContent =
+    S.imgW && S.imgH ? `${S.imgW}×${S.imgH}` : '—';
+  const pct = S.imgW ? Math.round(S.scale * 100) : null;
+  document.getElementById('st-zoom').textContent = pct ? `${pct}%` : '—';
+}
+
+function updateStatusCursor(x, y) {
+  document.getElementById('st-cursor').textContent =
+    `${x}, ${y}`;
+}
+
+// ── Toast ─────────────────────────────────────────────────────────────────
+let _toastTimer = null;
+function toast(msg) {
+  const el = document.getElementById('p-toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => el.classList.remove('show'), 3000);
+}
+
+// ── Regional Conditioning — lógica ────────────────────────────────────────
+
+function initRegionalMasks() {
+  regionalMasks = REGION_COLORS.map(() => {
+    const canvas = document.createElement('canvas');
+    return { canvas, ctx: canvas.getContext('2d'), hasPixels: false };
+  });
+}
+
+function enterRegionalMode() {
+  S.regional.active   = true;
+  S.regional.activeIdx = 0;
+  const w = Math.max(S.imgW, 1), h = Math.max(S.imgH, 1);
+  regionalMasks.forEach(rm => {
+    rm.canvas.width  = w;
+    rm.canvas.height = h;
+    rm.ctx.clearRect(0, 0, w, h);
+    rm.hasPixels = false;
+  });
+  document.getElementById('reg-toolbar').style.display = 'flex';
+  updateRegionHighlight();
+  updateRegionCards();
+}
+
+function exitRegionalMode() {
+  const hasMasks = regionalMasks.some(rm => rm.hasPixels);
+  if (hasMasks && !confirm('¿Salir del modo Regional? Se perderán las máscaras pintadas.')) {
+    return false;
+  }
+  S.regional.active = false;
+  regionalMasks.forEach(rm => {
+    rm.ctx.clearRect(0, 0, rm.canvas.width, rm.canvas.height);
+    rm.hasPixels = false;
+  });
+  document.getElementById('reg-toolbar').style.display = 'none';
+  return true;
+}
+
+function setActiveRegion(idx) {
+  S.regional.activeIdx = idx;
+  updateRegionHighlight();
+  updateRegionCards();
+}
+
+function updateRegionHighlight() {
+  document.querySelectorAll('.reg-btn').forEach((b, i) => {
+    const color = REGION_COLORS[i];
+    if (i === S.regional.activeIdx) {
+      b.style.background  = color;
+      b.style.color       = '#fff';
+      b.style.borderColor = color;
+    } else {
+      b.style.background  = '';
+      b.style.color       = color;
+      b.style.borderColor = color;
+    }
+  });
+}
+
+function buildRegionCards() {
+  const container = document.getElementById('reg-regions');
+  container.innerHTML = '';
+  REGION_COLORS.forEach((color, i) => {
+    const card = document.createElement('div');
+    card.className = 'reg-card';
+    card.innerHTML = `
+      <div class="reg-card-header" data-region="${i}">
+        <span class="reg-swatch" style="background:${color}"></span>
+        <span class="reg-card-label" style="color:${color}">R${i + 1}</span>
+        <span class="reg-mask-status" id="reg-status-${i}">(sin máscara)</span>
+        <button class="reg-clear-btn" data-clear-region="${i}" title="Limpiar R${i+1}">✕</button>
+      </div>
+      <div class="reg-card-body" id="reg-body-${i}" style="display:none">
+        <textarea class="ctrl-textarea" id="reg-prompt-${i}"
+          style="min-height:52px;margin-top:6px;border-left:2px solid ${color}"
+          placeholder="Prompt para R${i + 1}…"></textarea>
+      </div>
+    `;
+    container.appendChild(card);
+  });
+
+  // Event: expandir/colapsar al hacer click en el header
+  container.querySelectorAll('.reg-card-header').forEach(h => {
+    h.addEventListener('click', e => {
+      if (e.target.classList.contains('reg-clear-btn')) return;
+      setActiveRegion(parseInt(h.dataset.region));
+    });
+  });
+
+  // Event: limpiar máscara de región
+  container.querySelectorAll('.reg-clear-btn').forEach(b => {
+    b.addEventListener('click', () => {
+      clearRegionalMask(parseInt(b.dataset.clearRegion));
+    });
+  });
+}
+
+function updateRegionCards() {
+  REGION_COLORS.forEach((_, i) => {
+    const rm     = regionalMasks[i];
+    const status = document.getElementById(`reg-status-${i}`);
+    const body   = document.getElementById(`reg-body-${i}`);
+    if (status) status.textContent = (rm && rm.hasPixels) ? '' : '(sin máscara)';
+    if (body)   body.style.display = (i === S.regional.activeIdx) ? '' : 'none';
+  });
+}
+
+function clearRegionalMask(idx) {
+  const rm = regionalMasks[idx];
+  if (!rm) return;
+  rm.ctx.clearRect(0, 0, rm.canvas.width, rm.canvas.height);
+  rm.hasPixels = false;
+  updateRegionCards();
+}
+
+function checkRegionalMaskPixels(idx) {
+  const rm = regionalMasks[idx];
+  if (!rm || rm.canvas.width === 0) return false;
+  const d = rm.ctx.getImageData(0, 0, rm.canvas.width, rm.canvas.height).data;
+  return d.some((v, i) => i % 4 === 3 && v > 0);
+}
+
+function getRegionalMaskB64(idx) {
+  return regionalMasks[idx].canvas.toDataURL('image/png').split(',')[1];
+}
+
+async function doRegional() {
+  const checkpoint = document.getElementById('reg-checkpoint').value
+                  || document.getElementById('sel-checkpoint').value;
+  if (!checkpoint) return toast(t('painter.no_checkpoint'));
+
+  const queue = [];
+  for (let i = 0; i < 4; i++) {
+    const rm = regionalMasks[i];
+    if (!rm || !rm.hasPixels) continue;
+    const prompt = withStyle((document.getElementById(`reg-prompt-${i}`) || {}).value || '');
+    queue.push({ prompt, mask_b64: getRegionalMaskB64(i), regionIdx: i });
+  }
+  if (queue.length === 0) {
+    return toast('Pinta al menos una región antes de generar.');
+  }
+
+  const baseSeed = parseInt(document.getElementById('reg-seed').value);
+
+  _regSeq = {
+    active:  true,
+    queue,
+    total:   queue.length,
+    stepIdx: 0,
+    baseB64: S.hasImage ? getCurrentB64() : null,
+    lastB64: null,
+    params: {
+      checkpoint,
+      negative_prompt: document.getElementById('reg-negative').value,
+      steps:   parseInt(document.getElementById('reg-steps').value),
+      cfg:     parseFloat(document.getElementById('reg-cfg').value),
+      denoise: parseFloat(document.getElementById('reg-denoise').value),
+      width:   S.imgW || parseInt(document.getElementById('inp-width').value),
+      height:  S.imgH || parseInt(document.getElementById('inp-height').value),
+    },
+    seed: baseSeed < 0 ? Math.floor(Math.random() * 2147483647) : baseSeed,
+  };
+
+  await _runRegStep();
+}
+
+// Envía el paso actual de la cola regional
+async function _runRegStep() {
+  const step = _regSeq.queue[_regSeq.stepIdx];
+  const p    = _regSeq.params;
+  const body = {
+    checkpoint:      p.checkpoint,
+    prompt:          step.prompt,
+    negative_prompt: p.negative_prompt,
+    image_b64:       _regSeq.baseB64,
+    mask_b64:        step.mask_b64,
+    width:           p.width,
+    height:          p.height,
+    seed:            _regSeq.seed,
+    steps:           p.steps,
+    cfg:             p.cfg,
+    denoise:         p.denoise,
+  };
+  try {
+    const { job_id } = await apiPost('/regional_step', body);
+    await trackJob(job_id);
+  } catch (_) {
+    _regSeq.active = false;
+    toast(t('painter.conn_error'));
+  }
+}
+
+// Actualiza el overlay AR con etiquetas propias del modo secuencial
+function _showRegSeqAR() {
+  const n     = _regSeq.stepIdx + 1;
+  const total = _regSeq.total;
+  const label = t('painter.reg_step_label')
+    .replace('{n}', n).replace('{total}', total);
+  document.getElementById('ar-label').textContent          = label;
+  document.getElementById('ar-reg-progress').style.display = '';
+  document.getElementById('ar-reg-progress').textContent   =
+    `R${_regSeq.queue[_regSeq.stepIdx].regionIdx + 1} — paso ${n} de ${total}`;
+  document.getElementById('btn-accept').textContent = t('painter.reg_btn_accept');
+  document.getElementById('btn-reject').textContent = t('painter.reg_btn_reject');
+  showAcceptReject(true);
+}
+
+// Resetea el overlay AR a sus etiquetas normales
+function _resetAR() {
+  document.getElementById('ar-label').textContent          = t('painter.preview_ready');
+  document.getElementById('ar-reg-progress').style.display = 'none';
+  document.getElementById('btn-accept').textContent        = t('painter.btn_accept');
+  document.getElementById('btn-reject').textContent        = t('painter.btn_reject');
+}
+
+// El usuario acepta el resultado de la región actual
+async function _acceptRegStep() {
+  // El resultado ya está en previewImg/lastB64 — lo usamos como nueva base
+  _regSeq.baseB64 = _regSeq.lastB64;
+  _regSeq.lastB64 = null;
+
+  const hasNext = _regSeq.stepIdx + 1 < _regSeq.total;
+
+  if (hasNext) {
+    // Avanzar a la siguiente región — ocultar AR, mostrar nuevo paso
+    _regSeq.stepIdx++;
+    _regSeq.seed++;  // nueva semilla por defecto para la siguiente región
+    previewImg   = null;
+    S.hasPreview = false;
+    S.showMask   = true;
+    showAcceptReject(false);
+    _resetAR();
+    updateButtons();
+    await _runRegStep();
+  } else {
+    // Última región aceptada → commit a la sesión
+    // El servidor ya tiene el preview del último job vía session.set_preview()
+    _regSeq.active = false;
+    _resetAR();
+    try {
+      const r   = await apiPost('/session/accept', {});
+      const img = await loadImageFromB64(_regSeq.baseB64);
+      currentImg = img;
+      ctxBg.clearRect(0, 0, S.imgW, S.imgH);
+      ctxBg.drawImage(img, 0, 0);
+      previewImg   = null;
+      S.hasPreview = false;
+      S.hasImage   = true;
+      S.session    = { has_current: r.has_current, history_size: r.history_size, redo_size: r.redo_size };
+      clearMask();
+      S.showMask = true;
+      showAcceptReject(false);
+      updateButtons();
+      updateUndoRedo();
+      toast(t('painter.reg_all_done'));
+    } catch (_) { toast(t('painter.conn_error')); }
+  }
+}
+
+// El usuario rechaza y quiere regenerar la región actual
+async function _regenRegStep() {
+  // Incrementar semilla para obtener resultado diferente
+  _regSeq.seed++;
+  _regSeq.lastB64 = null;
+  previewImg   = null;
+  S.hasPreview = false;
+  S.showMask   = true;
+  showAcceptReject(false);
+  _resetAR();
+  updateButtons();
+  await _runRegStep();
+}
+
+// ── Clasificación de arquitectura ─────────────────────────────────────────
+// _vaultArchMap: {stem_sin_ext → base_model} cargado desde /api/vault/arch-map
+let _vaultArchMap = {};
+
+// Convierte base_model del Vault a clave interna del Painter.
+// Mapeo explícito primero; regex como fallback para variantes no listadas.
+const _VAULT_ARCH_MAP_EXPLICIT = {
+  // SDXL y variantes
+  'sdxl 1.0': 'sdxl', 'sdxl hyper': 'sdxl', 'sdxl turbo': 'sdxl',
+  'pony': 'sdxl', 'illustrious': 'sdxl', 'noobai': 'sdxl',
+  'wai': 'sdxl', 'animagine': 'sdxl',
+  // Flux
+  'flux.1 d': 'flux', 'flux.1 s': 'flux', 'flux.1 kontext': 'flux',
+  'flux.1 [dev]': 'flux', 'flux.1 [schnell]': 'flux',
+  // SD 1.5
+  'sd 1.5': 'sd15',
+  // ZImageTurbo — arquitectura propia, NO es SDXL
+  'zimageturbo': 'zimage', 'zimage turbo': 'zimage', 'zimage': 'zimage',
+  // Wan / video
+  'wan video': 'wan', 'wan 2.1': 'wan', 'wan': 'wan',
+  // Otros que no son checkpoints de imagen fija
+  'qwen': 'other', 'other': 'other',
+};
+
+function normalizeVaultArch(baseModel) {
+  if (!baseModel) return 'unknown';
+  const key = baseModel.toLowerCase().trim();
+  if (_VAULT_ARCH_MAP_EXPLICIT[key]) return _VAULT_ARCH_MAP_EXPLICIT[key];
+  // Fallback regex para variantes no listadas
+  if (/flux/.test(key)) return 'flux';
+  if (/sd\s*3|stable.?diffusion.?3/.test(key)) return 'sd3';
+  if (/sd\s*1|stable.?diffusion.?1/.test(key)) return 'sd15';
+  if (/zimage|zimageturbo/.test(key)) return 'zimage';
+  if (/wan\s*video|wan\s*2/.test(key)) return 'wan';
+  if (/sdxl|pony|illustrious|noob|wai|animagine|playground|kolors|hunyuan/.test(key)) return 'sdxl';
+  if (/xl/.test(key)) return 'sdxl';
+  return 'unknown';
+}
+
+// Determina la arch de un modelo por su nombre de archivo (stem sin extensión).
+// Prioridad: mapa del Vault → heurísticas de nombre/path.
+function modelArch(name) {
+  const stem = name.replace(/\\/g, '/').split('/').pop().replace(/\.[^.]+$/, '');
+  // Búsqueda en el mapa del Vault (case-insensitive)
+  const vaultArch = _vaultArchMap[stem] || _vaultArchMap[stem.toLowerCase()];
+  if (vaultArch) return normalizeVaultArch(vaultArch);
+
+  // Fallback: heurísticas de nombre/path
+  const n = name.toLowerCase().replace(/\\/g, '/');
+  if (/\/flux[\/\-_.]|^flux[\/\-_\.]|flux/.test(n)) return 'flux';
+  if (/\/sd3[\/\-_.]|^sd3[\/\-_\.]|sd3|stable.?diffusion.?3/.test(n)) return 'sd3';
+  if (/\/sdxl[\/\-_.]|^sdxl[\/\-_\.]|sdxl/.test(n)) return 'sdxl';
+  if (/pony|illustrious|noob|wai[_\-]?xl|animagine|juggernaut.?xl|dreamshaper.?xl|playground/.test(n)) return 'sdxl';
+  if (/[_\-\.]xl[_\-\.\d]|[_\-\.]xl$/.test(n)) return 'sdxl';
+  return 'unknown';
+}
+
+// Devuelve modelos que coinciden con arch + los no clasificados (siempre visibles).
+function filterByArch(names, arch) {
+  const matched = names.filter(n => modelArch(n) === arch);
+  const unknown = names.filter(n => modelArch(n) === 'unknown');
+  return [...matched, ...unknown];
+}
+
+// ── Cargar modelos ────────────────────────────────────────────────────────
+async function loadModels() {
+  try {
+    // Cargar arch-map del Vault y modelos de ComfyUI en paralelo
+    const [m, archMap] = await Promise.all([
+      apiGet('/models'),
+      fetch('/api/vault/arch-map').then(r => r.ok ? r.json() : {}).catch(() => ({})),
+    ]);
+    _vaultArchMap = archMap;
+    S.models = m;
+    populateModelSelects(m, S.arch);
+    updateButtons();
+  } catch (_) {
+    toast(t('painter.conn_error'));
+  }
+}
+
+function populateModelSelects(m, arch) {
+  // ── Checkpoints — filtrados por arquitectura ──────────────────────────
+  const checkpoints = filterByArch(m.checkpoints, arch);
+  const ckptHtml = '<option value="">— checkpoint —</option>' +
+    checkpoints.map(c => `<option value="${c}">${c}</option>`).join('');
+
+  const selCkpt = document.getElementById('sel-checkpoint');
+  const prevCkpt = selCkpt.value;
+  selCkpt.innerHTML = ckptHtml;
+  if (checkpoints.includes(prevCkpt)) selCkpt.value = prevCkpt;
+
+  // Sincronizar selector en tab Regional (mantiene selección previa si sigue disponible)
+  const regCkpt = document.getElementById('reg-checkpoint');
+  const prevRegCkpt = regCkpt.value;
+  regCkpt.innerHTML = ckptHtml;
+  if (checkpoints.includes(prevRegCkpt)) regCkpt.value = prevRegCkpt;
+  else if (checkpoints.includes(prevCkpt)) regCkpt.value = prevCkpt;
+
+  // ── Samplers / Schedulers — sin arquitectura ──────────────────────────
+  const selSampler = document.getElementById('sel-sampler');
+  selSampler.innerHTML = m.samplers.map(s =>
+    `<option value="${s}"${s==='euler'?' selected':''}>${s}</option>`).join('');
+
+  const selSched = document.getElementById('sel-scheduler');
+  selSched.innerHTML = m.schedulers.map(s =>
+    `<option value="${s}"${s==='normal'?' selected':''}>${s}</option>`).join('');
+
+  // ── Upscalers — agnósticos de arquitectura ────────────────────────────
+  const selUp = document.getElementById('sel-upscaler');
+  selUp.innerHTML = '<option value="">— upscaler —</option>' +
+    m.upscale_models.map(u => `<option value="${u}">${u}</option>`).join('');
+
+  // ── ControlNet — filtrados por arquitectura ───────────────────────────
+  const controlnet = filterByArch(m.controlnet, arch);
+  const selCN = document.getElementById('sel-cn-model');
+  if (controlnet.length === 0) {
+    document.getElementById('cn-disabled-msg').style.display = '';
+    document.getElementById('cn-controls').style.display = 'none';
+  } else {
+    document.getElementById('cn-disabled-msg').style.display = 'none';
+    document.getElementById('cn-controls').style.display = '';
+    selCN.innerHTML = controlnet.map(c => `<option value="${c}">${c}</option>`).join('');
+  }
+}
+
+// ── Setup overlay ─────────────────────────────────────────────────────────
+function logSetup(msg, status) {
+  const el  = document.getElementById('setup-log');
+  const div = document.createElement('div');
+  div.className = status;
+  div.textContent = msg;
+  el.appendChild(div);
+  el.scrollTop = el.scrollHeight;
+}
+
+async function initSetup() {
+  document.getElementById('setup-log').innerHTML = '';
+  document.getElementById('btn-setup-retry').style.display = 'none';
+  document.getElementById('setup-msg').textContent = '';
+  const h2 = document.querySelector('#setup-overlay h2');
+  h2.textContent = t('painter.setup_checking');
+
+  // Verificar estado antes de lanzar el setup completo
+  let status;
+  try {
+    status = await apiGet('/setup/status');
+  } catch (_) {
+    document.getElementById('setup-msg').textContent = t('painter.conn_error');
+    document.getElementById('btn-setup-retry').style.display = '';
+    return;
+  }
+
+  if (status.ready) {
+    document.getElementById('setup-overlay').style.display = 'none';
+    loadModels();
+    showSizeDialog();
+    requestAnimationFrame(render);
+    return;
+  }
+
+  if (status.comfyui_offline) {
+    h2.textContent = t('painter.setup_start_comfyui');
+    document.getElementById('setup-msg').textContent = status.msg || '';
+    document.getElementById('btn-setup-retry').style.display = '';
+    return;
+  }
+
+  // Necesita instalación — lanzar SSE (GET)
+  h2.textContent = t('painter.setup_installing');
+  const es = new EventSource(API + '/setup/run');
+
+  es.onmessage = ({ data }) => {
+    const ev = JSON.parse(data);
+    if (ev.step === 'stream_end') { es.close(); return; }
+
+    logSetup(ev.msg, ev.status);
+
+    if (ev.status === 'error') {
+      es.close();
+      h2.textContent = ev.msg;
+      document.getElementById('btn-setup-retry').style.display = '';
+      return;
+    }
+
+    if (ev.step === 'restart_required') {
+      es.close();
+      document.getElementById('setup-msg').textContent = t('painter.setup_restart');
+      return;
+    }
+
+    if (ev.step === 'done') {
+      es.close();
+      if (ev.status === 'ok') {
+        document.getElementById('setup-overlay').style.display = 'none';
+        loadModels();
+        showSizeDialog();
+        requestAnimationFrame(render);
+      } else {
+        document.getElementById('setup-msg').textContent = t('painter.setup_warning');
+        setTimeout(() => {
+          document.getElementById('setup-overlay').style.display = 'none';
+          loadModels();
+          showSizeDialog();
+          requestAnimationFrame(render);
+        }, 2000);
+      }
+    }
+  };
+
+  es.onerror = () => {
+    es.close();
+    document.getElementById('setup-msg').textContent = t('painter.conn_error');
+    document.getElementById('btn-setup-retry').style.display = '';
+  };
+}
+
+// ── Keyboard shortcuts ────────────────────────────────────────────────────
+function initKeyboard() {
+  document.addEventListener('keydown', e => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    if (e.ctrlKey && e.key === 'z') { e.preventDefault(); doUndo(); return; }
+    if (e.ctrlKey && (e.key === 'y' || e.key === 'Y')) { e.preventDefault(); doRedo(); return; }
+    switch (e.key.toLowerCase()) {
+      case 'b': setTool('brush');  break;
+      case 'r': setTool('rect');   break;
+      case 'l': setTool('lasso');  break;
+      case 'e': setTool('eraser'); break;
+      case 'x': toggleBrushEraser(); break;
+      case '[': changeBrushSize(-5); break;
+      case ']': changeBrushSize(+5); break;
+    }
+  });
+}
+
+function setTool(name) {
+  S.tool = name;
+  document.querySelectorAll('.tool-btn[data-tool]').forEach(b =>
+    b.classList.toggle('active', b.dataset.tool === name));
+  document.getElementById('st-tool').textContent = name;
+}
+
+function toggleBrushEraser() {
+  setTool(S.tool === 'eraser' ? 'brush' : 'eraser');
+}
+
+function changeBrushSize(delta) {
+  S.brushSize = Math.max(4, Math.min(200, S.brushSize + delta));
+  document.getElementById('brush-size').value = S.brushSize;
+  document.getElementById('brush-size-label').textContent = S.brushSize;
+}
+
+// ── Event listeners ───────────────────────────────────────────────────────
+function initEvents() {
+  // Herramientas
+  document.querySelectorAll('.tool-btn[data-tool]').forEach(b =>
+    b.addEventListener('click', () => setTool(b.dataset.tool)));
+
+  // Brush size slider
+  document.getElementById('brush-size').addEventListener('input', function () {
+    S.brushSize = parseInt(this.value);
+    document.getElementById('brush-size-label').textContent = S.brushSize;
+  });
+
+  // Cargar imagen (header + panel)
+  const openFilePicker = () => document.getElementById('file-input').click();
+  document.getElementById('btn-load-img').addEventListener('click', openFilePicker);
+  document.getElementById('btn-load-img-panel').addEventListener('click', openFilePicker);
+  document.getElementById('file-input').addEventListener('change', function () {
+    if (this.files[0]) loadImageFile(this.files[0]);
+  });
+
+  // Limpiar máscara
+  document.getElementById('btn-clear-mask').addEventListener('click', clearMask);
+
+  // Generar
+  document.getElementById('btn-generate').addEventListener('click', () => {
+    S.hasMask ? doInpaint() : doGenerate();
+  });
+
+  // Upscale
+  document.getElementById('btn-upscale').addEventListener('click', doUpscale);
+
+  // Accept / Reject
+  document.getElementById('btn-accept').addEventListener('click', doAccept);
+  document.getElementById('btn-reject').addEventListener('click', doReject);
+
+  // Undo / Redo
+  document.getElementById('btn-undo').addEventListener('click', doUndo);
+  document.getElementById('btn-redo').addEventListener('click', doRedo);
+
+  // Cancelar job
+  document.getElementById('btn-cancel-job').addEventListener('click', doCancelJob);
+
+  // Randomize seed
+  document.getElementById('btn-randomize').addEventListener('click', () => {
+    document.getElementById('inp-seed').value = Math.floor(Math.random() * 2 ** 32);
+  });
+
+  // Denoise slider
+  document.getElementById('inp-denoise').addEventListener('input', function () {
+    document.getElementById('denoise-val').textContent = parseFloat(this.value).toFixed(2);
+  });
+
+  // Feather slider
+  document.getElementById('inp-feather').addEventListener('input', function () {
+    document.getElementById('feather-val').textContent = this.value;
+  });
+
+  // CN strength slider
+  document.getElementById('inp-cn-strength').addEventListener('input', function () {
+    document.getElementById('cn-strength-val').textContent = parseFloat(this.value).toFixed(2);
+  });
+
+  // Tabs del panel
+  document.querySelectorAll('.panel-tab').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const targetTab = btn.dataset.tab;
+      // Si estábamos en regional y salimos, confirmar pérdida de máscaras
+      if (S.regional.active && targetTab !== 'regional') {
+        if (!exitRegionalMode()) return;
+      }
+      if (targetTab === 'regional') {
+        enterRegionalMode();
+      }
+      document.querySelectorAll('.panel-tab').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.panel-body').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      document.getElementById('tab-' + targetTab).classList.add('active');
+    });
+  });
+
+  // Diálogo de tamaño de canvas
+  document.getElementById('csm-confirm').addEventListener('click', confirmSizeDialog);
+  ['csm-w', 'csm-h'].forEach(id => {
+    document.getElementById(id).addEventListener('keydown', e => {
+      if (e.key === 'Enter') confirmSizeDialog();
+    });
+  });
+
+  // Regional: botones R1-R4 en toolbar
+  document.querySelectorAll('.reg-btn').forEach(b => {
+    b.addEventListener('click', () => setActiveRegion(parseInt(b.dataset.region)));
+  });
+
+  // Regional: slider denoise
+  document.getElementById('reg-denoise').addEventListener('input', function () {
+    document.getElementById('reg-denoise-val').textContent = parseFloat(this.value).toFixed(2);
+  });
+
+  // Regional: randomize seed
+  document.getElementById('reg-btn-randomize').addEventListener('click', () => {
+    document.getElementById('reg-seed').value = Math.floor(Math.random() * 2 ** 32);
+  });
+
+  // Regional: botón generar
+  document.getElementById('btn-regional').addEventListener('click', doRegional);
+
+  // Arch selector
+  document.getElementById('arch-select').addEventListener('change', function () {
+    S.arch = this.value;
+    loadModels();
+  });
+}
+
+// ── Estilos — lógica ─────────────────────────────────────────────────────
+
+async function loadStyles() {
+  try {
+    const r = await fetch(`${API}/styles`);
+    const d = await r.json();
+    _styles = d.styles || [];
+    renderStyleChips();
+  } catch (_) {}
+}
+
+function renderStyleChips() {
+  const list = document.getElementById('styles-list');
+  if (!list) return;
+  list.innerHTML = '';
+  _styles.forEach(s => {
+    const chip = document.createElement('div');
+    chip.className = 'style-chip' + (s.name === _activeStyleName ? ' active' : '');
+    chip.innerHTML =
+      `<span class="style-chip-label">${s.name}</span>` +
+      `<button class="style-chip-del" data-del="${s.name}" title="Eliminar">×</button>`;
+    chip.querySelector('.style-chip-label').addEventListener('click', () => applyStyle(s));
+    chip.querySelector('.style-chip-del').addEventListener('click', e => {
+      e.stopPropagation();
+      deleteStyle(s.name);
+    });
+    list.appendChild(chip);
+  });
+}
+
+function applyStyle(s) {
+  _activeStyleName   = s.name;
+  _activeStylePrompt = s.prompt;
+  document.getElementById('styles-prompt').value    = s.prompt;
+  document.getElementById('styles-active-name').textContent = s.name;
+  document.getElementById('styles-active-name').classList.add('has-style');
+  document.getElementById('styles-clear-btn').style.display = '';
+  renderStyleChips();
+  toast(t('painter.styles_applied').replace('{name}', s.name));
+}
+
+function clearStyle() {
+  _activeStyleName   = '';
+  _activeStylePrompt = '';
+  document.getElementById('styles-prompt').value    = '';
+  document.getElementById('styles-active-name').textContent = t('painter.styles_none');
+  document.getElementById('styles-active-name').classList.remove('has-style');
+  document.getElementById('styles-clear-btn').style.display = 'none';
+  renderStyleChips();
+  toast(t('painter.styles_cleared'));
+}
+
+async function saveStyle() {
+  const name   = document.getElementById('styles-name-input').value.trim();
+  const prompt = document.getElementById('styles-prompt').value.trim();
+  if (!name) return toast(t('painter.styles_name_ph'));
+  try {
+    await fetch(`${API}/styles`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, prompt }),
+    });
+    await loadStyles();
+    // Activar el estilo recién guardado
+    applyStyle({ name, prompt });
+    document.getElementById('styles-name-input').value = '';
+    toast(t('painter.styles_saved'));
+  } catch (_) { toast(t('painter.conn_error')); }
+}
+
+async function deleteStyle(name) {
+  try {
+    await fetch(`${API}/styles/${encodeURIComponent(name)}`, { method: 'DELETE' });
+    if (_activeStyleName === name) clearStyle();
+    await loadStyles();
+    toast(t('painter.styles_deleted'));
+  } catch (_) { toast(t('painter.conn_error')); }
+}
+
+function toggleStylesPanel() {
+  const panel  = document.getElementById('styles-panel');
+  const arrow  = document.getElementById('styles-toggle-arrow');
+  const open   = panel.style.display === 'none' || panel.style.display === '';
+  panel.style.display = open ? 'flex' : 'none';
+  arrow.classList.toggle('open', open);
+}
+
+function initStyles() {
+  document.getElementById('styles-header').addEventListener('click', toggleStylesPanel);
+  document.getElementById('styles-clear-btn').addEventListener('click', e => {
+    e.stopPropagation();
+    clearStyle();
+  });
+  document.getElementById('styles-save-btn').addEventListener('click', saveStyle);
+  // Actualizar _activeStylePrompt en tiempo real si el usuario edita sin guardar
+  document.getElementById('styles-prompt').addEventListener('input', function () {
+    if (_activeStyleName) _activeStylePrompt = this.value;
+  });
+  loadStyles();
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  initCanvas();
+  initRegionalMasks();
+  buildRegionCards();
+  initEvents();
+  initKeyboard();
+  initDraggable();
+  initSetup();
+  initStyles();
+});

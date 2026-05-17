@@ -14,16 +14,19 @@ A self-contained launcher for AI tools focused on image generation and model tra
 | **FaceFusion** | Face swap and restoration tool |
 | **TagGUI** | Image tagger for dataset preparation |
 | **LoRA Merger** | Merge and blend LoRA weights |
-| **Model Vault** | Local model library manager |
+| **Model Vault** | Local model library manager with Civitai tag sync and subfolder organization |
+| **Painter** | Browser-based AI image editor: inpainting, outpainting, upscaling, and regional conditioning via ComfyUI |
 
 ---
 
 ## Architecture
 
-- **Backend**: FastAPI + WebSocket — each managed app streams its logs in real time to the UI
-- **Frontend**: pywebview (native window) with browser fallback
+- **Backend**: FastAPI — app launcher, model vault, and AI editor all served from a single hub process
+- **Frontend**: Vanilla JS + HTML5 Canvas served by FastAPI; opens in the default browser (pywebview optional native wrapper)
+- **Real-time**: WebSocket progress streaming for ComfyUI jobs; SSE for setup and log tailing
 - **Launcher**: `run.sh` bootstraps everything from scratch — downloads `uv`, Python 3.13, and Node.js portably if not present on the system
-- **Isolation**: each app runs in its own virtual environment, managed independently
+- **Isolation**: each managed app runs in its own virtual environment, managed independently
+- **i18n**: ES/EN locale system (`locale.js`) — all UI strings switch at runtime without reload
 
 ---
 

@@ -395,3 +395,27 @@ async def apply_moves(payload: ApplyMovesPayload):
         return {"moved": moved, "errors": len(errors), "error_detail": errors}
 
     return await loop.run_in_executor(_pool, _run)
+
+
+@vault_router.get("/arch-map")
+async def arch_map():
+    """
+    Devuelve {basename_sin_ext: base_model} para todos los modelos en la DB.
+    El Painter lo usa para filtrar modelos por arquitectura sin depender
+    de heurísticas de nombre.
+    """
+    def _run():
+        svc    = _get_service()
+        models = svc.db.get_all_models()
+        result = {}
+        for m in models:
+            fp   = m.get("file_path", "")
+            arch = m.get("base_model") or ""
+            if fp and arch:
+                # Clave: nombre de archivo sin extensión (case-insensitive en consulta)
+                stem = os.path.splitext(os.path.basename(fp))[0]
+                result[stem] = arch
+        return result
+
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(_pool, _run)

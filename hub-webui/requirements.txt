@@ -3,3 +3,5 @@ uvicorn>=0.32
 websockets>=13.0
 requests>=2.31
 numpy>=1.26
+aiohttp>=3.9
+Pillow>=10.0
