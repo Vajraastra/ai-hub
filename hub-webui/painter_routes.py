@@ -254,6 +254,7 @@ async def regional(req: RegionalRequest):
         cfg             = req.cfg,
         denoise         = req.denoise,
         image_b64       = req.image_b64,
+        scheduler       = req.scheduler,
     )
     job_id = await _launch(wf, {})   # workflow ya construido, params vacíos
     return JobResponse(job_id=job_id)
@@ -287,6 +288,7 @@ async def regional_step(req: RegionalStepRequest):
         denoise         = req.denoise,
         width           = req.width,
         height          = req.height,
+        scheduler       = req.scheduler,
     )
     job_id = await _launch(wf, {})
     return JobResponse(job_id=job_id)
@@ -469,3 +471,132 @@ async def delete_style(name: str):
     styles = [s for s in _load_styles() if s["name"] != name]
     _save_styles(styles)
     return {"ok": True}
+
+
+# ── Tags — autocomplete Danbooru (multi-CSV) ───────────────────────────────
+
+_PROFILES_FILE = _ROOT / "apps" / "painter" / "model_profiles.json"
+
+try:
+    import tag_engine as _te
+except ImportError:
+    _te = None  # type: ignore
+
+
+def _load_profiles_data() -> dict:
+    if not _PROFILES_FILE.exists():
+        return {"profiles": [], "default": ""}
+    try:
+        return json.loads(_PROFILES_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {"profiles": [], "default": ""}
+
+
+def _bg_load_tags():
+    """Precarga en background todos los CSVs presentes en disco para los perfiles configurados."""
+    if _te is None:
+        return
+    data = _load_profiles_data()
+    for profile in data.get("profiles", []):
+        csv_name = profile.get("tag_csv")
+        if not csv_name:
+            continue
+        p = _te.csv_path_for(csv_name)
+        if p.exists() and not _te.is_loaded(csv_name):
+            try:
+                n = _te.load_csv(csv_name)
+                if n:
+                    print(f"[painter] Tags cargados ({csv_name}): {n:,}")
+            except Exception as e:
+                print(f"[painter] Error cargando {csv_name}: {e}")
+
+
+import threading as _threading
+_threading.Thread(target=_bg_load_tags, daemon=True).start()
+
+
+@painter_router.get("/tags/status")
+async def tags_status(csv: str = ""):
+    """Estado de un CSV específico. csv = nombre sin extensión."""
+    if not csv or not _te:
+        return {"loaded": False, "count": 0, "csv_present": False}
+    csv_p = _te.csv_path_for(csv)
+    return {
+        "loaded":      _te.is_loaded(csv),
+        "count":       _te.tag_count(csv),
+        "csv_present": csv_p.exists(),
+    }
+
+
+@painter_router.get("/tags/search")
+async def tags_search(q: str = "", csv: str = "", limit: int = 5):
+    """Busca tags en el CSV del perfil activo."""
+    limit = min(limit, 20)
+    if not _te or not csv:
+        return {"results": []}
+    return {"results": _te.search(csv, q, limit)}
+
+
+@painter_router.post("/tags/reload")
+async def tags_reload(csv: str = ""):
+    if not _te or not csv:
+        raise HTTPException(400, "Falta el parámetro csv")
+    n = _te.load_csv(csv)
+    return {"ok": True, "count": n}
+
+
+@painter_router.get("/tags/profiles")
+async def tags_profiles():
+    return _load_profiles_data()
+
+
+@painter_router.get("/tags/download")
+async def tags_download(profile_id: str):
+    """SSE — descarga el CSV configurado para el perfil indicado."""
+    data = _load_profiles_data()
+    profiles_map = {p["id"]: p for p in data.get("profiles", [])}
+    profile  = profiles_map.get(profile_id)
+    if not profile:
+        raise HTTPException(404, "Perfil no encontrado")
+    csv_name = profile.get("tag_csv")
+    csv_url  = profile.get("tag_csv_url")
+    if not csv_name or not csv_url:
+        raise HTTPException(400, "Este perfil no tiene CSV configurado")
+
+    async def stream() -> AsyncGenerator[str, None]:
+        if not _te:
+            yield f'data: {json.dumps({"type":"error","msg":"Motor de tags no disponible"})}\n\n'
+            return
+
+        dest = _te.csv_path_for(csv_name)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            import aiohttp
+            yield f'data: {json.dumps({"type":"start","msg":f"Descargando {csv_name}…"})}\n\n'
+
+            async with aiohttp.ClientSession() as sess:
+                async with sess.get(csv_url) as resp:
+                    if resp.status != 200:
+                        yield f'data: {json.dumps({"type":"error","msg":f"HTTP {resp.status}"})}\n\n'
+                        return
+                    total      = int(resp.headers.get("Content-Length", 0))
+                    downloaded = 0
+                    with open(dest, "wb") as f:
+                        async for chunk in resp.content.iter_chunked(64 * 1024):
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            pct = int(downloaded * 100 / total) if total else 0
+                            yield f'data: {json.dumps({"type":"progress","downloaded":downloaded,"total":total,"pct":pct})}\n\n'
+
+            yield f'data: {json.dumps({"type":"loading","msg":"Indexando tags…"})}\n\n'
+            n = _te.load_csv(csv_name)
+            yield f'data: {json.dumps({"type":"done","count":n,"csv":csv_name})}\n\n'
+
+        except Exception as e:
+            dest.unlink(missing_ok=True)
+            yield f'data: {json.dumps({"type":"error","msg":str(e)})}\n\n'
+
+    return StreamingResponse(stream(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache",
+                                      "X-Accel-Buffering": "no"})

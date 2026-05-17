@@ -968,11 +968,12 @@ async function doRegional() {
     params: {
       checkpoint,
       negative_prompt: document.getElementById('reg-negative').value,
-      steps:   parseInt(document.getElementById('reg-steps').value),
-      cfg:     parseFloat(document.getElementById('reg-cfg').value),
-      denoise: parseFloat(document.getElementById('reg-denoise').value),
-      width:   S.imgW || parseInt(document.getElementById('inp-width').value),
-      height:  S.imgH || parseInt(document.getElementById('inp-height').value),
+      steps:     parseInt(document.getElementById('reg-steps').value),
+      cfg:       parseFloat(document.getElementById('reg-cfg').value),
+      scheduler: document.getElementById('sel-scheduler').value,
+      denoise:   parseFloat(document.getElementById('reg-denoise').value),
+      width:     S.imgW || parseInt(document.getElementById('inp-width').value),
+      height:    S.imgH || parseInt(document.getElementById('inp-height').value),
     },
     seed: baseSeed < 0 ? Math.floor(Math.random() * 2147483647) : baseSeed,
   };
@@ -995,6 +996,7 @@ async function _runRegStep() {
     seed:            _regSeq.seed,
     steps:           p.steps,
     cfg:             p.cfg,
+    scheduler:       p.scheduler,
     denoise:         p.denoise,
   };
   try {
@@ -1553,6 +1555,500 @@ function initStyles() {
   loadStyles();
 }
 
+// ── Autocomplete de tags Danbooru ─────────────────────────────────────────
+
+const _acDrop = (() => {
+  const el = document.createElement('div');
+  el.id = 'tag-ac-drop';
+  el.style.display = 'none';
+  document.body.appendChild(el);
+  return el;
+})();
+
+let _acResults    = [];
+let _acSelIdx     = 0;
+let _acActiveTA   = null;
+let _acTimer      = null;
+let _acTagsLoaded = false;
+
+const _AC_DOT_COLORS = {
+    0: '#4a9eff', 1: '#ff4d4d', 3: '#b04dff', 4: '#44dd77', 5: '#ff9900',  // danbooru
+    7: '#5bb8ff', 8: '#ff6666', 9: '#ffd700', 10: '#cc77ff', 11: '#66ee99', 12: '#ff7755', 14: '#ffbb44', 15: '#44bb88',  // e621
+};
+
+function _acFmtCount(n) {
+  if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
+  if (n >= 1e3) return Math.round(n / 1e3) + 'k';
+  return String(n);
+}
+
+function _acShow(results, ta) {
+  _acResults = results;
+  _acSelIdx  = 0;
+  if (!results.length) { _acHide(); return; }
+
+  const rect = ta.getBoundingClientRect();
+  _acDrop.style.left    = rect.left + 'px';
+  _acDrop.style.top     = (rect.bottom + 2) + 'px';
+  _acDrop.style.width   = Math.max(rect.width, 220) + 'px';
+  _acDrop.style.display = '';
+
+  _acDrop.innerHTML = results.map((r, i) => {
+    const dot      = `<span class="ac-dot" style="background:${_AC_DOT_COLORS[r.category] || '#888'}"></span>`;
+    const name     = r.name.replace(/_/g, ' ');
+    const alias    = r.matched_alias
+      ? `<div class="ac-alias">→ ${r.matched_alias.replace(/_/g, ' ')}</div>` : '';
+    return `<div class="ac-item${i === 0 ? ' selected' : ''}" data-idx="${i}">
+      <div class="ac-main">${dot}<span class="ac-name">${name}</span>
+        <span class="ac-count">${_acFmtCount(r.post_count)}</span>
+      </div>${alias}
+    </div>`;
+  }).join('');
+
+  _acDrop.querySelectorAll('.ac-item').forEach(el => {
+    el.addEventListener('mousedown', e => {
+      e.preventDefault();
+      _acInsert(_acResults[+el.dataset.idx], _acActiveTA);
+    });
+    el.addEventListener('mouseover', () => {
+      _acSelIdx = +el.dataset.idx;
+      _acUpdateSel();
+    });
+  });
+}
+
+function _acHide() {
+  _acDrop.style.display = 'none';
+  _acResults = [];
+}
+
+function _acUpdateSel() {
+  _acDrop.querySelectorAll('.ac-item').forEach((el, i) =>
+    el.classList.toggle('selected', i === _acSelIdx));
+}
+
+function _acInsert(result, ta) {
+  if (!result || !ta) return;
+  const pos    = ta.selectionStart;
+  const before = ta.value.slice(0, pos);
+  const after  = ta.value.slice(pos);
+
+  // Inicio del token parcial (después de la última coma o newline)
+  const sepIdx     = Math.max(before.lastIndexOf(','), before.lastIndexOf('\n'));
+  const prefix     = before.slice(0, sepIdx + 1);
+  const lead       = prefix.endsWith(',') ? ' ' : '';
+  // Escapar paréntesis literales del nombre del tag
+  const escaped    = result.name.replace(/([()])/g, '\\$1');
+  // Auto-coma al final salvo que el siguiente char ya sea coma
+  const suffix     = after.trimStart().startsWith(',') ? '' : ', ';
+
+  ta.value = prefix + lead + escaped + suffix + after;
+  ta.selectionStart = ta.selectionEnd = (prefix + lead + escaped + suffix).length;
+
+  _balanceParens(ta);
+  _acHide();
+  ta.focus();
+}
+
+function _balanceParens(ta) {
+  const pos        = ta.selectionStart;
+  const text       = ta.value;
+  const chunkStart = Math.max(text.lastIndexOf(',', pos - 1), -1) + 1;
+  const nextComma  = text.indexOf(',', pos);
+  const chunkEnd   = nextComma === -1 ? text.length : nextComma;
+  const chunk      = text.slice(chunkStart, chunkEnd);
+
+  let open = 0;
+  for (let i = 0; i < chunk.length; i++) {
+    if (chunk[i] === '\\') { i++; continue; }
+    if (chunk[i] === '(')  open++;
+    else if (chunk[i] === ')') open = Math.max(0, open - 1);
+  }
+  if (open > 0) {
+    ta.value = text.slice(0, chunkEnd) + ')'.repeat(open) + text.slice(chunkEnd);
+    ta.selectionStart = ta.selectionEnd = pos;
+  }
+}
+
+function _acGetToken(ta) {
+  const before = ta.value.slice(0, ta.selectionStart);
+  const sep    = Math.max(before.lastIndexOf(','), before.lastIndexOf('\n'));
+  return before.slice(sep + 1).trim();
+}
+
+// csv_name activo (corresponde al perfil seleccionado)
+let _acCsvName = '';
+
+async function _acSearch(token) {
+  if (!token || !_acCsvName) { _acHide(); return; }
+  // No se bloquea por _acTagsLoaded — si el CSV aún no cargó, el backend devuelve []
+  try {
+    const { results } = await apiGet(
+      `/tags/search?q=${encodeURIComponent(token)}&csv=${encodeURIComponent(_acCsvName)}&limit=8`
+    );
+    if (_acActiveTA && document.activeElement === _acActiveTA) {
+      _acShow(results, _acActiveTA);
+    }
+  } catch (_) {}
+}
+
+function initAutocomplete(ta) {
+  ta.addEventListener('input', () => {
+    clearTimeout(_acTimer);
+    const token = _acGetToken(ta);
+    if (!token) { _acHide(); return; }
+    _acActiveTA = ta;
+    _acTimer = setTimeout(() => _acSearch(token), 50);
+  });
+
+  ta.addEventListener('keydown', e => {
+    if (_acDrop.style.display === 'none') return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      _acSelIdx = Math.min(_acSelIdx + 1, _acResults.length - 1);
+      _acUpdateSel();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      _acSelIdx = Math.max(_acSelIdx - 1, 0);
+      _acUpdateSel();
+    } else if (e.key === 'Tab' || e.key === 'Enter') {
+      if (_acResults.length) { e.preventDefault(); _acInsert(_acResults[_acSelIdx], ta); }
+    } else if (e.key === 'Escape') {
+      e.preventDefault(); _acHide();
+    } else if (e.key === ',') {
+      setTimeout(() => _balanceParens(ta), 0);
+    }
+  });
+
+  ta.addEventListener('blur',  () => setTimeout(_acHide, 150));
+  ta.addEventListener('focus', () => { _acActiveTA = ta; });
+}
+
+// ── Model profiles ────────────────────────────────────────────────────────
+
+let _profiles      = [];
+let _activeProfile = null;
+
+async function loadProfiles() {
+  try {
+    const data = await apiGet('/tags/profiles');
+    _profiles = data.profiles || [];
+    const sel = document.getElementById('sel-profile');
+    if (!sel || !_profiles.length) return;
+    sel.innerHTML = _profiles.map(p =>
+      `<option value="${p.id}">${p.name}</option>`
+    ).join('');
+    if (data.default) sel.value = data.default;
+    // Solo aplica UI inicial — no verifica CSV hasta que el usuario seleccione checkpoint
+    _applyProfileUi();
+  } catch (_) {}
+}
+
+// Aplica defaults + badge + rating al perfil activo. Sin check de CSV.
+function _applyProfileUi() {
+  const sel = document.getElementById('sel-profile');
+  if (!sel) return;
+  _activeProfile = _profiles.find(p => p.id === sel.value) || null;
+  // Setear CSV activo para que el autocomplete pueda disparar desde el inicio
+  _acCsvName = _activeProfile?.tag_csv || '';
+
+  const selRating = document.getElementById('sel-rating');
+  if (selRating) {
+    const ratings = _activeProfile?.rating_tags || {};
+    selRating.innerHTML = '<option value="">Rating…</option>' +
+      Object.keys(ratings).map(k => `<option value="${k}">${k}</option>`).join('');
+  }
+
+  const d = _activeProfile?.defaults;
+  if (d) {
+    const elCfg   = document.getElementById('inp-cfg');
+    const elSteps = document.getElementById('inp-steps');
+    const elSamp  = document.getElementById('sel-sampler');
+    const elSched = document.getElementById('sel-scheduler');
+    if (elCfg   && d.cfg   != null) elCfg.value   = d.cfg;
+    if (elSteps && d.steps != null) elSteps.value  = d.steps;
+    if (elSamp  && d.sampler) {
+      const opt = [...elSamp.options].find(o => o.value === d.sampler);
+      if (opt) elSamp.value = d.sampler;
+    }
+    if (elSched && d.scheduler) {
+      const opt = [...elSched.options].find(o => o.value === d.scheduler);
+      if (opt) elSched.value = d.scheduler;
+    }
+  }
+
+  _updateProfileBadge(_activeProfile);
+}
+
+// Aplica UI + verifica CSV. Llamado solo por acción del usuario.
+async function _onProfileChange() {
+  _applyProfileUi();
+  await _updateActiveCsv();
+}
+
+// Intenta detectar el perfil correcto a partir del nombre del checkpoint.
+function _detectProfileFromCheckpoint(name) {
+  if (!name) return null;
+  const lower = name.toLowerCase();
+  for (const p of _profiles) {
+    const kws = p.checkpoint_keywords || [];
+    if (kws.some(kw => lower.includes(kw.toLowerCase()))) return p;
+  }
+  return null;
+}
+
+// Disparado al cambiar el checkpoint — auto-detecta perfil y verifica CSV.
+async function _onCheckpointChange() {
+  const ckpt  = document.getElementById('sel-checkpoint')?.value || '';
+  const found = _detectProfileFromCheckpoint(ckpt);
+  if (found) {
+    const sel = document.getElementById('sel-profile');
+    if (sel && sel.value !== found.id) sel.value = found.id;
+  }
+  updateButtons();
+  await _onProfileChange();
+}
+
+function _updateProfileBadge(profile) {
+  const badge   = document.getElementById('profile-badge');
+  const tooltip = document.getElementById('profile-tooltip');
+  if (!badge || !tooltip) return;
+
+  // Determinar tipo de arquitectura
+  const note = (profile?._note || '').toLowerCase();
+  const id   = (profile?.id   || '').toLowerCase();
+  let type, label, badgeClass;
+
+  if (!profile || profile.prompt_style === 'natural' && !id.includes('flux')) {
+    type = 'natural'; label = 'NAT'; badgeClass = 'badge-natural';
+  } else if (id.includes('flux') || note.includes('flow matching')) {
+    type = 'flow'; label = 'FLOW'; badgeClass = 'badge-flow';
+  } else if (id.includes('vpred') || note.includes('v-pred') || note.includes('v_pred')) {
+    type = 'vpred'; label = 'V-Pred'; badgeClass = 'badge-vpred';
+  } else {
+    type = 'epsilon'; label = 'ε-Pred'; badgeClass = 'badge-epsilon';
+  }
+
+  badge.textContent = label;
+  badge.className   = badgeClass;
+  badge.title       = type === 'vpred'   ? 'V-prediction: CFG bajo, sin Karras' :
+                      type === 'flow'    ? 'Flow Matching: CFG ~1, euler+simple' :
+                      type === 'natural' ? 'Lenguaje natural — sin tag autocomplete' :
+                                          'Epsilon-prediction: dpmpp_2m+karras estándar';
+
+  // Contenido del tooltip flotante
+  const d = profile?.defaults;
+  if (!d) { tooltip.innerHTML = ''; return; }
+
+  const samplerNote = type === 'vpred'   ? ' <span style="color:#ec00f0">(euler forzado en regional)</span>' :
+                      type === 'flow'    ? '' : '';
+  tooltip.innerHTML = `
+    <div class="pt-row"><span class="pt-key">CFG</span><span class="pt-val">${d.cfg}</span></div>
+    <div class="pt-row"><span class="pt-key">Steps</span><span class="pt-val">${d.steps}</span></div>
+    <div class="pt-row"><span class="pt-key">Sampler</span><span class="pt-val">${d.sampler}${samplerNote}</span></div>
+    <div class="pt-row"><span class="pt-key">Scheduler</span><span class="pt-val">${d.scheduler}</span></div>
+    ${profile.danbooru_cutoff ? `<div class="pt-row"><span class="pt-key">DB cutoff</span><span class="pt-val">${profile.danbooru_cutoff}</span></div>` : ''}
+  `;
+
+  // Mostrar/ocultar tooltip al hover sobre el profile-row
+  const row = document.getElementById('profile-row');
+  if (row && !row._tooltipBound) {
+    row._tooltipBound = true;
+    row.addEventListener('mouseenter', () => tooltip.classList.add('visible'));
+    row.addEventListener('mouseleave', () => tooltip.classList.remove('visible'));
+  }
+}
+
+async function _updateActiveCsv() {
+  const csvName = _activeProfile?.tag_csv || null;
+  _acCsvName    = csvName || '';
+  _acTagsLoaded = false;
+
+  const bar   = document.getElementById('tag-status-bar');
+  const label = document.getElementById('tag-count-label');
+
+  if (!csvName) {
+    // Perfil sin CSV configurado — no mostrar nada
+    if (bar) bar.style.display = 'none';
+    return;
+  }
+
+  try {
+    const { loaded, count, csv_present } = await apiGet(
+      `/tags/status?csv=${encodeURIComponent(csvName)}`
+    );
+    _acTagsLoaded = loaded;
+
+    if (bar && label) {
+      if (loaded) {
+        label.textContent = count.toLocaleString() + ' tags';
+        bar.style.display = '';
+      } else if (!csv_present) {
+        label.textContent = 'Tags no disponibles';
+        bar.style.display = '';
+        // Ofrecer descarga si no está suprimido para este perfil
+        const skipKey = `tags_skip_${_activeProfile.id}`;
+        if (!localStorage.getItem(skipKey)) {
+          _showTagsDownloadModal(_activeProfile);
+        }
+      }
+    }
+  } catch (_) {}
+}
+
+function initProfiles() {
+  document.getElementById('sel-profile')
+    ?.addEventListener('change', _onProfileChange);
+
+  document.getElementById('sel-checkpoint')
+    ?.addEventListener('change', _onCheckpointChange);
+
+  document.getElementById('btn-quality-prefix')
+    ?.addEventListener('click', () => {
+      if (!_activeProfile?.quality_prefix) return;
+      const ta = document.getElementById('inp-prompt');
+      const pre = _activeProfile.quality_prefix;
+      ta.value  = ta.value.trim() ? `${pre}, ${ta.value.trim()}` : pre;
+      ta.focus();
+    });
+
+  document.getElementById('sel-rating')
+    ?.addEventListener('change', function () {
+      if (!this.value || !_activeProfile) return;
+      const ta    = document.getElementById('inp-prompt');
+      const newTag = _activeProfile.rating_tags[this.value] || '';
+      if (!newTag) return;
+      const all    = Object.values(_activeProfile.rating_tags);
+      const parts  = ta.value.split(',').map(p => p.trim()).filter(Boolean);
+      let replaced = false;
+      for (let i = 0; i < parts.length; i++) {
+        if (all.includes(parts[i])) { parts[i] = newTag; replaced = true; break; }
+      }
+      if (!replaced) parts.push(newTag);
+      ta.value = parts.join(', ');
+      this.value = '';
+      ta.focus();
+    });
+
+  document.getElementById('btn-tags-reload')
+    ?.addEventListener('click', async () => {
+      if (!_acCsvName) return;
+      try {
+        const { count } = await fetch(
+          `${API}/tags/reload?csv=${encodeURIComponent(_acCsvName)}`,
+          { method: 'POST' }
+        ).then(r => r.json());
+        _acTagsLoaded = count > 0;
+        const label = document.getElementById('tag-count-label');
+        if (label) label.textContent = count.toLocaleString() + ' tags';
+        toast(`Tags recargados: ${count.toLocaleString()}`);
+      } catch (_) { toast(t('painter.conn_error')); }
+    });
+
+  loadProfiles();
+}
+
+
+// ── Modal de descarga de tags ─────────────────────────────────────────────
+
+let _tdmEs = null;   // EventSource activo de descarga
+
+function _showTagsDownloadModal(profile) {
+  const modal = document.getElementById('tags-dl-modal');
+  if (!modal) return;
+  document.getElementById('tdm-profile-name').textContent = profile.name;
+  document.getElementById('tdm-skip-check').checked = false;
+  document.getElementById('tdm-progress').classList.remove('visible');
+  document.getElementById('tdm-prog-fill').style.width = '0%';
+  document.getElementById('tdm-btn-dl').disabled = false;
+  modal.classList.add('visible');
+}
+
+function _hideTagsDownloadModal() {
+  document.getElementById('tags-dl-modal')?.classList.remove('visible');
+  if (_tdmEs) { _tdmEs.close(); _tdmEs = null; }
+}
+
+function initTagDownloadModal() {
+  const btnDl   = document.getElementById('tdm-btn-dl');
+  const btnGh   = document.getElementById('tdm-btn-gh');
+  const btnSkip = document.getElementById('tdm-btn-skip');
+
+  btnDl?.addEventListener('click', () => {
+    if (!_activeProfile?.id) return;
+    btnDl.disabled = true;
+    const progress = document.getElementById('tdm-progress');
+    const fill     = document.getElementById('tdm-prog-fill');
+    const label    = document.getElementById('tdm-prog-label');
+    progress.classList.add('visible');
+
+    _tdmEs = new EventSource(
+      `${API}/tags/download?profile_id=${encodeURIComponent(_activeProfile.id)}`
+    );
+    _tdmEs.onmessage = ({ data }) => {
+      const ev = JSON.parse(data);
+      if (ev.type === 'progress') {
+        const pct = ev.pct || 0;
+        fill.style.width = pct + '%';
+        const mb = (ev.downloaded / 1048576).toFixed(1);
+        const total = ev.total ? ' / ' + (ev.total / 1048576).toFixed(1) + ' MB' : '';
+        label.textContent = `Descargando… ${mb} MB${total} (${pct}%)`;
+      } else if (ev.type === 'loading') {
+        fill.style.width = '100%';
+        label.textContent = ev.msg || 'Indexando…';
+      } else if (ev.type === 'done') {
+        _tdmEs.close(); _tdmEs = null;
+        _acTagsLoaded = ev.count > 0;
+        _acCsvName    = ev.csv || _acCsvName;
+        const lbl = document.getElementById('tag-count-label');
+        if (lbl) { lbl.textContent = ev.count.toLocaleString() + ' tags'; }
+        const bar = document.getElementById('tag-status-bar');
+        if (bar) bar.style.display = '';
+        _hideTagsDownloadModal();
+        toast(`Tags cargados: ${ev.count.toLocaleString()}`);
+      } else if (ev.type === 'error') {
+        _tdmEs.close(); _tdmEs = null;
+        label.textContent = 'Error: ' + ev.msg;
+        btnDl.disabled = false;
+      }
+    };
+    _tdmEs.onerror = () => {
+      label.textContent = 'Error de conexión';
+      btnDl.disabled = false;
+    };
+  });
+
+  btnGh?.addEventListener('click', () => {
+    // Abrir el directorio danbooru del repo en una nueva pestaña
+    window.open(
+      'https://github.com/DraconicDragon/dbr-e621-lists-archive/tree/main/tag-lists/danbooru',
+      '_blank'
+    );
+  });
+
+  btnSkip?.addEventListener('click', () => {
+    if (document.getElementById('tdm-skip-check')?.checked && _activeProfile) {
+      localStorage.setItem(`tags_skip_${_activeProfile.id}`, '1');
+    }
+    _hideTagsDownloadModal();
+  });
+}
+
+
+async function initTagSystem() {
+  // Attach autocomplete a todos los textareas de prompt (estáticos)
+  ['inp-prompt', 'inp-negative', 'reg-global-prompt', 'reg-negative'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) initAutocomplete(el);
+  });
+  // Textareas regionales (generados por buildRegionCards)
+  for (let i = 0; i < 4; i++) {
+    const el = document.getElementById(`reg-prompt-${i}`);
+    if (el) initAutocomplete(el);
+  }
+}
+
+
 // ── Main ──────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   initCanvas();
@@ -1563,4 +2059,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initDraggable();
   initSetup();
   initStyles();
+  initTagDownloadModal();
+  initProfiles();
+  initTagSystem();
 });
