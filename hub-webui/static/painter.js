@@ -56,6 +56,77 @@ let canvasBg, ctxBg, canvasFg, ctxFg, maskCanvas, ctxMask;
 let currentImg  = null;   // HTMLImageElement — imagen aceptada
 let previewImg  = null;   // HTMLImageElement — preview pendiente
 
+// ── LoRA token highlight ──────────────────────────────────────────────────
+let _allLoras = [];   // lista completa del endpoint /models; usada para validar tokens
+
+// Reconoce cualquier <lora:...> independientemente del formato
+const _LORA_RE = /<lora:[^>]+>/gi;
+
+function _loraFileStem(name) {
+  // Extrae solo el nombre de archivo sin ruta ni extensión: "a/b/Foo.safetensors" → "foo"
+  const base = name.includes('/') ? name.slice(name.lastIndexOf('/') + 1) : name;
+  const dot  = base.lastIndexOf('.');
+  return (dot > 0 ? base.slice(0, dot) : base).toLowerCase();
+}
+
+function _isLoraValid(stem) {
+  if (!_allLoras.length) return true;   // lista aún no cargada → neutral
+  const s = stem.toLowerCase();
+  return _allLoras.some(n =>
+    n === stem ||
+    n.toLowerCase() === s ||
+    _loraFileStem(n) === s
+  );
+}
+
+function renderLoraChips() {
+  const ta      = document.getElementById('inp-prompt');
+  const container = document.getElementById('lora-chips');
+  if (!ta || !container) return;
+
+  const raw = ta.value;
+  container.innerHTML = '';
+
+  _LORA_RE.lastIndex = 0;
+  let m;
+  while ((m = _LORA_RE.exec(raw)) !== null) {
+    const token  = m[0];                          // "<lora:name:strength>"
+    const inner  = token.slice(6, -1);            // "name:strength" o "name"
+    const parts  = inner.split(':');
+    const name   = parts[0].trim();
+    const str    = parts[1] ? parseFloat(parts[1]).toFixed(2) : '1.00';
+    const valid  = _isLoraValid(name);
+
+    const chip = document.createElement('span');
+    chip.className = `lora-chip ${valid ? 'valid' : 'invalid'}`;
+    chip.title = token;
+
+    const label = document.createElement('span');
+    label.className = 'lora-chip-name';
+    label.textContent = _loraFileStem(name) || name;
+
+    const strength = document.createElement('span');
+    strength.className = 'lora-chip-str';
+    strength.textContent = `×${str}`;
+
+    const rm = document.createElement('button');
+    rm.className = 'lora-chip-rm';
+    rm.textContent = '✕';
+    rm.title = 'Quitar LoRA';
+    rm.addEventListener('click', () => {
+      ta.value = ta.value.replace(token, '');
+      // limpiar comas dobles o espacios sobrantes al borrar
+      ta.value = ta.value.replace(/,\s*,/g, ',').replace(/(^[\s,]+|[\s,]+$)/g, '');
+      ta.dispatchEvent(new Event('input'));
+    });
+
+    chip.appendChild(label);
+    chip.appendChild(strength);
+    chip.appendChild(rm);
+    container.appendChild(chip);
+  }
+}
+
 // ── Estilos (quality prompts) ─────────────────────────────────────────────
 let _styles          = [];       // [{name, prompt}] — lista guardada en disco
 let _activeStyleName = '';       // nombre del estilo activo ('' = ninguno)
@@ -133,6 +204,7 @@ function render() {
   } else if (S.hasMask && S.showMask) {
     drawMaskOverlay();
   }
+  if (_wandSel) _renderWandSelection();
   if (S.imgW > 0 && _cursorVisible) drawToolPreview();
   requestAnimationFrame(render);
 }
@@ -159,7 +231,17 @@ function drawToolPreview() {
   const x = _cursorX, y = _cursorY;
   ctxFg.save();
 
-  if (S.tool === 'brush' || S.tool === 'eraser') {
+  if (S.tool === 'wand' || S.tool === 'fill') {
+    const sz = 10;
+    const color = S.tool === 'wand' ? 'rgba(84,239,234,0.9)' : 'rgba(236,0,240,0.9)';
+    ctxFg.strokeStyle = color;
+    ctxFg.lineWidth   = 1.5;
+    ctxFg.setLineDash([]);
+    ctxFg.beginPath();
+    ctxFg.moveTo(x - sz, y); ctxFg.lineTo(x + sz, y);
+    ctxFg.moveTo(x, y - sz); ctxFg.lineTo(x, y + sz);
+    ctxFg.stroke();
+  } else if (S.tool === 'brush' || S.tool === 'eraser') {
     // Círculo que muestra el tamaño real del pincel
     const r = S.brushSize / 2;
     ctxFg.beginPath();
@@ -268,6 +350,12 @@ function onMouseDown(e) {
   const [x, y] = toImg(e.clientX, e.clientY);
   if (S.tool === 'brush' || S.tool === 'eraser') {
     paintBrush(x, y);
+  } else if (S.tool === 'wand') {
+    wandSelect(x, y, e.shiftKey, e.altKey);
+    drawing = false;
+  } else if (S.tool === 'fill') {
+    bucketFill(x, y, e.altKey);
+    drawing = false;
   } else if (S.tool === 'rect') {
     rectStart = [x, y];
   } else if (S.tool === 'lasso') {
@@ -292,7 +380,7 @@ function onMouseMove(e) {
 function onMouseUp(e) {
   if (!drawing) return;
   drawing = false;
-  _prevBrushX = null; _prevBrushY = null;  // fin de trazo
+  _prevBrushX = null; _prevBrushY = null;
   const [x, y] = toImg(e.clientX, e.clientY);
   if (S.tool === 'rect' && rectStart) {
     commitRect(rectStart[0], rectStart[1], x, y, e.shiftKey, e.altKey);
@@ -550,6 +638,60 @@ async function doInpaint() {
   } catch (_) { toast(t('painter.conn_error')); }
 }
 
+// ── Guardar imagen a disco ────────────────────────────────────────────────
+async function doSaveImage() {
+  if (!S.hasImage) return;
+  try {
+    const { filename } = await apiPost('/save', { image_b64: getCurrentB64() });
+    toast(`↓ ${filename}`);
+  } catch (e) { toast(e.message || t('painter.conn_error')); }
+}
+
+// ── Outpaint ──────────────────────────────────────────────────────────────
+function updateOpPreview() {
+  const vals = { top: 'op-top', bottom: 'op-bottom', left: 'op-left', right: 'op-right' };
+  for (const [dir, id] of Object.entries(vals)) {
+    const v = parseInt(document.getElementById(id).value) || 0;
+    document.getElementById('op-show-' + dir).classList.toggle('op-active', v > 0);
+  }
+}
+
+async function doOutpaint() {
+  if (!S.hasImage) return toast(t('painter.no_image'));
+  const ckpt = document.getElementById('sel-checkpoint').value;
+  if (!ckpt)    return toast(t('painter.no_checkpoint'));
+
+  const top    = parseInt(document.getElementById('op-top').value)    || 0;
+  const bottom = parseInt(document.getElementById('op-bottom').value) || 0;
+  const left   = parseInt(document.getElementById('op-left').value)   || 0;
+  const right  = parseInt(document.getElementById('op-right').value)  || 0;
+  if (top + bottom + left + right === 0)
+    return toast(t('painter.op_no_pad'));
+
+  const arch    = document.getElementById('arch-select').value;
+  const prompt  = withStyle(document.getElementById('inp-prompt').value);
+  const neg     = document.getElementById('inp-negative').value;
+  const steps   = parseInt(document.getElementById('inp-steps').value);
+  const cfg     = parseFloat(document.getElementById('inp-cfg').value);
+  const sampler = document.getElementById('sel-sampler').value;
+  const sched   = document.getElementById('sel-scheduler').value;
+  const seed    = parseInt(document.getElementById('inp-seed').value);
+  const denoise = parseFloat(document.getElementById('op-denoise').value);
+  const feather = parseInt(document.getElementById('op-feather').value);
+
+  try {
+    const { job_id } = await apiPost('/outpaint', {
+      checkpoint: ckpt, arch,
+      prompt, negative_prompt: neg,
+      seed, steps, cfg, sampler, scheduler: sched,
+      image_b64:  getCurrentB64(),
+      pad_top: top, pad_bottom: bottom, pad_left: left, pad_right: right,
+      denoise, feathering: feather,
+    });
+    await trackJob(job_id);
+  } catch (_) { toast(t('painter.conn_error')); }
+}
+
 // ── Upscale ───────────────────────────────────────────────────────────────
 async function doUpscale() {
   if (!S.hasImage) return toast(t('painter.no_image'));
@@ -605,8 +747,10 @@ async function onJobDone(jobId) {
     const r    = await fetch(`${API}/jobs/${jobId}/result`);
     const blob = await r.blob();
     const b64  = await blobToB64(blob);
+
     previewImg = await loadImageFromB64(b64);
-    if (S.imgW === 0) resizeCanvases(previewImg.naturalWidth, previewImg.naturalHeight);
+    const pw = previewImg.naturalWidth, ph = previewImg.naturalHeight;
+    if (S.imgW !== pw || S.imgH !== ph) resizeCanvases(pw, ph);
     S.hasPreview = true;
     S.showMask   = false;
 
@@ -782,7 +926,9 @@ function updateButtons() {
   btnGen.textContent = S.hasMask
     ? t('painter.btn_inpaint')
     : t('painter.btn_generate');
-  document.getElementById('btn-upscale').disabled = busy || !S.hasImage;
+  document.getElementById('btn-save-img').disabled  = !S.hasImage;
+  document.getElementById('btn-outpaint').disabled  = busy || !S.hasImage;
+  document.getElementById('btn-upscale').disabled   = busy || !S.hasImage;
   updateUndoRedo();
 }
 
@@ -1156,19 +1302,19 @@ function filterByArch(names, arch) {
 // ── Cargar modelos ────────────────────────────────────────────────────────
 async function loadModels() {
   try {
-    // Cargar arch-map del Vault y modelos de ComfyUI en paralelo
     const [m, archMap] = await Promise.all([
       apiGet('/models'),
       fetch('/api/vault/arch-map').then(r => r.ok ? r.json() : {}).catch(() => ({})),
     ]);
     _vaultArchMap = archMap;
-    S.models = m;
+    S.models   = m;
     populateModelSelects(m, S.arch);
     updateButtons();
   } catch (_) {
     toast(t('painter.conn_error'));
   }
 }
+
 
 function populateModelSelects(m, arch) {
   // ── Checkpoints — filtrados por arquitectura ──────────────────────────
@@ -1202,6 +1348,9 @@ function populateModelSelects(m, arch) {
   selUp.innerHTML = '<option value="">— upscaler —</option>' +
     m.upscale_models.map(u => `<option value="${u}">${u}</option>`).join('');
 
+  // ── LoRAs — cache para validación de tokens en el prompt ─────────────
+  _allLoras = m.loras || [];
+
   // ── ControlNet — filtrados por arquitectura ───────────────────────────
   const controlnet = filterByArch(m.controlnet, arch);
   const selCN = document.getElementById('sel-cn-model');
@@ -1225,9 +1374,18 @@ function logSetup(msg, status) {
   el.scrollTop = el.scrollHeight;
 }
 
+function closeSetupOverlay() {
+  document.getElementById('setup-overlay').style.display = 'none';
+  document.getElementById('btn-setup-continue').style.display = 'none';
+  loadModels();
+  showSizeDialog();
+  requestAnimationFrame(render);
+}
+
 async function initSetup() {
   document.getElementById('setup-log').innerHTML = '';
   document.getElementById('btn-setup-retry').style.display = 'none';
+  document.getElementById('btn-setup-continue').style.display = 'none';
   document.getElementById('setup-msg').textContent = '';
   const h2 = document.querySelector('#setup-overlay h2');
   h2.textContent = t('painter.setup_checking');
@@ -1243,10 +1401,7 @@ async function initSetup() {
   }
 
   if (status.ready) {
-    document.getElementById('setup-overlay').style.display = 'none';
-    loadModels();
-    showSizeDialog();
-    requestAnimationFrame(render);
+    closeSetupOverlay();
     return;
   }
 
@@ -1282,19 +1437,13 @@ async function initSetup() {
 
     if (ev.step === 'done') {
       es.close();
+      // Mostrar botón Continuar siempre — auto-cierre inmediato si ok, 3s si warning
+      document.getElementById('btn-setup-continue').style.display = '';
       if (ev.status === 'ok') {
-        document.getElementById('setup-overlay').style.display = 'none';
-        loadModels();
-        showSizeDialog();
-        requestAnimationFrame(render);
+        setTimeout(closeSetupOverlay, 800);
       } else {
         document.getElementById('setup-msg').textContent = t('painter.setup_warning');
-        setTimeout(() => {
-          document.getElementById('setup-overlay').style.display = 'none';
-          loadModels();
-          showSizeDialog();
-          requestAnimationFrame(render);
-        }, 2000);
+        setTimeout(closeSetupOverlay, 3000);
       }
     }
   };
@@ -1312,10 +1461,13 @@ function initKeyboard() {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
     if (e.ctrlKey && e.key === 'z') { e.preventDefault(); doUndo(); return; }
     if (e.ctrlKey && (e.key === 'y' || e.key === 'Y')) { e.preventDefault(); doRedo(); return; }
+    if (e.key === 'Escape') { cancelSelection(); return; }
     switch (e.key.toLowerCase()) {
       case 'b': setTool('brush');  break;
       case 'r': setTool('rect');   break;
       case 'l': setTool('lasso');  break;
+      case 'w': setTool('wand');   break;
+      case 'f': setTool('fill');   break;
       case 'e': setTool('eraser'); break;
       case 'x': toggleBrushEraser(); break;
       case '[': changeBrushSize(-5); break;
@@ -1324,11 +1476,140 @@ function initKeyboard() {
   });
 }
 
+// ── Selección temporal (Magic Wand) ───────────────────────────────────────
+let _wandSel = null;   // Uint8Array — píxeles seleccionados (null = sin selección)
+
+/** BFS flood fill sobre la imagen; devuelve Uint8Array de píxeles alcanzados. */
+function _floodFillImg(ix, iy, tol) {
+  const w = S.imgW, h = S.imgH;
+  const srcData = ctxBg.getImageData(0, 0, w, h).data;
+  const si = (iy * w + ix) * 4;
+  const seedR = srcData[si], seedG = srcData[si+1], seedB = srcData[si+2];
+
+  const visited = new Uint8Array(w * h);
+  const result  = new Uint8Array(w * h);
+  const queue   = [ix + iy * w];
+  visited[ix + iy * w] = 1;
+
+  while (queue.length) {
+    const idx = queue.pop();
+    const px = idx % w, py = (idx / w) | 0;
+    const pi = idx * 4;
+    const dr = srcData[pi]   - seedR;
+    const dg = srcData[pi+1] - seedG;
+    const db = srcData[pi+2] - seedB;
+    if (Math.sqrt(dr*dr + dg*dg + db*db) > tol) continue;
+    result[idx] = 1;
+    const nb = [px-1+py*w, px+1+py*w, px+(py-1)*w, px+(py+1)*w];
+    for (const n of nb) {
+      const nx = n % w, ny = (n / w) | 0;
+      if (nx < 0 || nx >= w || ny < 0 || ny >= h || visited[n]) continue;
+      visited[n] = 1;
+      queue.push(n);
+    }
+  }
+  return result;
+}
+
+/** Dibuja la selección activa como overlay cyan en canvasFg. */
+function _renderWandSelection() {
+  if (!_wandSel) return;
+  const w = S.imgW, h = S.imgH;
+  const overlay = ctxFg.createImageData(w, h);
+  const od = overlay.data;
+  for (let i = 0; i < _wandSel.length; i++) {
+    if (!_wandSel[i]) continue;
+    const mi = i * 4;
+    od[mi]   = 84; od[mi+1] = 239; od[mi+2] = 234; od[mi+3] = 100;
+  }
+  ctxFg.putImageData(overlay, 0, 0);
+}
+
+/** Magic Wand: actualiza _wandSel sin tocar la máscara. */
+function wandSelect(imgX, imgY, add, subtract) {
+  if (!S.hasImage) return;
+  const w = S.imgW, h = S.imgH;
+  const ix = Math.round(imgX), iy = Math.round(imgY);
+  if (ix < 0 || iy < 0 || ix >= w || iy >= h) return;
+
+  const tol    = parseInt(document.getElementById('wand-tolerance').value);
+  const pixels = _floodFillImg(ix, iy, tol);
+
+  if (subtract && _wandSel) {
+    for (let i = 0; i < pixels.length; i++) if (pixels[i]) _wandSel[i] = 0;
+  } else if (add && _wandSel) {
+    for (let i = 0; i < pixels.length; i++) if (pixels[i]) _wandSel[i] = 1;
+  } else {
+    _wandSel = pixels;
+  }
+  render();
+  document.getElementById('btn-wand-apply').style.display = _wandSel ? '' : 'none';
+}
+
+/** Aplica la selección wand a la máscara activa. */
+function applyWandSelection() {
+  if (!_wandSel) return;
+  const w = S.imgW, h = S.imgH;
+  const ctx  = getActiveMaskCtx();
+  const data = ctx.getImageData(0, 0, w, h);
+  const md   = data.data;
+  for (let i = 0; i < _wandSel.length; i++) {
+    if (!_wandSel[i]) continue;
+    const mi = i * 4;
+    md[mi] = md[mi+1] = md[mi+2] = 255; md[mi+3] = 255;
+  }
+  ctx.putImageData(data, 0, 0);
+  _wandSel = null;
+  document.getElementById('btn-wand-apply').style.display = 'none';
+  updateMaskState();
+}
+
+/** Cancela la selección wand sin aplicar. */
+function clearWandSelection() {
+  _wandSel = null;
+  document.getElementById('btn-wand-apply').style.display = 'none';
+  render();
+}
+
+// ── Fill / Bucket — flood fill directo a la máscara ──────────────────────
+function bucketFill(imgX, imgY, subtract) {
+  if (!S.hasImage) return;
+  const w = S.imgW, h = S.imgH;
+  const ix = Math.round(imgX), iy = Math.round(imgY);
+  if (ix < 0 || iy < 0 || ix >= w || iy >= h) return;
+
+  const tol    = parseInt(document.getElementById('wand-tolerance').value);
+  const pixels = _floodFillImg(ix, iy, tol);
+  const ctx    = getActiveMaskCtx();
+  const data   = ctx.getImageData(0, 0, w, h);
+  const md     = data.data;
+  for (let i = 0; i < pixels.length; i++) {
+    if (!pixels[i]) continue;
+    const mi = i * 4;
+    if (subtract) {
+      md[mi] = md[mi+1] = md[mi+2] = 0; md[mi+3] = 0;
+    } else {
+      md[mi] = md[mi+1] = md[mi+2] = 255; md[mi+3] = 255;
+    }
+  }
+  ctx.putImageData(data, 0, 0);
+  updateMaskState();
+}
+
 function setTool(name) {
+  if (S.tool === 'wand' && name !== 'wand') clearWandSelection();
+  // Cancelar lasso/rect pendiente al cambiar de herramienta
+  if ((S.tool === 'lasso' || S.tool === 'rect') && name !== S.tool) {
+    lassoPoints = []; rectStart = null; rectEnd = null;
+  }
   S.tool = name;
   document.querySelectorAll('.tool-btn[data-tool]').forEach(b =>
     b.classList.toggle('active', b.dataset.tool === name));
   document.getElementById('st-tool').textContent = name;
+  const showTol  = name === 'wand' || name === 'fill';
+  const showSize = name !== 'wand' && name !== 'fill' && name !== 'rect' && name !== 'lasso';
+  document.getElementById('brush-size-wrap').style.display = showSize ? '' : 'none';
+  document.getElementById('wand-tol-wrap').style.display   = showTol  ? '' : 'none';
 }
 
 function toggleBrushEraser() {
@@ -1343,6 +1624,9 @@ function changeBrushSize(delta) {
 
 // ── Event listeners ───────────────────────────────────────────────────────
 function initEvents() {
+  // Chips de LoRA — actualizar al escribir en el prompt
+  document.getElementById('inp-prompt').addEventListener('input', renderLoraChips);
+
   // Herramientas
   document.querySelectorAll('.tool-btn[data-tool]').forEach(b =>
     b.addEventListener('click', () => setTool(b.dataset.tool)));
@@ -1352,11 +1636,17 @@ function initEvents() {
     S.brushSize = parseInt(this.value);
     document.getElementById('brush-size-label').textContent = S.brushSize;
   });
+  document.getElementById('wand-tolerance').addEventListener('input', function () {
+    document.getElementById('wand-tol-label').textContent = this.value;
+  });
 
   // Cargar imagen (header + panel)
   const openFilePicker = () => document.getElementById('file-input').click();
   document.getElementById('btn-load-img').addEventListener('click', openFilePicker);
   document.getElementById('btn-load-img-panel').addEventListener('click', openFilePicker);
+  document.getElementById('btn-save-img').addEventListener('click', doSaveImage);
+  document.getElementById('btn-wand-apply').addEventListener('click', applyWandSelection);
+
   document.getElementById('file-input').addEventListener('change', function () {
     if (this.files[0]) loadImageFile(this.files[0]);
   });
@@ -1370,6 +1660,16 @@ function initEvents() {
   });
 
   // Upscale
+  document.getElementById('btn-outpaint').addEventListener('click', doOutpaint);
+  ['op-top','op-bottom','op-left','op-right'].forEach(id =>
+    document.getElementById(id).addEventListener('input', updateOpPreview)
+  );
+  document.getElementById('op-denoise').addEventListener('input', function () {
+    document.getElementById('op-denoise-val').textContent = (+this.value).toFixed(2);
+  });
+  document.getElementById('op-feather').addEventListener('input', function () {
+    document.getElementById('op-feather-val').textContent = this.value;
+  });
   document.getElementById('btn-upscale').addEventListener('click', doUpscale);
 
   // Accept / Reject
@@ -1403,22 +1703,15 @@ function initEvents() {
     document.getElementById('cn-strength-val').textContent = parseFloat(this.value).toFixed(2);
   });
 
-  // Tabs del panel
-  document.querySelectorAll('.panel-tab').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const targetTab = btn.dataset.tab;
-      // Si estábamos en regional y salimos, confirmar pérdida de máscaras
-      if (S.regional.active && targetTab !== 'regional') {
-        if (!exitRegionalMode()) return;
-      }
-      if (targetTab === 'regional') {
-        enterRegionalMode();
-      }
-      document.querySelectorAll('.panel-tab').forEach(b => b.classList.remove('active'));
-      document.querySelectorAll('.panel-body').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      document.getElementById('tab-' + targetTab).classList.add('active');
-    });
+  // Selector de modo del panel
+  document.getElementById('panel-mode-select').addEventListener('change', function () {
+    const targetTab = this.value;
+    if (S.regional.active && targetTab !== 'regional') {
+      if (!exitRegionalMode()) { this.value = 'regional'; return; }
+    }
+    if (targetTab === 'regional') enterRegionalMode();
+    document.querySelectorAll('.panel-body').forEach(b => b.classList.remove('active'));
+    document.getElementById('tab-' + targetTab).classList.add('active');
   });
 
   // Diálogo de tamaño de canvas
@@ -1633,8 +1926,11 @@ function _acInsert(result, ta) {
   const before = ta.value.slice(0, pos);
   const after  = ta.value.slice(pos);
 
-  // Inicio del token parcial (después de la última coma o newline)
-  const sepIdx     = Math.max(before.lastIndexOf(','), before.lastIndexOf('\n'));
+  // Inicio del token parcial (después del último separador: coma, newline, <, >, (, ))
+  let sepIdx = -1;
+  for (let i = before.length - 1; i >= 0; i--) {
+    if (',\n<>()'.includes(before[i])) { sepIdx = i; break; }
+  }
   const prefix     = before.slice(0, sepIdx + 1);
   const lead       = prefix.endsWith(',') ? ' ' : '';
   // Escapar paréntesis literales del nombre del tag
@@ -1647,6 +1943,7 @@ function _acInsert(result, ta) {
 
   _balanceParens(ta);
   _acHide();
+  ta.dispatchEvent(new Event('input'));
   ta.focus();
 }
 
@@ -1672,7 +1969,10 @@ function _balanceParens(ta) {
 
 function _acGetToken(ta) {
   const before = ta.value.slice(0, ta.selectionStart);
-  const sep    = Math.max(before.lastIndexOf(','), before.lastIndexOf('\n'));
+  let sep = -1;
+  for (let i = before.length - 1; i >= 0; i--) {
+    if (',\n<>()'.includes(before[i])) { sep = i; break; }
+  }
   return before.slice(sep + 1).trim();
 }
 

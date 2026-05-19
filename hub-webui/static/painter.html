@@ -195,16 +195,19 @@
       border-left: 1px solid var(--border); background: var(--bg-card);
       overflow: hidden;
     }
-    #panel-tabs {
-      display: flex; border-bottom: 1px solid var(--border); flex-shrink: 0;
+    #panel-mode-wrap {
+      padding: 10px 12px 8px; border-bottom: 1px solid var(--border); flex-shrink: 0;
     }
-    .panel-tab {
-      flex: 1; padding: 10px 0; font-size: 11px; font-weight: 600;
-      background: none; border: none; color: var(--text-secondary);
-      cursor: pointer; border-bottom: 2px solid transparent;
-      text-transform: uppercase; letter-spacing: .05em;
+    #panel-mode-select {
+      width: 100%; padding: 7px 10px; font-size: 12px; font-weight: 600;
+      background: var(--bg-deep, #0a001a); color: var(--accent-cyan);
+      border: 1px solid var(--accent-cyan); border-radius: 4px;
+      cursor: pointer; text-transform: uppercase; letter-spacing: .08em;
+      appearance: none; -webkit-appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%2354EFEA'/%3E%3C/svg%3E");
+      background-repeat: no-repeat; background-position: right 10px center;
     }
-    .panel-tab.active { color: var(--accent-cyan); border-bottom-color: var(--accent-cyan); }
+    #panel-mode-select:focus { outline: none; box-shadow: 0 0 0 2px rgba(84,239,234,.3); }
     .panel-body { display: none; flex: 1; min-height: 0; overflow-y: auto; padding: 12px; flex-direction: column; gap: 10px; }
     .panel-body.active { display: flex; }
 
@@ -264,6 +267,36 @@
     .btn-action:hover { background: rgba(84,239,234,.1); }
     .btn-action:disabled { opacity: .4; cursor: default; border-color: var(--border); color: var(--text-dim); }
     .panel-note { font-size: 11px; color: var(--text-dim); font-style: italic; }
+
+    /* ── Outpaint preview grid ─────────────────────────────────── */
+    #op-preview-wrap { display:flex; justify-content:center; padding: 8px 0 4px; }
+    #op-preview-grid {
+      display: grid;
+      grid-template-columns: 32px 80px 32px;
+      grid-template-rows:    32px 48px 32px;
+      gap: 2px;
+    }
+    .op-cell {
+      background: var(--bg-deep, #0a001a);
+      border-radius: 3px;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .op-center {
+      background: var(--border);
+      color: var(--text-dim);
+      font-size: 10px;
+      font-weight: bold;
+      letter-spacing: 1px;
+    }
+    .op-corner { opacity: .3; }
+    .op-side   { opacity: .25; transition: opacity .15s, background .15s; }
+    .op-side.op-active {
+      opacity: 1;
+      background: rgba(84,239,234,.18);
+      border: 1px solid var(--accent-cyan);
+    }
+    .op-arrow  { font-size: 13px; color: var(--text-dim); }
+    .op-side.op-active .op-arrow { color: var(--accent-cyan); }
 
     /* ── Modal descarga de tags ────────────────────────────────── */
     #tags-dl-modal {
@@ -439,14 +472,13 @@
 
     /* ── Estilos (quality prompts) ────────────────────────────── */
     #styles-section {
-      border: 1px solid var(--border);
-      border-radius: 6px;
+      border-bottom: 1px solid var(--border);
       background: var(--bg-base);
+      flex-shrink: 0;
     }
     #styles-header {
       display: flex; align-items: center; gap: 6px;
-      padding: 6px 10px; cursor: pointer; user-select: none;
-      border-radius: 6px;
+      padding: 6px 12px; cursor: pointer; user-select: none;
     }
     #styles-header:hover { background: rgba(84,239,234,.04); }
     #styles-icon { font-size: 11px; color: var(--accent-cyan); }
@@ -455,6 +487,29 @@
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
     #styles-active-name.has-style { color: var(--accent-cyan); font-weight: 600; }
+    /* ── LoRA chips (debajo del prompt textarea) ───────────────────────── */
+    #lora-chips {
+      display: flex; flex-wrap: wrap; gap: 4px;
+      padding: 4px 2px 2px;
+      min-height: 0;
+    }
+    #lora-chips:empty { display: none; }
+    .lora-chip {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 2px 7px 2px 8px;
+      border-radius: 12px; font-size: 11px; font-family: var(--font-mono);
+      line-height: 1.4; max-width: 220px;
+    }
+    .lora-chip.valid   { background: rgba(68,221,136,.15); border: 1px solid rgba(68,221,136,.45); color: #44dd88; }
+    .lora-chip.invalid { background: rgba(255,68,85,.12);  border: 1px solid rgba(255,68,85,.40);  color: #ff5566; }
+    .lora-chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .lora-chip-str  { opacity: .75; flex-shrink: 0; }
+    .lora-chip-rm {
+      flex-shrink: 0; cursor: pointer; opacity: .6; font-size: 13px; line-height: 1;
+      background: none; border: none; color: inherit; padding: 0 0 0 1px;
+    }
+    .lora-chip-rm:hover { opacity: 1; }
+
     #styles-clear-btn {
       background: none; border: none; color: var(--text-dim);
       cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px;
@@ -464,6 +519,7 @@
     #styles-toggle-arrow.open { transform: rotate(180deg); }
     #styles-panel {
       padding: 0 12px 10px; display: flex; flex-direction: column; gap: 7px;
+      border-top: 1px solid var(--border);
     }
     #styles-prompt {
       width: 100%; box-sizing: border-box;
@@ -529,7 +585,8 @@
       <option value="flux" disabled>Flux (próximamente)</option>
     </select>
 
-    <button class="hdr-icon-btn" id="btn-load-img" data-i18n="painter.btn_load">Cargar imagen</button>
+    <button class="hdr-icon-btn" id="btn-load-img"  data-i18n="painter.btn_load">Cargar imagen</button>
+    <button class="hdr-icon-btn" id="btn-save-img" data-i18n="painter.btn_save" disabled>↓ Guardar</button>
     <input type="file" id="file-input" accept="image/*" style="display:none">
 
     <div style="flex:1"></div>
@@ -548,9 +605,12 @@
       <button class="tool-btn active" data-tool="brush"  title="Brush (B)">&#9679;</button>
       <button class="tool-btn"        data-tool="rect"   title="Rect (R)">&#9645;</button>
       <button class="tool-btn"        data-tool="lasso"  title="Lasso (L)">&#8978;</button>
+      <button class="tool-btn"        data-tool="wand"   title="Magic Wand — selección (W)">&#10036;</button>
+      <button class="tool-btn"        data-tool="fill"   title="Fill / Bucket — relleno directo (F)">&#9724;</button>
       <button class="tool-btn"        data-tool="eraser" title="Eraser (E)">&#9633;</button>
       <div class="tool-divider"></div>
-      <button class="tool-btn" id="btn-clear-mask" title="Limpiar máscara" data-i18n-title="painter.btn_clear_mask">&#8855;</button>
+      <button class="tool-btn" id="btn-wand-apply"   title="Aplicar selección a máscara" style="display:none;color:var(--accent-cyan)">&#10003;</button>
+      <button class="tool-btn" id="btn-clear-mask"  title="Limpiar máscara" data-i18n-title="painter.btn_clear_mask">&#8855;</button>
       <!-- R1-R4 — visible sólo en modo Regional -->
       <div id="reg-toolbar" style="display:none;flex-direction:column;align-items:center;gap:3px">
         <div class="tool-divider"></div>
@@ -564,6 +624,10 @@
         <span id="brush-size-label">30</span>
         <input type="range" id="brush-size" class="vertical" min="4" max="200" value="30" title="Tamaño de brush">
       </div>
+      <div id="wand-tol-wrap" style="display:none">
+        <span id="wand-tol-label">32</span>
+        <input type="range" id="wand-tolerance" class="vertical" min="0" max="255" value="32" title="Tolerancia wand">
+      </div>
     </div>
 
     <!-- Canvas -->
@@ -573,7 +637,10 @@
       <div class="canvas-overlay" id="setup-overlay">
         <h2 data-i18n="painter.setup_checking">Verificando setup…</h2>
         <div id="setup-log"></div>
-        <button class="btn btn-primary" id="btn-setup-retry" style="display:none" onclick="initSetup()">↻ Reintentar</button>
+        <div style="display:flex;gap:8px;justify-content:center">
+          <button class="btn btn-primary" id="btn-setup-retry" style="display:none" onclick="initSetup()">↻ Reintentar</button>
+          <button class="btn btn-primary" id="btn-setup-continue" style="display:none" onclick="closeSetupOverlay()">Continuar →</button>
+        </div>
         <p id="setup-msg" style="color:var(--accent-amber)"></p>
       </div>
 
@@ -597,11 +664,32 @@
 
     <!-- Panel IA -->
     <div id="p-panel">
-      <div id="panel-tabs">
-        <button class="panel-tab active" data-tab="generate" data-i18n="painter.tab_generate">Generar</button>
-        <button class="panel-tab"        data-tab="upscale"  data-i18n="painter.tab_upscale">Upscale</button>
-        <button class="panel-tab"        data-tab="controlnet" data-i18n="painter.tab_controlnet">ControlNet</button>
-        <button class="panel-tab"        data-tab="regional">Regional</button>
+      <div id="panel-mode-wrap">
+        <select id="panel-mode-select">
+          <option value="generate"   data-i18n="painter.tab_generate">Generar</option>
+          <option value="outpaint"   data-i18n="painter.tab_outpaint">Outpaint</option>
+          <option value="upscale"    data-i18n="painter.tab_upscale">Upscale</option>
+          <option value="controlnet" data-i18n="painter.tab_controlnet">ControlNet</option>
+          <option value="regional">Regional</option>
+        </select>
+      </div>
+
+      <!-- Estilos — compartido entre todos los modos -->
+      <div id="styles-section">
+        <div id="styles-header">
+          <span id="styles-icon">✦</span>
+          <span id="styles-active-name" data-i18n="painter.styles_none">Sin estilo</span>
+          <button id="styles-clear-btn" style="display:none" title="Quitar estilo">×</button>
+          <span id="styles-toggle-arrow">▾</span>
+        </div>
+        <div id="styles-panel" style="display:none">
+          <textarea id="styles-prompt" placeholder="masterpiece, best quality, ultra detailed…"></textarea>
+          <div class="styles-name-row">
+            <input type="text" id="styles-name-input" data-i18n-placeholder="painter.styles_name_ph">
+            <button id="styles-save-btn" data-i18n="painter.styles_save">Guardar</button>
+          </div>
+          <div id="styles-list"></div>
+        </div>
       </div>
 
       <!-- Tab: Generar -->
@@ -628,27 +716,10 @@
             <button id="btn-tags-reload" title="Recargar CSV">↺</button>
           </div>
         </div>
-        <div class="panel-divider"></div>
-        <!-- Estilos — desplegable sobre el prompt -->
-        <div id="styles-section">
-          <div id="styles-header">
-            <span id="styles-icon">✦</span>
-            <span id="styles-active-name" data-i18n="painter.styles_none">Sin estilo</span>
-            <button id="styles-clear-btn" style="display:none" title="Quitar estilo">×</button>
-            <span id="styles-toggle-arrow">▾</span>
-          </div>
-          <div id="styles-panel" style="display:none">
-            <textarea id="styles-prompt" placeholder="masterpiece, best quality, ultra detailed…"></textarea>
-            <div class="styles-name-row">
-              <input type="text" id="styles-name-input" data-i18n-placeholder="painter.styles_name_ph">
-              <button id="styles-save-btn" data-i18n="painter.styles_save">Guardar</button>
-            </div>
-            <div id="styles-list"></div>
-          </div>
-        </div>
         <div class="ctrl-group" style="flex:1">
           <label class="ctrl-label" data-i18n="painter.label_prompt">Prompt</label>
-          <textarea class="ctrl-textarea" id="inp-prompt" style="min-height:110px;flex:1" placeholder="Descripción de la imagen…"></textarea>
+          <textarea class="ctrl-textarea" id="inp-prompt" style="min-height:110px;resize:vertical" placeholder="Descripción de la imagen…" spellcheck="false"></textarea>
+          <div id="lora-chips"></div>
         </div>
         <div class="ctrl-group">
           <label class="ctrl-label" data-i18n="painter.label_negative">Negativo</label>
@@ -717,8 +788,71 @@
             <option value="" data-i18n="painter.label_inpaint_none">(workflow básico)</option>
           </select>
         </div>
+
         <button class="btn-generate" id="btn-generate" data-i18n="painter.btn_generate">Generar</button>
         <button class="btn-action" id="btn-load-img-panel" data-i18n="painter.btn_load">↑ Cargar imagen</button>
+      </div>
+
+      <!-- Tab: Outpaint -->
+      <div class="panel-body" id="tab-outpaint">
+
+        <!-- Preview visual de expansión -->
+        <div id="op-preview-wrap">
+          <div id="op-preview-grid">
+            <div class="op-cell op-corner"></div>
+            <div class="op-cell op-side" id="op-show-top"><span class="op-arrow">▲</span></div>
+            <div class="op-cell op-corner"></div>
+            <div class="op-cell op-side" id="op-show-left"><span class="op-arrow">◀</span></div>
+            <div class="op-cell op-center">IMG</div>
+            <div class="op-cell op-side" id="op-show-right"><span class="op-arrow">▶</span></div>
+            <div class="op-cell op-corner"></div>
+            <div class="op-cell op-side" id="op-show-bottom"><span class="op-arrow">▼</span></div>
+            <div class="op-cell op-corner"></div>
+          </div>
+        </div>
+
+        <!-- Pads -->
+        <div class="ctrl-row">
+          <div class="ctrl-group">
+            <label class="ctrl-label" data-i18n="painter.op_top">Arriba</label>
+            <input type="number" class="ctrl-input" id="op-top"    value="0" min="0" max="1024" step="8">
+          </div>
+          <div class="ctrl-group">
+            <label class="ctrl-label" data-i18n="painter.op_bottom">Abajo</label>
+            <input type="number" class="ctrl-input" id="op-bottom" value="0" min="0" max="1024" step="8">
+          </div>
+        </div>
+        <div class="ctrl-row">
+          <div class="ctrl-group">
+            <label class="ctrl-label" data-i18n="painter.op_left">Izquierda</label>
+            <input type="number" class="ctrl-input" id="op-left"   value="0" min="0" max="1024" step="8">
+          </div>
+          <div class="ctrl-group">
+            <label class="ctrl-label" data-i18n="painter.op_right">Derecha</label>
+            <input type="number" class="ctrl-input" id="op-right"  value="0" min="0" max="1024" step="8">
+          </div>
+        </div>
+
+        <div class="panel-divider"></div>
+
+        <!-- Denoise y Feathering -->
+        <div class="ctrl-group">
+          <label class="ctrl-label" data-i18n="painter.label_denoise">Denoise</label>
+          <div class="ctrl-range-row">
+            <input type="range" class="ctrl-range" id="op-denoise" min="0" max="1" step="0.01" value="0.85">
+            <span class="range-val" id="op-denoise-val">0.85</span>
+          </div>
+        </div>
+        <div class="ctrl-group">
+          <label class="ctrl-label" data-i18n="painter.label_feather">Feathering</label>
+          <div class="ctrl-range-row">
+            <input type="range" class="ctrl-range" id="op-feather" min="0" max="200" step="1" value="40">
+            <span class="range-val" id="op-feather-val">40</span>
+          </div>
+        </div>
+
+        <p class="panel-note" data-i18n="painter.op_note">Usa prompt, checkpoint y parámetros del tab Generar.</p>
+        <button class="btn-generate" id="btn-outpaint" data-i18n="painter.btn_outpaint">Outpaint</button>
       </div>
 
       <!-- Tab: Upscale -->

@@ -7,6 +7,7 @@ import uuid
 import base64
 import io
 import asyncio
+import datetime
 from pathlib import Path
 from typing import AsyncGenerator
 
@@ -24,7 +25,8 @@ for _p in [str(_ROOT), str(_CORE)]:
 from setup       import run_setup, get_status, quick_check
 from comfy_client import ComfyClient, ComfyError, load_workflow, SUPPORTED_ARCHITECTURES
 from models      import (GenerateRequest, InpaintRequest, OutpaintRequest,
-                         UpscaleRequest, RegionalRequest, RegionalStepRequest, AcceptRequest,
+                         UpscaleRequest,
+                         RegionalRequest, RegionalStepRequest, AcceptRequest,
                          JobResponse, JobStatusResponse, SessionStateResponse, ModelsResponse)
 from session     import session
 from image_utils import validate_resolution, resolve_seed, bytes_to_b64
@@ -42,11 +44,12 @@ _comfy = ComfyClient(port=8188)
 _jobs:   dict[str, dict]            = {}
 _queues: dict[str, asyncio.Queue]   = {}
 _active_job: str | None             = None
+_loras_cache: list[str]             = []   # poblado en GET /models al iniciar Painter
 
 
-def _new_job(job_id: str):
+def _new_job(job_id: str, job_type: str = "image"):
     _jobs[job_id]   = {"status": "queued", "progress": 0, "total": 0,
-                       "result_bytes": None, "error": None}
+                       "result_bytes": None, "error": None, "type": job_type}
     _queues[job_id] = asyncio.Queue()
 
 
@@ -77,12 +80,12 @@ async def _run_job(job_id: str, workflow: dict, params: dict):
         _active_job = None
 
 
-async def _launch(workflow: dict, params: dict) -> str:
+async def _launch(workflow: dict, params: dict, job_type: str = "image") -> str:
     global _active_job
     if _active_job:
         raise HTTPException(409, "Una generación está en curso")
     job_id = str(uuid.uuid4())
-    _new_job(job_id)
+    _new_job(job_id, job_type)
     _active_job = job_id
     asyncio.create_task(_run_job(job_id, workflow, params))
     return job_id
@@ -118,21 +121,42 @@ async def setup_run():
 
 @painter_router.get("/models", response_model=ModelsResponse)
 async def get_models():
-    checkpoints, controlnet, upscalers, samplers, schedulers = await asyncio.gather(
+    global _loras_cache
+    checkpoints, controlnet, upscalers, loras, samplers, schedulers = await asyncio.gather(
         _comfy.get_models("checkpoints"),
         _comfy.get_models("controlnet"),
         _comfy.get_models("upscale_models"),
+        _comfy.get_models("loras"),
         _comfy.get_samplers(),
         _comfy.get_schedulers(),
     )
+    if loras:
+        _loras_cache = loras
     return ModelsResponse(
         checkpoints=checkpoints,
         controlnet=controlnet,
         upscale_models=upscalers,
+        loras=loras,
         samplers=samplers,
         schedulers=schedulers,
         architectures=SUPPORTED_ARCHITECTURES,
     )
+
+
+def _apply_prompt_loras(wf: dict, prompt: str) -> tuple[dict, str]:
+    """Extrae tokens <lora:...> del prompt, los resuelve e inyecta en el workflow."""
+    from image_utils import parse_lora_tokens, resolve_lora_name
+    cleaned, tokens = parse_lora_tokens(prompt)
+    if not tokens:
+        return wf, prompt
+    loras = []
+    for t in tokens:
+        name = resolve_lora_name(t["name"], _loras_cache)
+        if name:
+            loras.append({"name": name, "strength": t["strength"]})
+    if loras:
+        wf = ComfyClient.inject_loras(wf, loras)
+    return wf, cleaned
 
 
 # ── Generación ─────────────────────────────────────────────────────────────
@@ -140,10 +164,10 @@ async def get_models():
 @painter_router.post("/generate", response_model=JobResponse)
 async def generate(req: GenerateRequest):
     validate_resolution(req.width, req.height)
-    wf     = load_workflow("txt2img.json", req.arch)
+    wf, prompt_clean = _apply_prompt_loras(load_workflow("txt2img.json", req.arch), req.prompt)
     params = {
         "checkpoint":      req.checkpoint,
-        "prompt":          req.prompt,
+        "prompt":          prompt_clean,
         "negative_prompt": req.negative_prompt,
         "width":           req.width,
         "height":          req.height,
@@ -163,10 +187,10 @@ async def inpaint(req: InpaintRequest):
     use_enhanced = (req.inpaint_model is not None and
                     await _comfy.probe_node("INPAINT_InpaintWithModel"))
     wf_name = "inpaint.json" if use_enhanced else "inpaint_basic.json"
-    wf      = load_workflow(wf_name, req.arch)
+    wf, prompt_clean = _apply_prompt_loras(load_workflow(wf_name, req.arch), req.prompt)
     params  = {
         "checkpoint":      req.checkpoint,
-        "prompt":          req.prompt,
+        "prompt":          prompt_clean,
         "negative_prompt": req.negative_prompt,
         "image_b64":       req.image_b64,
         "mask_b64":        req.mask_b64,
@@ -186,10 +210,10 @@ async def inpaint(req: InpaintRequest):
 
 @painter_router.post("/outpaint", response_model=JobResponse)
 async def outpaint(req: OutpaintRequest):
-    wf     = load_workflow("outpaint.json", req.arch)
+    wf, prompt_clean = _apply_prompt_loras(load_workflow("outpaint.json", req.arch), req.prompt)
     params = {
         "checkpoint":      req.checkpoint,
-        "prompt":          req.prompt,
+        "prompt":          prompt_clean,
         "negative_prompt": req.negative_prompt,
         "image_b64":       req.image_b64,
         "pad_left":        req.pad_left,
@@ -325,7 +349,8 @@ async def job_result(job_id: str):
         raise HTTPException(404, "Job no encontrado")
     if job["status"] != "done":
         raise HTTPException(400, f"Job aún no terminado: {job['status']}")
-    return Response(content=job["result_bytes"], media_type="image/png")
+    headers = {"X-Job-Type": job.get("type", "image")}
+    return Response(content=job["result_bytes"], media_type="image/png", headers=headers)
 
 
 @painter_router.post("/interrupt")
@@ -475,7 +500,14 @@ async def delete_style(name: str):
 
 # ── Tags — autocomplete Danbooru (multi-CSV) ───────────────────────────────
 
-_PROFILES_FILE = _ROOT / "apps" / "painter" / "model_profiles.json"
+_PROFILES_FILE   = _ROOT / "apps" / "painter" / "model_profiles.json"
+_SETUP_STATUS    = _ROOT / "apps" / "painter" / "painter_setup.json"
+
+def _load_setup_status() -> dict:
+    try:
+        return json.loads(_SETUP_STATUS.read_text()) if _SETUP_STATUS.exists() else {}
+    except Exception:
+        return {}
 
 try:
     import tag_engine as _te
@@ -600,3 +632,37 @@ async def tags_download(profile_id: str):
     return StreamingResponse(stream(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache",
                                       "X-Accel-Buffering": "no"})
+
+
+# ── Guardar imagen a disco ───────────────────────────────────────────────────
+
+def _get_outputs_dir() -> Path:
+    """Lee outputs path desde hub_config.json; fallback a outputs/ local."""
+    cfg_file = _ROOT / "hub" / "hub_config.json"
+    try:
+        cfg = json.loads(cfg_file.read_text())
+        base = cfg.get("paths", {}).get("outputs", "")
+        if base:
+            return Path(base) / "painter"
+    except Exception:
+        pass
+    return _ROOT / "outputs" / "painter"
+
+@painter_router.post("/save")
+async def save_image(body: dict):
+    """Guarda la imagen actual (base64) en outputs/painter/ con timestamp."""
+    image_b64: str = body.get("image_b64", "")
+    if not image_b64:
+        raise HTTPException(status_code=400, detail="image_b64 requerido")
+
+    out_dir = _get_outputs_dir()
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    ts       = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"painter_{ts}.png"
+    dest     = out_dir / filename
+
+    img_bytes = base64.b64decode(image_b64)
+    dest.write_bytes(img_bytes)
+
+    return {"path": str(dest), "filename": filename}

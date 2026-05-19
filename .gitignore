@@ -186,3 +186,4 @@ test_*.py
 hub/test_*.py
 hub/poc_*.py
 config/state.json
+*.zip
