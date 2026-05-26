@@ -132,6 +132,11 @@ let _styles          = [];       // [{name, prompt}] — lista guardada en disco
 let _activeStyleName = '';       // nombre del estilo activo ('' = ninguno)
 let _activeStylePrompt = '';     // prompt del estilo activo
 
+// ── ADetailer ─────────────────────────────────────────────────────────────
+let _adDetectors      = [];      // [{id, label, filename, available}] del backend
+let _adEnabled        = new Set(['face']);  // ids activos por defecto
+let _adImpactAvailable = false;  // True si FaceDetailer está cargado en ComfyUI
+
 /** Devuelve el prompt con el estilo activo concatenado al final. */
 function withStyle(prompt) {
   const s = _activeStylePrompt.trim();
@@ -929,6 +934,8 @@ function updateButtons() {
   document.getElementById('btn-save-img').disabled  = !S.hasImage;
   document.getElementById('btn-outpaint').disabled  = busy || !S.hasImage;
   document.getElementById('btn-upscale').disabled   = busy || !S.hasImage;
+  const hasAdEnabled = _adEnabled.size > 0;
+  document.getElementById('btn-adetailer').disabled = busy || !S.hasImage || !hasCkpt || !hasAdEnabled;
   updateUndoRedo();
 }
 
@@ -1310,6 +1317,7 @@ async function loadModels() {
     S.models   = m;
     populateModelSelects(m, S.arch);
     updateButtons();
+    loadAdDetectors();
   } catch (_) {
     toast(t('painter.conn_error'));
   }
@@ -1362,96 +1370,112 @@ function populateModelSelects(m, arch) {
     document.getElementById('cn-controls').style.display = '';
     selCN.innerHTML = controlnet.map(c => `<option value="${c}">${c}</option>`).join('');
   }
+
+  // ── ADetailer — disponibilidad de impact-pack ─────────────────────────
+  _adImpactAvailable = !!m.adetailer_available;
+  document.getElementById('ad-install-panel').style.display = _adImpactAvailable ? 'none' : 'flex';
+  document.getElementById('ad-controls').style.display      = _adImpactAvailable ? ''     : 'none';
 }
 
 // ── Setup overlay ─────────────────────────────────────────────────────────
-function logSetup(msg, status) {
-  const el  = document.getElementById('setup-log');
-  const div = document.createElement('div');
-  div.className = status;
-  div.textContent = msg;
-  el.appendChild(div);
-  el.scrollTop = el.scrollHeight;
+// ── Inicialización en background ──────────────────────────────────────────
+// No bloquea el canvas. Verifica ComfyUI y, si faltan nodos, los instala
+// silenciosamente mostrando progreso en el status bar.
+
+function _showBanner(msg, actionLabel, actionFn) {
+  const banner = document.getElementById('comfy-banner');
+  document.getElementById('comfy-banner-msg').textContent = msg;
+  const btn = document.getElementById('comfy-banner-action');
+  if (actionLabel) {
+    btn.textContent  = actionLabel;
+    btn.style.display = '';
+    btn.onclick = actionFn;
+  } else {
+    btn.style.display = 'none';
+  }
+  banner.classList.add('visible');
 }
 
-function closeSetupOverlay() {
-  document.getElementById('setup-overlay').style.display = 'none';
-  document.getElementById('btn-setup-continue').style.display = 'none';
-  loadModels();
-  showSizeDialog();
-  requestAnimationFrame(render);
+function _hideBanner() {
+  document.getElementById('comfy-banner').classList.remove('visible');
 }
 
-async function initSetup() {
-  document.getElementById('setup-log').innerHTML = '';
-  document.getElementById('btn-setup-retry').style.display = 'none';
-  document.getElementById('btn-setup-continue').style.display = 'none';
-  document.getElementById('setup-msg').textContent = '';
-  const h2 = document.querySelector('#setup-overlay h2');
-  h2.textContent = t('painter.setup_checking');
+function _setNodesInstalling(active) {
+  document.getElementById('st-nodes-installing').style.display = active ? '' : 'none';
+}
 
-  // Verificar estado antes de lanzar el setup completo
+async function backgroundInit() {
   let status;
   try {
     status = await apiGet('/setup/status');
   } catch (_) {
-    document.getElementById('setup-msg').textContent = t('painter.conn_error');
-    document.getElementById('btn-setup-retry').style.display = '';
+    _showBanner('No se pudo conectar con el backend del Painter.', 'Recargar', () => location.reload());
     return;
   }
 
-  if (status.ready) {
-    closeSetupOverlay();
+  if (status.comfyui_not_installed) {
+    _showBanner('ComfyUI no está instalado. Painter lo requiere para funcionar.',
+                '← Ir a Aplicaciones', () => { window.location = '/'; });
     return;
   }
 
   if (status.comfyui_offline) {
-    h2.textContent = t('painter.setup_start_comfyui');
-    document.getElementById('setup-msg').textContent = status.msg || '';
-    document.getElementById('btn-setup-retry').style.display = '';
+    _showBanner('ComfyUI no está corriendo. Inícialo desde el hub para usar Painter.',
+                'Reintentar', () => { _hideBanner(); backgroundInit(); });
     return;
   }
 
-  // Necesita instalación — lanzar SSE (GET)
-  h2.textContent = t('painter.setup_installing');
+  if (status.ready) {
+    // Todo en orden — arrancar normalmente
+    loadModels();
+    showSizeDialog();
+    requestAnimationFrame(render);
+    return;
+  }
+
+  // Faltan nodos o modelos YOLO — instalar en background
+  _setNodesInstalling(true);
   const es = new EventSource(API + '/setup/run');
 
   es.onmessage = ({ data }) => {
     const ev = JSON.parse(data);
     if (ev.step === 'stream_end') { es.close(); return; }
 
-    logSetup(ev.msg, ev.status);
-
     if (ev.status === 'error') {
       es.close();
-      h2.textContent = ev.msg;
-      document.getElementById('btn-setup-retry').style.display = '';
+      _setNodesInstalling(false);
+      _showBanner(`Error al preparar Painter: ${ev.msg}`, 'Reintentar',
+                  () => { _hideBanner(); backgroundInit(); });
       return;
     }
 
     if (ev.step === 'restart_required') {
       es.close();
-      document.getElementById('setup-msg').textContent = t('painter.setup_restart');
+      _setNodesInstalling(false);
+      _showBanner('Se instalaron nodos nuevos. Reinicia ComfyUI para activarlos.', null, null);
+      loadModels();
+      showSizeDialog();
+      requestAnimationFrame(render);
       return;
     }
 
     if (ev.step === 'done') {
       es.close();
-      // Mostrar botón Continuar siempre — auto-cierre inmediato si ok, 3s si warning
-      document.getElementById('btn-setup-continue').style.display = '';
-      if (ev.status === 'ok') {
-        setTimeout(closeSetupOverlay, 800);
-      } else {
-        document.getElementById('setup-msg').textContent = t('painter.setup_warning');
-        setTimeout(closeSetupOverlay, 3000);
+      _setNodesInstalling(false);
+      if (ev.status === 'warning') {
+        toast('Painter listo (algunos componentes opcionales no disponibles)');
       }
+      loadModels();
+      showSizeDialog();
+      requestAnimationFrame(render);
     }
   };
 
   es.onerror = () => {
     es.close();
-    document.getElementById('setup-msg').textContent = t('painter.conn_error');
-    document.getElementById('btn-setup-retry').style.display = '';
+    _setNodesInstalling(false);
+    _showBanner('Error de conexión durante la inicialización.', 'Reintentar',
+                () => { _hideBanner(); backgroundInit(); });
   };
 }
 
@@ -1745,6 +1769,205 @@ function initEvents() {
     S.arch = this.value;
     loadModels();
   });
+
+  // ADetailer
+  document.getElementById('btn-adetailer').addEventListener('click', doADetailer);
+  document.getElementById('btn-ad-install').addEventListener('click', _adInstallImpactPack);
+
+  document.getElementById('ad-denoise').addEventListener('input', function () {
+    document.getElementById('ad-denoise-val').textContent = parseFloat(this.value).toFixed(2);
+  });
+  document.getElementById('ad-threshold').addEventListener('input', function () {
+    document.getElementById('ad-threshold-val').textContent = parseFloat(this.value).toFixed(2);
+  });
+
+  // Collapsibles ADetailer
+  document.getElementById('ad-det-toggle').addEventListener('click', function () {
+    const open = this.getAttribute('aria-expanded') === 'true';
+    this.setAttribute('aria-expanded', String(!open));
+    document.getElementById('ad-det-body').style.display = open ? 'none' : '';
+  });
+  document.getElementById('ad-prompt-toggle').addEventListener('click', function () {
+    const open = this.getAttribute('aria-expanded') === 'true';
+    this.setAttribute('aria-expanded', String(!open));
+    document.getElementById('ad-prompt-body').style.display = open ? 'none' : '';
+  });
+}
+
+// ── ADetailer — lógica ───────────────────────────────────────────────────
+
+async function loadAdDetectors() {
+  try {
+    const d = await apiGet('/adetailer/detectors');
+    _adDetectors = d.detectors || [];
+    _renderAdDetectors();
+  } catch (_) {}
+}
+
+function _renderAdDetectors() {
+  const list = document.getElementById('ad-det-list');
+  if (!list) return;
+  list.innerHTML = '';
+  _adDetectors.forEach(det => {
+    const row = document.createElement('div');
+    row.className = 'ad-det-row';
+
+    const label = document.createElement('span');
+    label.className = 'ad-det-label';
+    label.textContent = det.label;
+
+    const file = document.createElement('span');
+    file.className = 'ad-det-file';
+    file.textContent = det.filename;
+
+    if (det.available) {
+      // Switch toggle
+      const sw = document.createElement('label');
+      sw.className = 'ad-switch';
+      const inp = document.createElement('input');
+      inp.type    = 'checkbox';
+      inp.checked = _adEnabled.has(det.id);
+      inp.addEventListener('change', () => {
+        if (inp.checked) _adEnabled.add(det.id);
+        else             _adEnabled.delete(det.id);
+        updateButtons();
+      });
+      const track = document.createElement('span');
+      track.className = 'ad-switch-track';
+      const thumb = document.createElement('span');
+      thumb.className = 'ad-switch-thumb';
+      track.appendChild(thumb);
+      sw.appendChild(inp);
+      sw.appendChild(track);
+      row.append(label, file, sw);
+    } else {
+      // Botón de descarga
+      const btn = document.createElement('button');
+      btn.className   = 'ad-dl-btn';
+      btn.textContent = '⬇ Descargar';
+      btn.id          = `ad-dl-${det.id}`;
+      btn.addEventListener('click', () => _adDownload(det.id, btn));
+      row.append(label, file, btn);
+    }
+    list.appendChild(row);
+  });
+}
+
+function _adDownload(detId, btn) {
+  btn.disabled    = true;
+  btn.textContent = '…';
+  const progEl = document.createElement('span');
+  progEl.className = 'ad-dl-progress';
+  btn.parentElement.appendChild(progEl);
+
+  const es = new EventSource(`${API}/adetailer/download/${detId}`);
+  es.onmessage = ev => {
+    const d = JSON.parse(ev.data);
+    if (d.status === 'progress') {
+      progEl.textContent = `${d.pct}%`;
+    } else if (d.status === 'done' || d.status === 'ok') {
+      es.close();
+      toast(`Detector descargado: ${detId}`);
+      loadAdDetectors();
+    } else if (d.status === 'error') {
+      es.close();
+      btn.disabled    = false;
+      btn.textContent = '⬇ Reintentar';
+      progEl.textContent = '';
+      toast(`Error: ${d.msg}`);
+    }
+  };
+  es.onerror = () => {
+    es.close();
+    btn.disabled    = false;
+    btn.textContent = '⬇ Reintentar';
+  };
+}
+
+async function doADetailer() {
+  if (!S.hasImage) return toast('No hay imagen en el canvas');
+  if (!_adImpactAvailable) return; // el tab ya muestra el panel de instalación
+  const enabled = [..._adEnabled];
+  if (!enabled.length) return toast('Habilita al menos un detector');
+  const ckpt = document.getElementById('sel-checkpoint').value;
+  if (!ckpt) return toast('Selecciona un checkpoint');
+
+  try {
+    const basePrompt   = withStyle(document.getElementById('inp-prompt').value);
+    const overrideText = document.getElementById('ad-prompt-override').value.trim();
+    const body = {
+      image_b64:       getCurrentB64(),
+      checkpoint:      ckpt,
+      prompt:          overrideText || basePrompt,
+      negative_prompt: document.getElementById('inp-negative').value,
+      seed:            parseInt(document.getElementById('inp-seed').value) || -1,
+      steps:           parseInt(document.getElementById('inp-steps').value),
+      cfg:             parseFloat(document.getElementById('inp-cfg').value),
+      sampler:         document.getElementById('sel-sampler').value,
+      scheduler:       document.getElementById('sel-scheduler').value,
+      arch:            S.arch,
+      detectors:       enabled,
+      denoise:         parseFloat(document.getElementById('ad-denoise').value),
+      guide_size:      parseInt(document.getElementById('ad-guide-size').value),
+      bbox_threshold:  parseFloat(document.getElementById('ad-threshold').value),
+      bbox_dilation:   parseInt(document.getElementById('ad-dilation').value),
+    };
+    const { job_id } = await apiPost('/adetailer', body);
+    await trackJob(job_id);
+  } catch (e) { toast(e.message || t('painter.conn_error')); }
+}
+
+function _adInstallImpactPack() {
+  const btn  = document.getElementById('btn-ad-install');
+  const log  = document.getElementById('ad-install-log');
+  const note = document.getElementById('ad-install-note');
+  btn.disabled   = true;
+  btn.textContent = 'Instalando…';
+  log.style.display = '';
+  log.textContent   = '';
+
+  const addLog = (msg, cls) => {
+    const span = document.createElement('span');
+    span.style.color = cls === 'ok'      ? 'var(--accent-cyan)'
+                     : cls === 'warning' ? 'var(--accent-amber)'
+                     : cls === 'error'   ? 'var(--accent-red)' : '';
+    span.textContent = msg + '\n';
+    log.appendChild(span);
+    log.scrollTop = log.scrollHeight;
+  };
+
+  const es = new EventSource(API + '/setup/run');
+  es.onmessage = ({ data }) => {
+    const ev = JSON.parse(data);
+    if (ev.step === 'stream_end') { es.close(); return; }
+    addLog(ev.msg, ev.status);
+
+    if (ev.status === 'error') {
+      es.close();
+      btn.disabled    = false;
+      btn.textContent = 'Reintentar';
+      return;
+    }
+    if (ev.step === 'restart_required') {
+      es.close();
+      note.textContent = '✓ Instalado. Reinicia ComfyUI para activarlo.';
+      btn.disabled    = false;
+      btn.textContent = 'Instalar impact-pack';
+      return;
+    }
+    if (ev.step === 'done') {
+      es.close();
+      loadModels();  // refrescar — ahora adetailer_available debería ser true
+      btn.disabled    = false;
+      btn.textContent = 'Instalar impact-pack';
+    }
+  };
+  es.onerror = () => {
+    es.close();
+    addLog('Error de conexión.', 'error');
+    btn.disabled    = false;
+    btn.textContent = 'Reintentar';
+  };
 }
 
 // ── Estilos — lógica ─────────────────────────────────────────────────────
@@ -2357,9 +2580,9 @@ document.addEventListener('DOMContentLoaded', () => {
   initEvents();
   initKeyboard();
   initDraggable();
-  initSetup();
   initStyles();
   initTagDownloadModal();
   initProfiles();
   initTagSystem();
+  backgroundInit();   // verifica ComfyUI e instala nodos faltantes en background
 });

@@ -34,6 +34,7 @@ DEFAULT_MODEL_SUBDIRS = [
     "style_models",
     "hypernetworks",
     "ultralytics",
+    "ultralytics/bbox",   # detectores YOLO (ADetailer)
     "inpaint",
     "model_patches",
     "gligen",
@@ -202,7 +203,28 @@ def build_app_model_args(app_config: dict, models_dir: str, app_dir: str = "") -
                 f.write("\n".join(yaml_lines) + "\n")
         except OSError as e:
             print(f"Error writing YAML: {e}")
-            
+
+        # Symlinks internos — algunas apps escanean su propio models_dir directamente
+        # (ignorando el YAML). Para esos casos, la config declara symlinks a crear.
+        # Formato: { "nombre_en_app": "carpeta_en_global_models_dir" }
+        app_models_dir = os.path.join(app_dir, "models")
+        for link_name, src_folder in model_map.get("symlinks", {}).items():
+            src = os.path.join(models_dir, src_folder)
+            dst = os.path.join(app_models_dir, link_name)
+            if not os.path.exists(src):
+                continue
+            if os.path.islink(dst):
+                if os.readlink(dst) == src:
+                    continue
+                os.remove(dst)  # symlink apunta a otro lado — reemplazar
+            elif os.path.exists(dst):
+                continue  # directorio real — no tocar
+            try:
+                os.makedirs(app_models_dir, exist_ok=True)
+                os.symlink(src, dst)
+            except OSError as e:
+                print(f"Error creando symlink {dst} → {src}: {e}")
+
         # ComfyUI automatically loads extra_model_paths.yaml from its root.
         # No extra CLI flags needed for default name.
         if filename != "extra_model_paths.yaml":

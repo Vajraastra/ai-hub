@@ -143,24 +143,21 @@
     }
 
     /* ── Overlays ──────────────────────────────────────────────── */
-    .canvas-overlay {
-      position: absolute; inset: 0; z-index: 10;
-      display: flex; flex-direction: column;
-      align-items: center; justify-content: center; gap: 12px;
-      background: rgba(15,0,35,.88); padding: 24px; text-align: center;
+    /* Banner no bloqueante: ComfyUI offline / no instalado */
+    #comfy-banner {
+      display: none; position: absolute; top: 0; left: 0; right: 0; z-index: 8;
+      background: rgba(15,0,35,.93); border-bottom: 1px solid var(--border);
+      padding: 10px 16px; gap: 10px; align-items: center; justify-content: center;
+      font-size: 12px; color: var(--text-secondary);
     }
-    .canvas-overlay h2 { font-size: 16px; color: var(--text-primary); }
-    .canvas-overlay p  { font-size: 13px; color: var(--text-secondary); max-width: 340px; }
-    #setup-log {
-      width: 100%; max-width: 420px; max-height: 180px; overflow-y: auto;
-      background: var(--bg-input); border: 1px solid var(--border);
-      border-radius: 6px; padding: 8px 12px; font-size: 11px;
-      font-family: var(--font-mono); text-align: left;
+    #comfy-banner.visible { display: flex; }
+    #comfy-banner strong { color: var(--accent-amber); }
+    #comfy-banner a, #comfy-banner button.banner-link {
+      color: var(--accent-cyan); text-decoration: underline; cursor: pointer;
+      background: none; border: none; font-size: 12px; padding: 0;
     }
-    #setup-log .ok      { color: var(--accent-cyan); }
-    #setup-log .warning { color: var(--accent-amber); }
-    #setup-log .error   { color: var(--accent-red); }
-    #setup-log .info    { color: var(--text-secondary); }
+    /* Spinner de nodos instalándose en status bar */
+    #st-nodes-installing { color: var(--accent-amber); }
 
     #progress-overlay {
       display: none;
@@ -267,6 +264,54 @@
     .btn-action:hover { background: rgba(84,239,234,.1); }
     .btn-action:disabled { opacity: .4; cursor: default; border-color: var(--border); color: var(--text-dim); }
     .panel-note { font-size: 11px; color: var(--text-dim); font-style: italic; }
+
+    /* ── ADetailer ─────────────────────────────────────────────── */
+    .ad-section { display:flex; flex-direction:column; gap:0; }
+    .ad-section-hdr {
+      display:flex; justify-content:space-between; align-items:center;
+      background:none; border:none; color:var(--text-secondary);
+      font-size:11px; font-weight:600; letter-spacing:.05em; text-transform:uppercase;
+      padding:4px 2px; cursor:pointer; width:100%;
+    }
+    .ad-section-hdr:hover { color:var(--accent-cyan); }
+    .ad-arrow { font-size:10px; transition:transform .15s; }
+    .ad-section-hdr[aria-expanded="false"] .ad-arrow { transform:rotate(-90deg); }
+    #ad-det-list { display:flex; flex-direction:column; gap:4px; padding:6px 2px 2px; }
+    .ad-det-row {
+      display:flex; align-items:center; gap:8px;
+      background:rgba(255,255,255,.03); border:1px solid var(--border);
+      border-radius:6px; padding:6px 8px;
+    }
+    .ad-det-label { flex:1; font-size:12px; font-weight:600; }
+    .ad-det-file  { font-size:10px; color:var(--text-dim); flex:2; }
+    /* Switch toggle */
+    .ad-switch { position:relative; width:32px; height:18px; flex-shrink:0; }
+    .ad-switch input { opacity:0; width:0; height:0; }
+    .ad-switch-track {
+      position:absolute; inset:0; border-radius:9px;
+      background:var(--border); cursor:pointer; transition:background .2s;
+    }
+    .ad-switch input:checked ~ .ad-switch-track { background:var(--accent-cyan); }
+    .ad-switch-thumb {
+      position:absolute; top:3px; left:3px; width:12px; height:12px;
+      border-radius:50%; background:#fff; transition:transform .2s; pointer-events:none;
+    }
+    .ad-switch input:checked ~ .ad-switch-track .ad-switch-thumb { transform:translateX(14px); }
+    .ad-switch input:disabled ~ .ad-switch-track { opacity:.4; cursor:default; }
+    /* Botón descarga inline */
+    .ad-dl-btn {
+      font-size:10px; padding:2px 7px; border-radius:4px; cursor:pointer;
+      background:transparent; border:1px solid var(--accent-cyan);
+      color:var(--accent-cyan); flex-shrink:0;
+    }
+    .ad-dl-btn:hover { background:rgba(84,239,234,.1); }
+    .ad-dl-btn:disabled { opacity:.4; cursor:default; }
+    .ad-dl-progress { font-size:10px; color:var(--accent-cyan); flex-shrink:0; }
+    .ctrl-textarea {
+      width:100%; background:var(--bg-deep); border:1px solid var(--border);
+      border-radius:6px; padding:6px 8px; font-size:12px; font-family:inherit;
+      color:var(--text-primary); resize:vertical; min-height:60px;
+    }
 
     /* ── Outpaint preview grid ─────────────────────────────────── */
     #op-preview-wrap { display:flex; justify-content:center; padding: 8px 0 4px; }
@@ -633,15 +678,11 @@
     <!-- Canvas -->
     <div id="p-canvas-wrap">
 
-      <!-- Setup overlay -->
-      <div class="canvas-overlay" id="setup-overlay">
-        <h2 data-i18n="painter.setup_checking">Verificando setup…</h2>
-        <div id="setup-log"></div>
-        <div style="display:flex;gap:8px;justify-content:center">
-          <button class="btn btn-primary" id="btn-setup-retry" style="display:none" onclick="initSetup()">↻ Reintentar</button>
-          <button class="btn btn-primary" id="btn-setup-continue" style="display:none" onclick="closeSetupOverlay()">Continuar →</button>
-        </div>
-        <p id="setup-msg" style="color:var(--accent-amber)"></p>
+      <!-- Banner no bloqueante: ComfyUI offline / no instalado -->
+      <div id="comfy-banner">
+        <strong id="comfy-banner-icon">⚠</strong>
+        <span id="comfy-banner-msg"></span>
+        <button class="banner-link" id="comfy-banner-action" style="display:none"></button>
       </div>
 
       <!-- Progress overlay -->
@@ -671,6 +712,7 @@
           <option value="upscale"    data-i18n="painter.tab_upscale">Upscale</option>
           <option value="controlnet" data-i18n="painter.tab_controlnet">ControlNet</option>
           <option value="regional">Regional</option>
+          <option value="adetailer">ADetailer</option>
         </select>
       </div>
 
@@ -928,6 +970,80 @@
           </div>
         </div>
       </div>
+
+      <!-- Tab: ADetailer -->
+      <div class="panel-body" id="tab-adetailer">
+        <!-- Estado de impact-pack: instalación pendiente -->
+        <div id="ad-install-panel" style="display:none; flex-direction:column; gap:8px; align-items:center; padding:12px; text-align:center;">
+          <p class="panel-note" style="font-style:normal; color:var(--text-secondary)">
+            ADetailer requiere <strong style="color:var(--text-primary)">comfyui-impact-pack</strong>,
+            un nodo de ComfyUI que no está instalado aún.
+          </p>
+          <div id="ad-install-log" style="display:none; width:100%; max-height:120px; overflow-y:auto;
+            background:var(--bg-input); border:1px solid var(--border); border-radius:6px;
+            padding:6px 10px; font-size:10px; font-family:var(--font-mono); text-align:left;
+            color:var(--text-secondary);"></div>
+          <button class="btn-generate" id="btn-ad-install" style="width:auto; padding:6px 20px;">
+            Instalar impact-pack
+          </button>
+          <p class="panel-note" id="ad-install-note">ComfyUI necesitará reiniciarse tras la instalación.</p>
+        </div>
+        <div id="ad-controls">
+          <!-- Detectores desplegable -->
+          <div class="ad-section">
+            <button class="ad-section-hdr" id="ad-det-toggle" aria-expanded="true">
+              <span>Detectores</span>
+              <span class="ad-arrow">▾</span>
+            </button>
+            <div id="ad-det-body">
+              <!-- Las filas se generan por JS según _adDetectors -->
+              <div id="ad-det-list"></div>
+            </div>
+          </div>
+
+          <div class="panel-divider"></div>
+
+          <!-- Parámetros -->
+          <div class="ctrl-group">
+            <label class="ctrl-label">Denoise</label>
+            <div class="ctrl-range-row">
+              <input type="range" class="ctrl-range" id="ad-denoise" min="0" max="1" step="0.01" value="0.4">
+              <span class="range-val" id="ad-denoise-val">0.40</span>
+            </div>
+          </div>
+          <div class="ctrl-group">
+            <label class="ctrl-label">Guide Size</label>
+            <input type="number" class="ctrl-input" id="ad-guide-size" value="512" min="256" max="1024" step="64">
+          </div>
+          <div class="ctrl-group">
+            <label class="ctrl-label">Threshold</label>
+            <div class="ctrl-range-row">
+              <input type="range" class="ctrl-range" id="ad-threshold" min="0.1" max="1" step="0.05" value="0.5">
+              <span class="range-val" id="ad-threshold-val">0.50</span>
+            </div>
+          </div>
+          <div class="ctrl-group">
+            <label class="ctrl-label">Dilation</label>
+            <input type="number" class="ctrl-input" id="ad-dilation" value="10" min="0" max="100" step="1">
+          </div>
+
+          <div class="panel-divider"></div>
+
+          <!-- Prompt override desplegable -->
+          <div class="ad-section">
+            <button class="ad-section-hdr" id="ad-prompt-toggle" aria-expanded="false">
+              <span>Prompt override (opcional)</span>
+              <span class="ad-arrow">▾</span>
+            </button>
+            <div id="ad-prompt-body" style="display:none">
+              <p class="panel-note" style="margin-top:4px">Si está vacío, usa el prompt del tab Generar.</p>
+              <textarea class="ctrl-textarea" id="ad-prompt-override" rows="3" placeholder="prompt de detalle…"></textarea>
+            </div>
+          </div>
+
+          <button class="btn-generate" id="btn-adetailer" style="margin-top:8px">Run ADetailer</button>
+        </div>
+      </div>
     </div><!-- /p-panel -->
   </div><!-- /p-main -->
 
@@ -938,6 +1054,7 @@
     <span>Cursor: <span class="val" id="st-cursor">—</span></span>
     <span>Tool: <span class="val" id="st-tool">Brush</span></span>
     <span id="st-warning" style="color:var(--accent-amber);display:none"></span>
+    <span id="st-nodes-installing" style="display:none">⟳ Instalando nodos…</span>
   </footer>
 </div><!-- /painter -->
 

@@ -410,9 +410,15 @@ class HubBridge:
                 proc = self._state.running_apps.get(app_id)
                 if proc and proc.poll() is None:
                     try:
-                        proc.send_signal(signal.SIGINT)
+                        pgid = os.getpgid(proc.pid)
+                        os.killpg(pgid, signal.SIGINT)
                         lines.append({"icon": "⏹", "text": f"{name} :{port} — SIGINT enviado"})
                         killed_total += 1
+                    except (ProcessLookupError, OSError):
+                        try:
+                            proc.send_signal(signal.SIGINT)
+                        except Exception:
+                            pass
                     except Exception as e:
                         lines.append({"icon": "✗", "text": f"{name} — error: {e}"})
                 continue
@@ -575,12 +581,31 @@ class HubBridge:
 
     def _stop_thread(self, app_id: str, proc: subprocess.Popen):
         try:
-            proc.send_signal(signal.SIGINT)
+            # Intentar matar el process group completo (app + sus workers).
+            # start_new_session=True garantiza que pgid != hub pgid, así que es seguro.
+            try:
+                pgid = os.getpgid(proc.pid)
+                os.killpg(pgid, signal.SIGINT)
+            except (ProcessLookupError, OSError):
+                # Proceso ya muerto o sin process group — intentar kill directo
+                try:
+                    proc.send_signal(signal.SIGINT)
+                except (ProcessLookupError, OSError):
+                    pass
+
             try:
                 proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=5)
+                # SIGINT no fue suficiente — forzar SIGKILL al grupo
+                try:
+                    pgid = os.getpgid(proc.pid)
+                    os.killpg(pgid, signal.SIGKILL)
+                except (ProcessLookupError, OSError):
+                    proc.kill()
+                try:
+                    proc.wait(timeout=5)
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
             self._state.log_event("STOP", app_id, "Detenida por usuario")
         except Exception as e:
             self._emit_log(app_id, f"Error deteniendo {app_id}: {e}")
@@ -613,11 +638,21 @@ class HubBridge:
             cuda_config = get_optimal_cuda(sys_info.get("max_cuda", "12.1"))
             cuda_env    = build_env_overrides(hub_config.get("cuda", cuda_config))
 
+            emit = self._emit_log
+
+            class _UILogger:
+                def info(_, tag, msg):    emit(app_id, f"[{tag}] {msg}")
+                def success(_, tag, msg): emit(app_id, f"✓ {msg}")
+                def warn(_, tag, msg):    emit(app_id, f"⚠ {msg}")
+                def error(_, tag, msg):   emit(app_id, f"✗ {msg}")
+                def section(_, msg):      emit(app_id, f"── {msg} ──")
+
             result = _installer(
                 app_config=app_cfg, apps_dir=apps_dir,
                 cuda_env=cuda_env,
                 backups_dir=os.path.join(_HUB_DIR, ".cache", "backups"),
-                cuda_config=cuda_config, logger=None
+                cuda_config=cuda_config, gpu_info=sys_info,
+                hub_dir=_HUB_DIR, logger=_UILogger()
             )
 
             if result.get("success"):

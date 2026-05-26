@@ -27,6 +27,7 @@ from comfy_client import ComfyClient, ComfyError, load_workflow, SUPPORTED_ARCHI
 from models      import (GenerateRequest, InpaintRequest, OutpaintRequest,
                          UpscaleRequest,
                          RegionalRequest, RegionalStepRequest, AcceptRequest,
+                         ADetailerRequest, ADetailerDetector,
                          JobResponse, JobStatusResponse, SessionStateResponse, ModelsResponse)
 from session     import session
 from image_utils import validate_resolution, resolve_seed, bytes_to_b64
@@ -45,6 +46,39 @@ _jobs:   dict[str, dict]            = {}
 _queues: dict[str, asyncio.Queue]   = {}
 _active_job: str | None             = None
 _loras_cache: list[str]             = []   # poblado en GET /models al iniciar Painter
+
+# ── ADetailer — detectores disponibles ────────────────────────────────────
+_ADETAILER_DETECTORS = [
+    {"id": "face",   "label": "Cara",     "filename": "face_yolov8n.pt"},
+    {"id": "hand",   "label": "Manos",    "filename": "hand_yolov8n.pt"},
+    {"id": "person", "label": "Personas", "filename": "person_yolov8n-seg.pt"},
+]
+_ADETAILER_URLS = {
+    "face_yolov8n.pt":        "https://huggingface.co/Bingsu/adetailer/resolve/main/face_yolov8n.pt",
+    "hand_yolov8n.pt":        "https://huggingface.co/Bingsu/adetailer/resolve/main/hand_yolov8n.pt",
+    "person_yolov8n-seg.pt":  "https://huggingface.co/Bingsu/adetailer/resolve/main/person_yolov8n-seg.pt",
+}
+
+def _ultralytics_bbox_dir() -> Path | None:
+    """Directorio ultralytics/bbox/ según hub_config.json."""
+    try:
+        import json as _json
+        cfg = _json.loads((_ROOT / "hub" / "hub_config.json").read_text())
+        models_root = Path(cfg["paths"]["models"])
+        return models_root / "ultralytics" / "bbox"
+    except Exception:
+        return None
+
+def _detector_status() -> list[ADetailerDetector]:
+    bbox_dir = _ultralytics_bbox_dir()
+    result = []
+    for d in _ADETAILER_DETECTORS:
+        available = bool(bbox_dir and (bbox_dir / d["filename"]).exists())
+        result.append(ADetailerDetector(
+            id=d["id"], label=d["label"],
+            filename=d["filename"], available=available,
+        ))
+    return result
 
 
 def _new_job(job_id: str, job_type: str = "image"):
@@ -96,11 +130,41 @@ async def _launch(workflow: dict, params: dict, job_type: str = "image") -> str:
 @painter_router.get("/setup/status")
 async def setup_status():
     status = get_status()
-    if status.get("ready"):
-        alive = await quick_check()
-        if not alive:
-            return {**status, "ready": False, "comfyui_offline": True,
-                    "msg": "ComfyUI no responde — inícialo desde el hub"}
+    if status.get("comfyui_not_installed"):
+        return status
+
+    # Siempre verificar si ComfyUI está online — no solo cuando ready=True.
+    # Evita que backgroundInit() corra el setup cuando ComfyUI acaba de reiniciarse.
+    alive = await quick_check()
+    if not alive:
+        return {**status, "ready": False, "comfyui_offline": True,
+                "msg": "ComfyUI no responde — inícialo desde el hub"}
+
+    # Si setup previo marcó needs_restart: verificar si el reinicio ya completó
+    # comprobando que todos los nodos REQUERIDOS están cargados en ComfyUI.
+    if not status.get("ready") and status.get("needs_restart"):
+        from setup import _save_status, _load_registry
+        registry = _load_registry()
+        installed_ids = set(status.get("installed_node_ids", []))
+        required_entries = [e for e in registry.get("required", [])
+                            if e["id"] in installed_ids]
+        probes = [await _comfy.probe_node(e["probe_node"]) for e in required_entries]
+        if required_entries and all(probes):
+            # Consolidar installed_node_ids con todos los nodos del registry
+            # que ya existen y cargan en ComfyUI — evita el loop de new_nodes.
+            all_entries = registry.get("required", []) + registry.get("enhanced", [])
+            confirmed_ids = []
+            for e in all_entries:
+                if await _comfy.probe_node(e["probe_node"]):
+                    confirmed_ids.append(e["id"])
+                elif e["id"] in installed_ids:
+                    confirmed_ids.append(e["id"])
+            updated = {**status, "ready": True, "needs_restart": False,
+                       "installed_node_ids": confirmed_ids}
+            updated.pop("new_nodes", None)
+            _save_status(updated)
+            return updated
+
     return status
 
 
@@ -132,6 +196,10 @@ async def get_models():
     )
     if loras:
         _loras_cache = loras
+    ad_available = (
+        await _comfy.probe_node("FaceDetailer") and
+        await _comfy.probe_node("UltralyticsDetectorProvider")
+    )
     return ModelsResponse(
         checkpoints=checkpoints,
         controlnet=controlnet,
@@ -140,6 +208,7 @@ async def get_models():
         samplers=samplers,
         schedulers=schedulers,
         architectures=SUPPORTED_ARCHITECTURES,
+        adetailer_available=ad_available,
     )
 
 
@@ -323,6 +392,144 @@ async def upscale(req: UpscaleRequest):
     wf     = load_workflow("upscale.json", req.arch)
     params = {"image_b64": req.image_b64, "model_name": req.model_name}
     job_id = await _launch(wf, params)
+    return JobResponse(job_id=job_id)
+
+
+# ── ADetailer ──────────────────────────────────────────────────────────────
+
+@painter_router.get("/adetailer/detectors")
+async def adetailer_detectors():
+    """Lista de detectores con disponibilidad en disco."""
+    return {"detectors": [d.model_dump() for d in _detector_status()]}
+
+
+@painter_router.get("/adetailer/download/{detector_id}")
+async def adetailer_download(detector_id: str):
+    """SSE — descarga el .pt del detector indicado a ultralytics/bbox/."""
+    entry = next((d for d in _ADETAILER_DETECTORS if d["id"] == detector_id), None)
+    if not entry:
+        raise HTTPException(404, f"Detector desconocido: {detector_id}")
+
+    bbox_dir = _ultralytics_bbox_dir()
+    if not bbox_dir:
+        raise HTTPException(500, "No se pudo determinar el directorio de modelos")
+
+    filename = entry["filename"]
+    url      = _ADETAILER_URLS[filename]
+    dest     = bbox_dir / filename
+
+    async def stream() -> AsyncGenerator[str, None]:
+        import aiohttp
+        if dest.exists():
+            yield f"data: {json.dumps({'status':'ok','msg':'Modelo ya disponible'})}\n\n"
+            return
+        bbox_dir.mkdir(parents=True, exist_ok=True)
+        yield f"data: {json.dumps({'status':'info','msg':f'Descargando {filename}…'})}\n\n"
+        try:
+            async with aiohttp.ClientSession() as sess:
+                async with sess.get(url) as resp:
+                    if resp.status != 200:
+                        yield f"data: {json.dumps({'status':'error','msg':f'HTTP {resp.status}'})}\n\n"
+                        return
+                    total    = int(resp.headers.get("Content-Length", 0))
+                    received = 0
+                    with open(dest, "wb") as f:
+                        async for chunk in resp.content.iter_chunked(65536):
+                            f.write(chunk)
+                            received += len(chunk)
+                            if total:
+                                pct = int(received * 100 / total)
+                                yield f"data: {json.dumps({'status':'progress','pct':pct,'received':received,'total':total})}\n\n"
+            yield f"data: {json.dumps({'status':'done','msg':f'{filename} descargado'})}\n\n"
+        except Exception as e:
+            if dest.exists():
+                dest.unlink(missing_ok=True)
+            yield f"data: {json.dumps({'status':'error','msg':str(e)})}\n\n"
+
+    return StreamingResponse(stream(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache",
+                                      "X-Accel-Buffering": "no"})
+
+
+async def _run_adetailer_job(job_id: str, req: ADetailerRequest):
+    """Corre FaceDetailer por cada detector habilitado de forma secuencial."""
+    global _active_job
+    q = _queues[job_id]
+    _jobs[job_id]["status"] = "running"
+    await q.put({"type": "queued"})
+
+    det_map = {d["id"]: d["filename"] for d in _ADETAILER_DETECTORS}
+    current_b64 = req.image_b64
+
+    enabled = [did for did in req.detectors if did in det_map]
+    if not enabled:
+        _jobs[job_id]["status"] = "error"
+        _jobs[job_id]["error"]  = "Sin detectores habilitados"
+        await q.put({"type": "error", "msg": "Sin detectores habilitados"})
+        _active_job = None
+        return
+
+    total_steps = req.steps * len(enabled)
+    steps_done  = 0
+
+    def on_progress(step: int, total: int):
+        _jobs[job_id]["progress"] = steps_done + step
+        _jobs[job_id]["total"]    = total_steps
+        asyncio.get_event_loop().call_soon_threadsafe(
+            q.put_nowait,
+            {"type": "progress", "step": steps_done + step, "total": total_steps}
+        )
+
+    try:
+        for det_id in enabled:
+            wf = load_workflow("adetailer.json", req.arch)
+            params = {
+                "checkpoint":      req.checkpoint,
+                "image_b64":       current_b64,
+                "prompt":          req.prompt,
+                "negative_prompt": req.negative_prompt,
+                "detector_model":  f"bbox/{det_map[det_id]}",
+                "seed":            resolve_seed(req.seed),
+                "steps":           req.steps,
+                "cfg":             req.cfg,
+                "sampler":         req.sampler,
+                "scheduler":       req.scheduler,
+                "denoise":         req.denoise,
+                "guide_size":      req.guide_size,
+                "bbox_threshold":  req.bbox_threshold,
+                "bbox_dilation":   req.bbox_dilation,
+            }
+            result_bytes = await _comfy.run_workflow(wf, params, on_progress)
+            steps_done  += req.steps
+            # Convertir resultado a b64 para el siguiente detector
+            current_b64 = bytes_to_b64(result_bytes)
+
+        _jobs[job_id]["status"]       = "done"
+        _jobs[job_id]["result_bytes"] = result_bytes
+        session.set_preview(result_bytes)
+        await q.put({"type": "done"})
+    except ComfyError as e:
+        _jobs[job_id]["status"] = "error"
+        _jobs[job_id]["error"]  = str(e)
+        await q.put({"type": "error", "msg": str(e)})
+    finally:
+        _active_job = None
+
+
+@painter_router.post("/adetailer", response_model=JobResponse)
+async def adetailer(req: ADetailerRequest):
+    global _active_job
+    if not (await _comfy.probe_node("FaceDetailer") and
+            await _comfy.probe_node("UltralyticsDetectorProvider")):
+        raise HTTPException(503, "ADetailer no disponible — falta impact-pack o impact-subpack. Abre el tab ADetailer e instálalos.")
+    if _active_job:
+        raise HTTPException(409, "Una generación está en curso")
+    if not req.detectors:
+        raise HTTPException(400, "Selecciona al menos un detector")
+    job_id = str(uuid.uuid4())
+    _new_job(job_id)
+    _active_job = job_id
+    asyncio.create_task(_run_adetailer_job(job_id, req))
     return JobResponse(job_id=job_id)
 
 

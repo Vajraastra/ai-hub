@@ -361,6 +361,9 @@ def launch_app(app_config: dict, app_dir: str, cuda_env: dict,
             kwargs["stderr"] = subprocess.STDOUT
             kwargs["bufsize"] = 1
             kwargs["universal_newlines"] = True
+            # Aislar al hijo en su propio process group — evita que señales del hub
+            # (o del proceso group del terminal) se propaguen a la app y viceversa.
+            kwargs["start_new_session"] = True
         else:
             kwargs["stdin"] = sys.stdin
             kwargs["stdout"] = sys.stdout
