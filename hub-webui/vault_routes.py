@@ -53,7 +53,7 @@ def _get_service():
     from model_vault.core.vault_service import VaultService
     api_key = None
     try:
-        from gui.state import state
+        from state import state
         api_key = state.get_civitai_key()
     except Exception:
         cfg = _load_config()

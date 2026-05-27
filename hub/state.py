@@ -3,9 +3,7 @@ import sys
 import json
 import threading
 
-# Adjust path to find hub modules if needed
-GUI_DIR = os.path.dirname(os.path.abspath(__file__))
-HUB_DIR = os.path.dirname(GUI_DIR)
+HUB_DIR = os.path.dirname(os.path.abspath(__file__))
 if HUB_DIR not in sys.path:
     sys.path.insert(0, HUB_DIR)
 

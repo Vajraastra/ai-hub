@@ -132,6 +132,9 @@ let _styles          = [];       // [{name, prompt}] — lista guardada en disco
 let _activeStyleName = '';       // nombre del estilo activo ('' = ninguno)
 let _activeStylePrompt = '';     // prompt del estilo activo
 
+// ── ControlNet ────────────────────────────────────────────────────────────
+let _cnImageB64 = null;
+
 // ── ADetailer ─────────────────────────────────────────────────────────────
 let _adDetectors      = [];      // [{id, label, filename, available}] del backend
 let _adEnabled        = new Set(['face']);  // ids activos por defecto
@@ -600,7 +603,7 @@ async function apiGet(path) {
 }
 
 function getParams() {
-  return {
+  const p = {
     arch:             document.getElementById('arch-select').value,
     checkpoint:       document.getElementById('sel-checkpoint').value,
     prompt:           withStyle(document.getElementById('inp-prompt').value),
@@ -613,6 +616,20 @@ function getParams() {
     denoise:          parseFloat(document.getElementById('inp-denoise').value),
     feather_radius:   parseInt(document.getElementById('inp-feather').value),
   };
+  // ── ControlNet ────────────────────────────────────────────────────────
+  if (document.getElementById('cn-enabled').checked && _cnImageB64) {
+    const cnModel = document.getElementById('sel-cn-model').value;
+    if (cnModel) {
+      p.cn_image_b64 = _cnImageB64;
+      p.cn_model     = cnModel;
+      p.cn_strength  = parseFloat(document.getElementById('inp-cn-strength').value);
+      const isUnion  = cnModel.toLowerCase().includes('union');
+      if (isUnion) p.cn_type = parseInt(document.getElementById('sel-cn-type').value);
+      const prep = document.getElementById('sel-cn-prep').value;
+      if (prep && prep !== 'none') p.cn_preprocess = prep;
+    }
+  }
+  return p;
 }
 
 // ── Generar (txt2img) ─────────────────────────────────────────────────────
@@ -934,8 +951,8 @@ function updateButtons() {
   document.getElementById('btn-save-img').disabled  = !S.hasImage;
   document.getElementById('btn-outpaint').disabled  = busy || !S.hasImage;
   document.getElementById('btn-upscale').disabled   = busy || !S.hasImage;
-  const hasAdEnabled = _adEnabled.size > 0;
-  document.getElementById('btn-adetailer').disabled = busy || !S.hasImage || !hasCkpt || !hasAdEnabled;
+  const hasAdEnabled = _adDetectors.some(d => d.available && _adEnabled.has(d.id));
+  document.getElementById('btn-adetailer').disabled  = busy || !S.hasImage || !hasCkpt || !hasAdEnabled;
   updateUndoRedo();
 }
 
@@ -1801,6 +1818,7 @@ async function loadAdDetectors() {
     const d = await apiGet('/adetailer/detectors');
     _adDetectors = d.detectors || [];
     _renderAdDetectors();
+    updateButtons();   // refrescar estado del botón ADetailer con disponibilidad real
   } catch (_) {}
 }
 
@@ -2572,6 +2590,83 @@ async function initTagSystem() {
 }
 
 
+// ── ControlNet ────────────────────────────────────────────────────────────
+
+function _updateCnPreview(b64) {
+  const thumb       = document.getElementById('cn-img-thumb');
+  const placeholder = document.getElementById('cn-img-placeholder');
+  if (b64) {
+    thumb.src              = `data:image/png;base64,${b64}`;
+    thumb.style.display    = '';
+    placeholder.style.display = 'none';
+  } else {
+    thumb.style.display       = 'none';
+    placeholder.style.display = '';
+  }
+}
+
+function _cnLoadFile(file) {
+  if (!file || !file.type.startsWith('image/')) return;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    _cnImageB64 = ev.target.result.split(',')[1];
+    _updateCnPreview(_cnImageB64);
+  };
+  reader.readAsDataURL(file);
+}
+
+function initControlNet() {
+  const drop     = document.getElementById('cn-img-drop');
+  const selModel = document.getElementById('sel-cn-model');
+  const enabled  = document.getElementById('cn-enabled');
+
+  // Mostrar/ocultar controles según checkbox
+  function _syncActiveControls() {
+    document.getElementById('cn-active-controls').style.opacity =
+      enabled.checked ? '1' : '0.4';
+  }
+  enabled.addEventListener('change', _syncActiveControls);
+  _syncActiveControls();
+
+  // Clic → abrir file picker
+  drop.addEventListener('click', () => {
+    const inp   = document.createElement('input');
+    inp.type    = 'file';
+    inp.accept  = 'image/*';
+    inp.onchange = e => _cnLoadFile(e.target.files[0]);
+    inp.click();
+  });
+
+  // Drag & drop
+  drop.addEventListener('dragover',  e => { e.preventDefault(); drop.classList.add('drag-over'); });
+  drop.addEventListener('dragleave', ()  => drop.classList.remove('drag-over'));
+  drop.addEventListener('drop',      e  => {
+    e.preventDefault();
+    drop.classList.remove('drag-over');
+    _cnLoadFile(e.dataTransfer.files[0]);
+  });
+
+  // Usar imagen actual del canvas
+  document.getElementById('btn-cn-use-canvas').addEventListener('click', () => {
+    const b64 = getCurrentB64();
+    if (!b64) return toast(t('painter.no_image'));
+    _cnImageB64 = b64;
+    _updateCnPreview(_cnImageB64);
+  });
+
+  // Mostrar/ocultar selector de tipo Union según modelo elegido
+  selModel.addEventListener('change', () => {
+    const isUnion = selModel.value.toLowerCase().includes('union');
+    document.getElementById('cn-union-row').style.display = isUnion ? '' : 'none';
+  });
+
+  // Range display
+  const strEl  = document.getElementById('inp-cn-strength');
+  const strVal = document.getElementById('cn-strength-val');
+  strEl.addEventListener('input', () => { strVal.textContent = parseFloat(strEl.value).toFixed(2); });
+}
+
+
 // ── Main ──────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   initCanvas();
@@ -2581,8 +2676,10 @@ document.addEventListener('DOMContentLoaded', () => {
   initKeyboard();
   initDraggable();
   initStyles();
+  initControlNet();
   initTagDownloadModal();
   initProfiles();
   initTagSystem();
   backgroundInit();   // verifica ComfyUI e instala nodos faltantes en background
 });
+

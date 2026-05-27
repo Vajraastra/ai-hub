@@ -1,7 +1,7 @@
 """
 AI Hub WebUI — Implementación completa
 Backend: FastAPI + WebSocket
-Frontend: pywebview (ventana nativa) o browser como fallback
+Frontend: browser del sistema
 """
 import os
 import sys
@@ -312,52 +312,13 @@ def main():
 
     print(f"  Servidor listo en {url}")
 
-    import io, contextlib
-
-    # Deshabilitar cache de disco en WebKit2GTK — evita que sirva JS/HTML viejos
+    import webbrowser
+    webbrowser.open(url)
+    print(f"  Servidor activo en {url}  (Ctrl+C para salir)")
     try:
-        import gi
-        gi.require_version("WebKit2", "4.1")
-        from gi.repository import WebKit2
-        WebKit2.WebContext.get_default().set_cache_model(
-            WebKit2.CacheModel.DOCUMENT_VIEWER  # sin cache persistente
-        )
-    except Exception:
-        try:
-            import gi
-            gi.require_version("WebKit2", "4.0")
-            from gi.repository import WebKit2
-            WebKit2.WebContext.get_default().set_cache_model(
-                WebKit2.CacheModel.DOCUMENT_VIEWER
-            )
-        except Exception:
-            pass  # no es WebKit2GTK, continuar igual
-
-    webview_ok = False
-    try:
-        with contextlib.redirect_stderr(io.StringIO()):
-            import webview
-
-            window = webview.create_window(
-                "AI Hub",
-                url,
-                width=1020,
-                height=740,
-                min_size=(820, 580),
-                background_color="#0F0023",
-            )
-            webview_ok = True
-            webview.start(debug=False)
-    except Exception:
-        if not webview_ok:
-            print("  pywebview: sin backend nativo disponible — usando browser")
-        import webbrowser
-        webbrowser.open(url)
-        print(f"  Servidor activo en {url}  (Ctrl+C para salir)")
-        try:
-            server_thread.join()
-        except KeyboardInterrupt:
-            print("\n  Saliendo...")
+        server_thread.join()
+    except KeyboardInterrupt:
+        print("\n  Saliendo...")
 
 
 if __name__ == "__main__":

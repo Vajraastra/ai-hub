@@ -8,10 +8,9 @@
 # Bootstrap:
 #   1. Verificar GPU NVIDIA (nvidia-smi)
 #   2. Descargar uv (package manager)
-#   3. Descargar Python 3.13 portable
+#   3. Descargar Python 3.13 portable (si el sistema no tiene >=3.8)
 #   4. Verificar git y Node.js
-#   5. Preparar entorno Python base (.ui_venv)
-#   6. Preparar entorno WebUI y arrancar
+#   5. Preparar entorno WebUI y arrancar
 # ============================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -68,7 +67,7 @@ fi
 # ============================================================
 # Paso 1: GPU NVIDIA
 # ============================================================
-log_step "1/6" "Verificando GPU NVIDIA..."
+log_step "1/4" "Verificando GPU NVIDIA..."
 
 if command -v nvidia-smi &> /dev/null; then
     GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader,nounits 2>/dev/null | head -1)
@@ -90,7 +89,7 @@ fi
 # ============================================================
 # Paso 2: uv (package manager)
 # ============================================================
-log_step "2/6" "Verificando uv..."
+log_step "2/4" "Verificando uv..."
 
 mkdir -p "${TOOLS_DIR}"
 
@@ -120,9 +119,9 @@ else
 fi
 
 # ============================================================
-# Paso 3: Python 3.13
+# Paso 3: Python 3.13 + git + Node.js
 # ============================================================
-log_step "3/6" "Verificando Python ${HUB_PYTHON_VERSION}..."
+log_step "3/4" "Verificando herramientas..."
 
 find_uv_python() {
     local py_bin
@@ -162,11 +161,6 @@ else
         fi
     fi
 fi
-
-# ============================================================
-# Paso 4: git y Node.js
-# ============================================================
-log_step "4/6" "Verificando herramientas..."
 
 if command -v git &> /dev/null; then
     log_ok "git: $(git --version 2>/dev/null)"
@@ -216,37 +210,9 @@ if [ -z "$NODE_BIN" ]; then
 fi
 
 # ============================================================
-# Paso 5: Entorno base Python 3.13 (.ui_venv)
+# Paso 4: WebUI — venv + dependencias
 # ============================================================
-log_step "5/6" "Verificando entorno base..."
-
-UI_VENV="${HUB_DIR}/.ui_venv"
-UI_PYTHON="${UI_VENV}/bin/python"
-
-if [ ! -f "$UI_PYTHON" ]; then
-    log_info "Creando entorno base (Python 3.13)..."
-    "${UV_BIN}" venv --python 3.13 "$UI_VENV" 2>/dev/null \
-        || "${UV_BIN}" venv --python "${PYTHON_BIN}" "$UI_VENV" 2>/dev/null
-fi
-
-# PySide6 en .ui_venv: lo usa pywebview para mostrar la WebUI en ventana nativa.
-# No es crítico — si falta, el webui abre en el browser del sistema.
-"$UI_PYTHON" -c "import PySide6" 2>/dev/null || {
-    log_info "Instalando PySide6 (backend ventana nativa)..."
-    "${UV_BIN}" pip install --python "$UI_PYTHON" PySide6 --quiet 2>/dev/null \
-        && log_ok "PySide6 instalado" \
-        || log_info "PySide6 no disponible — se usará el browser del sistema"
-}
-
-if [ ! -f "$UI_PYTHON" ]; then
-    log_err "No se pudo preparar el entorno base."
-    read -rp "  Presiona Enter para cerrar..."; exit 1
-fi
-
-# ============================================================
-# Paso 6: WebUI — venv + dependencias
-# ============================================================
-log_step "6/6" "Verificando WebUI..."
+log_step "4/4" "Verificando WebUI..."
 
 WEBUI_VENV="${WEBUI_DIR}/.venv"
 WEBUI_PY="${WEBUI_VENV}/bin/python3"
@@ -254,8 +220,8 @@ WEBUI_APP="${WEBUI_DIR}/app.py"
 
 if [ ! -f "$WEBUI_PY" ]; then
     log_info "Creando entorno de la WebUI..."
-    "$UI_PYTHON" -m venv "$WEBUI_VENV" 2>/dev/null \
-        || "${UV_BIN}" venv --python "$UI_PYTHON" "$WEBUI_VENV" 2>/dev/null
+    "${UV_BIN}" venv --python "${PYTHON_BIN}" "$WEBUI_VENV" 2>/dev/null \
+        || "$PYTHON_BIN" -m venv "$WEBUI_VENV" 2>/dev/null
 fi
 
 "$WEBUI_PY" -c "import fastapi, uvicorn, requests, numpy" 2>/dev/null
@@ -269,10 +235,6 @@ else
     log_ok "WebUI listo"
 fi
 
-# pywebview (opcional — para ventana nativa)
-"$WEBUI_PY" -c "import webview" 2>/dev/null || \
-    "${UV_BIN}" pip install --python "$WEBUI_PY" "pywebview>=5.0" --quiet 2>/dev/null || true
-
 # ── Variables de entorno ──────────────────────────────────────
 export AI_HUB_UV_PATH="${UV_BIN}"
 export AI_HUB_TOOLS_DIR="${TOOLS_DIR}"
@@ -283,12 +245,6 @@ export PYTHONUNBUFFERED="1"
 if [ -n "$NODE_BIN" ]; then
     export AI_HUB_NODE_DIR="${NODE_BIN}"
     export PATH="${NODE_BIN}:${PATH}"
-fi
-
-# PySide6 de .ui_venv disponible para pywebview como backend Qt
-UI_SITE="${UI_VENV}/lib/python3.13/site-packages"
-if [ -d "$UI_SITE" ]; then
-    export PYTHONPATH="${UI_SITE}${PYTHONPATH:+:$PYTHONPATH}"
 fi
 
 # ── Log de sesión ─────────────────────────────────────────────

@@ -230,10 +230,25 @@ def _apply_prompt_loras(wf: dict, prompt: str) -> tuple[dict, str]:
 
 # ── Generación ─────────────────────────────────────────────────────────────
 
+def _apply_controlnet(wf: dict, req) -> dict:
+    """Inyecta ControlNet si el request trae cn_model + cn_image_b64."""
+    if req.cn_model and req.cn_image_b64:
+        wf = ComfyClient.inject_controlnet(
+            wf,
+            cn_image_b64  = req.cn_image_b64,
+            cn_model      = req.cn_model,
+            cn_strength   = req.cn_strength,
+            cn_type       = req.cn_type,
+            cn_preprocess = req.cn_preprocess,
+        )
+    return wf
+
+
 @painter_router.post("/generate", response_model=JobResponse)
 async def generate(req: GenerateRequest):
     validate_resolution(req.width, req.height)
     wf, prompt_clean = _apply_prompt_loras(load_workflow("txt2img.json", req.arch), req.prompt)
+    wf = _apply_controlnet(wf, req)
     params = {
         "checkpoint":      req.checkpoint,
         "prompt":          prompt_clean,
@@ -257,6 +272,7 @@ async def inpaint(req: InpaintRequest):
                     await _comfy.probe_node("INPAINT_InpaintWithModel"))
     wf_name = "inpaint.json" if use_enhanced else "inpaint_basic.json"
     wf, prompt_clean = _apply_prompt_loras(load_workflow(wf_name, req.arch), req.prompt)
+    wf = _apply_controlnet(wf, req)
     params  = {
         "checkpoint":      req.checkpoint,
         "prompt":          prompt_clean,

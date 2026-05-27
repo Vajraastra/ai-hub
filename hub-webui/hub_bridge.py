@@ -15,13 +15,11 @@ import time
 _POC_DIR  = os.path.dirname(os.path.abspath(__file__))
 _HUB_DIR  = os.path.join(os.path.dirname(_POC_DIR), "hub")
 _ROOT_DIR = os.path.dirname(_POC_DIR)
-_UI_VENV_PY = os.path.join(_HUB_DIR, ".ui_venv", "bin", "python3")
-
 for p in [_HUB_DIR, _ROOT_DIR]:
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from gui.state import state as _state
+from state import state as _state
 
 
 # ── Helpers de puerto ────────────────────────────────────────────────────
