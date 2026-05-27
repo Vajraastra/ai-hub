@@ -437,7 +437,7 @@ class HubBridge:
 
     # ── Acciones de apps ────────────────────────────────────────────────
 
-    def launch(self, app_id: str) -> bool:
+    def launch(self, app_id: str, open_browser: bool = True) -> bool:
         if app_id in self._state.busy_apps:
             return False
         app_cfg = self._state.registry_apps.get(app_id)
@@ -449,7 +449,7 @@ class HubBridge:
             return False
         self._state.set_busy(app_id, "launching")
         self._emit_state(app_id)
-        threading.Thread(target=self._launch_thread, args=(app_id,), daemon=True).start()
+        threading.Thread(target=self._launch_thread, args=(app_id, open_browser), daemon=True).start()
         return True
 
     def stop(self, app_id: str) -> bool:
@@ -481,7 +481,7 @@ class HubBridge:
 
     # ── Threads de fondo ────────────────────────────────────────────────
 
-    def _launch_thread(self, app_id: str):
+    def _launch_thread(self, app_id: str, open_browser: bool = True):
         try:
             from modules.cuda_guardian import build_env_overrides
             from modules.storage_manager import build_app_model_args
@@ -541,7 +541,7 @@ class HubBridge:
             self._emit_state(app_id)
             self._emit_log(app_id, f"=== {app_cfg.get('name', app_id)} iniciada (PID {proc.pid}) ===")
 
-            if app_cfg.get("auto_open_browser") and effective_port:
+            if open_browser and app_cfg.get("auto_open_browser") and effective_port:
                 threading.Thread(
                     target=self._open_browser_when_ready,
                     args=(app_id, int(effective_port), proc),

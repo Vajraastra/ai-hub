@@ -181,6 +181,80 @@ async def setup_run():
                                       "X-Accel-Buffering": "no"})
 
 
+# ── ComfyUI lifecycle desde Painter ───────────────────────────────────────
+
+@painter_router.get("/comfyui/hub-status")
+async def comfyui_hub_status():
+    """Estado de ComfyUI en el hub: instalado / corriendo."""
+    try:
+        from hub_bridge import bridge
+        apps = bridge.get_apps_payload()
+        comfy = next((a for a in apps if a["id"] == "comfyui"), None)
+        if not comfy:
+            return {"in_registry": False, "installed": False, "running": False, "status": "unknown"}
+        running   = comfy["status"] == "running"
+        installed = comfy["status"] not in ("not_installed",)
+        return {"in_registry": True, "installed": installed, "running": running, "status": comfy["status"]}
+    except Exception as e:
+        return {"in_registry": False, "installed": False, "running": False, "error": str(e)}
+
+
+@painter_router.post("/comfyui/start")
+async def comfyui_start():
+    """Arranca ComfyUI como servicio (sin abrir su propio browser)."""
+    try:
+        from hub_bridge import bridge
+        ok = bridge.launch("comfyui", open_browser=False)
+        return {"ok": ok}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@painter_router.get("/comfyui/install")
+async def comfyui_install():
+    """SSE — instala ComfyUI y emite líneas de log en tiempo real."""
+    from hub_bridge import bridge
+
+    loop = asyncio.get_event_loop()
+    q: asyncio.Queue = asyncio.Queue()
+
+    def _log_h(app_id: str, line: str):
+        if app_id == "comfyui":
+            asyncio.run_coroutine_threadsafe(q.put(("log", line)), loop)
+
+    def _state_h(app_id: str):
+        if app_id == "comfyui":
+            try:
+                apps    = bridge.get_apps_payload()
+                comfy   = next((a for a in apps if a["id"] == "comfyui"), None)
+                status  = comfy["status"] if comfy else "unknown"
+            except Exception:
+                status = "unknown"
+            asyncio.run_coroutine_threadsafe(q.put(("state", status)), loop)
+
+    bridge.on_log(_log_h)
+    bridge.on_state_changed(_state_h)
+    bridge.install("comfyui")
+
+    async def stream() -> AsyncGenerator[str, None]:
+        while True:
+            try:
+                kind, data = await asyncio.wait_for(q.get(), timeout=30.0)
+                if kind == "log":
+                    yield f"data: {json.dumps({'type':'log','line':data})}\n\n"
+                elif kind == "state":
+                    yield f"data: {json.dumps({'type':'state','status':data})}\n\n"
+                    if data not in ("installing", "busy", "launching"):
+                        yield 'data: {"type":"done"}\n\n'
+                        break
+            except asyncio.TimeoutError:
+                yield 'data: {"type":"heartbeat"}\n\n'
+
+    return StreamingResponse(stream(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache",
+                                      "X-Accel-Buffering": "no"})
+
+
 # ── Modelos disponibles ────────────────────────────────────────────────────
 
 @painter_router.get("/models", response_model=ModelsResponse)

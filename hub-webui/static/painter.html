@@ -143,7 +143,7 @@
     }
 
     /* ── Overlays ──────────────────────────────────────────────── */
-    /* Banner no bloqueante: ComfyUI offline / no instalado */
+    /* Banner no bloqueante: errores de setup menores */
     #comfy-banner {
       display: none; position: absolute; top: 0; left: 0; right: 0; z-index: 8;
       background: rgba(15,0,35,.93); border-bottom: 1px solid var(--border);
@@ -155,6 +155,53 @@
     #comfy-banner a, #comfy-banner button.banner-link {
       color: var(--accent-cyan); text-decoration: underline; cursor: pointer;
       background: none; border: none; font-size: 12px; padding: 0;
+    }
+
+    /* ── ComfyUI Gate — overlay bloqueante ─────────────────────── */
+    #comfyui-gate {
+      display: none; position: fixed; inset: 0; z-index: 300;
+      background: rgba(15,0,35,.97);
+      align-items: center; justify-content: center;
+    }
+    #comfyui-gate.visible { display: flex; }
+    #comfyui-gate-card {
+      background: #110030; border: 1px solid #600db5;
+      border-radius: 12px; padding: 40px 36px; max-width: 480px; width: 90%;
+      text-align: center;
+      box-shadow: 0 0 48px rgba(96,13,181,.45), 0 2px 0 #600db5 inset;
+    }
+    #comfyui-gate-icon { font-size: 44px; margin-bottom: 14px; line-height: 1; }
+    #comfyui-gate-title {
+      color: var(--accent-cyan); font-size: 17px; font-weight: 600;
+      margin: 0 0 8px; letter-spacing: .02em;
+    }
+    #comfyui-gate-desc {
+      color: var(--text-secondary); font-size: 13px; margin: 0 0 24px;
+    }
+    #comfyui-gate-btn {
+      background: var(--accent-purple); color: #fff; border: none;
+      padding: 10px 28px; border-radius: 6px; cursor: pointer;
+      font-size: 14px; font-weight: 500; letter-spacing: .02em;
+      transition: opacity .15s;
+    }
+    #comfyui-gate-btn:disabled { opacity: .45; cursor: not-allowed; }
+    #comfyui-gate-btn:not(:disabled):hover { opacity: .85; }
+    #comfyui-gate-log {
+      display: none; text-align: left; font-size: 11px; font-family: monospace;
+      color: var(--text-secondary); background: rgba(0,0,0,.35);
+      border: 1px solid var(--border); border-radius: 4px;
+      padding: 8px 10px; max-height: 130px; overflow-y: auto; margin-top: 16px;
+    }
+    #comfyui-gate-log .gate-log-line { white-space: pre-wrap; word-break: break-all; line-height: 1.6; }
+    #comfyui-gate-spinner {
+      display: none; align-items: center; justify-content: center;
+      gap: 10px; color: var(--accent-cyan); font-size: 13px; margin-top: 14px;
+    }
+    @keyframes gate-spin { to { transform: rotate(360deg); } }
+    #comfyui-gate-spinner .spin {
+      width: 16px; height: 16px; border: 2px solid rgba(84,239,234,.25);
+      border-top-color: var(--accent-cyan); border-radius: 50%;
+      animation: gate-spin .8s linear infinite; flex-shrink: 0;
     }
     /* Spinner de nodos instalándose en status bar */
     #st-nodes-installing { color: var(--accent-amber); }
@@ -617,6 +664,22 @@
   </style>
 </head>
 <body>
+
+<!-- ComfyUI Gate — overlay bloqueante (not installed / offline) -->
+<div id="comfyui-gate">
+  <div id="comfyui-gate-card">
+    <div id="comfyui-gate-icon">⚠</div>
+    <h2 id="comfyui-gate-title"></h2>
+    <p  id="comfyui-gate-desc"></p>
+    <button id="comfyui-gate-btn"></button>
+    <div id="comfyui-gate-spinner">
+      <div class="spin"></div>
+      <span id="comfyui-gate-spinner-msg"></span>
+    </div>
+    <div id="comfyui-gate-log"></div>
+  </div>
+</div>
+
 <div id="painter">
 
   <!-- ── Header ──────────────────────────────────────────────────── -->

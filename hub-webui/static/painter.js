@@ -1417,6 +1417,106 @@ function _hideBanner() {
   document.getElementById('comfy-banner').classList.remove('visible');
 }
 
+// ── ComfyUI Gate ──────────────────────────────────────────────────────────
+
+function _showGate(titleKey, descKey, icon, btnKey, btnFn) {
+  const L = locale();
+  document.getElementById('comfyui-gate-icon').textContent        = icon;
+  document.getElementById('comfyui-gate-title').textContent       = L[titleKey] || titleKey;
+  document.getElementById('comfyui-gate-desc').textContent        = L[descKey]  || descKey;
+  document.getElementById('comfyui-gate-log').style.display       = 'none';
+  document.getElementById('comfyui-gate-log').innerHTML           = '';
+  document.getElementById('comfyui-gate-spinner').style.display   = 'none';
+  const btn = document.getElementById('comfyui-gate-btn');
+  if (btnKey && btnFn) {
+    btn.textContent = L[btnKey] || btnKey;
+    btn.onclick     = btnFn;
+    btn.disabled    = false;
+    btn.style.display = '';
+  } else {
+    btn.style.display = 'none';
+  }
+  document.getElementById('comfyui-gate').classList.add('visible');
+}
+
+function _hideGate() {
+  document.getElementById('comfyui-gate').classList.remove('visible');
+}
+
+function _gateLogLine(line) {
+  const log = document.getElementById('comfyui-gate-log');
+  log.style.display = '';
+  const d = document.createElement('div');
+  d.className = 'gate-log-line';
+  d.textContent = line;
+  log.appendChild(d);
+  log.scrollTop = log.scrollHeight;
+}
+
+function _gateSpinner(msg) {
+  const sp = document.getElementById('comfyui-gate-spinner');
+  sp.style.display = 'flex';
+  document.getElementById('comfyui-gate-spinner-msg').textContent = msg;
+  document.getElementById('comfyui-gate-btn').style.display = 'none';
+}
+
+function _gatePollUntilOnline() {
+  const L = locale();
+  _gateSpinner(L.comfy_gate_starting || 'Iniciando ComfyUI...');
+  const poll = async () => {
+    try {
+      const st = await apiGet('/setup/status');
+      if (!st.comfyui_offline && !st.comfyui_not_installed) {
+        _hideGate();
+        backgroundInit();
+        return;
+      }
+    } catch (_) {}
+    setTimeout(poll, 3000);
+  };
+  setTimeout(poll, 2000);
+}
+
+async function _startComfyUI() {
+  const L = locale();
+  document.getElementById('comfyui-gate-btn').disabled = true;
+  _gateSpinner(L.comfy_gate_starting || 'Iniciando ComfyUI...');
+  try { await apiPost('/comfyui/start', {}); } catch (_) {}
+  _gatePollUntilOnline();
+}
+
+async function _installComfyUI() {
+  const L = locale();
+  const btn = document.getElementById('comfyui-gate-btn');
+  btn.disabled = true;
+  document.getElementById('comfyui-gate-spinner').style.display = 'none';
+
+  const es = new EventSource(API + '/comfyui/install');
+  es.onmessage = ({ data }) => {
+    let ev;
+    try { ev = JSON.parse(data); } catch (_) { return; }
+    if (ev.type === 'heartbeat') return;
+    if (ev.type === 'log') { _gateLogLine(ev.line); return; }
+    if (ev.type === 'done') {
+      es.close();
+      _gateLogLine('✓ ' + (L.comfy_gate_install_done || 'Instalación completa. Iniciando ComfyUI...'));
+      setTimeout(_startComfyUI, 800);
+      return;
+    }
+    if (ev.type === 'state') return;
+    if (ev.type === 'error') {
+      es.close();
+      _gateLogLine('✗ ' + (ev.msg || L.comfy_gate_error || 'Error — intenta de nuevo.'));
+      btn.disabled = false;
+    }
+  };
+  es.onerror = () => {
+    es.close();
+    _gateLogLine('✗ ' + (L.comfy_gate_error || 'Error de conexión.'));
+    btn.disabled = false;
+  };
+}
+
 function _setNodesInstalling(active) {
   document.getElementById('st-nodes-installing').style.display = active ? '' : 'none';
 }
@@ -1431,14 +1531,14 @@ async function backgroundInit() {
   }
 
   if (status.comfyui_not_installed) {
-    _showBanner('ComfyUI no está instalado. Painter lo requiere para funcionar.',
-                '← Ir a Aplicaciones', () => { window.location = '/'; });
+    _showGate('comfy_gate_not_installed_title', 'comfy_gate_not_installed_desc',
+              '⬡', 'comfy_gate_install_btn', _installComfyUI);
     return;
   }
 
   if (status.comfyui_offline) {
-    _showBanner('ComfyUI no está corriendo. Inícialo desde el hub para usar Painter.',
-                'Reintentar', () => { _hideBanner(); backgroundInit(); });
+    _showGate('comfy_gate_offline_title', 'comfy_gate_offline_desc',
+              '○', 'comfy_gate_start_btn', _startComfyUI);
     return;
   }
 
