@@ -701,3 +701,8 @@ document.addEventListener("DOMContentLoaded", () => {
     if (e.target === $("confirm-overlay")) closeConfirm();
   });
 });
+
+// Detener apps al cerrar la pestaña/ventana del hub
+window.addEventListener("beforeunload", () => {
+  navigator.sendBeacon("/api/stop-all");
+});

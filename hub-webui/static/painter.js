@@ -1420,16 +1420,15 @@ function _hideBanner() {
 // ── ComfyUI Gate ──────────────────────────────────────────────────────────
 
 function _showGate(titleKey, descKey, icon, btnKey, btnFn) {
-  const L = locale();
   document.getElementById('comfyui-gate-icon').textContent        = icon;
-  document.getElementById('comfyui-gate-title').textContent       = L[titleKey] || titleKey;
-  document.getElementById('comfyui-gate-desc').textContent        = L[descKey]  || descKey;
+  document.getElementById('comfyui-gate-title').textContent       = t(titleKey);
+  document.getElementById('comfyui-gate-desc').textContent        = t(descKey);
   document.getElementById('comfyui-gate-log').style.display       = 'none';
   document.getElementById('comfyui-gate-log').innerHTML           = '';
   document.getElementById('comfyui-gate-spinner').style.display   = 'none';
   const btn = document.getElementById('comfyui-gate-btn');
   if (btnKey && btnFn) {
-    btn.textContent = L[btnKey] || btnKey;
+    btn.textContent = t(btnKey);
     btn.onclick     = btnFn;
     btn.disabled    = false;
     btn.style.display = '';
@@ -1461,8 +1460,7 @@ function _gateSpinner(msg) {
 }
 
 function _gatePollUntilOnline() {
-  const L = locale();
-  _gateSpinner(L.comfy_gate_starting || 'Iniciando ComfyUI...');
+  _gateSpinner(t('painter.comfy_gate_starting'));
   const poll = async () => {
     try {
       const st = await apiGet('/setup/status');
@@ -1478,15 +1476,13 @@ function _gatePollUntilOnline() {
 }
 
 async function _startComfyUI() {
-  const L = locale();
   document.getElementById('comfyui-gate-btn').disabled = true;
-  _gateSpinner(L.comfy_gate_starting || 'Iniciando ComfyUI...');
+  _gateSpinner(t('painter.comfy_gate_starting'));
   try { await apiPost('/comfyui/start', {}); } catch (_) {}
   _gatePollUntilOnline();
 }
 
 async function _installComfyUI() {
-  const L = locale();
   const btn = document.getElementById('comfyui-gate-btn');
   btn.disabled = true;
   document.getElementById('comfyui-gate-spinner').style.display = 'none';
@@ -1499,20 +1495,20 @@ async function _installComfyUI() {
     if (ev.type === 'log') { _gateLogLine(ev.line); return; }
     if (ev.type === 'done') {
       es.close();
-      _gateLogLine('✓ ' + (L.comfy_gate_install_done || 'Instalación completa. Iniciando ComfyUI...'));
+      _gateLogLine('✓ ' + t('painter.comfy_gate_install_done'));
       setTimeout(_startComfyUI, 800);
       return;
     }
     if (ev.type === 'state') return;
     if (ev.type === 'error') {
       es.close();
-      _gateLogLine('✗ ' + (ev.msg || L.comfy_gate_error || 'Error — intenta de nuevo.'));
+      _gateLogLine('✗ ' + (ev.msg || t('painter.comfy_gate_error')));
       btn.disabled = false;
     }
   };
   es.onerror = () => {
     es.close();
-    _gateLogLine('✗ ' + (L.comfy_gate_error || 'Error de conexión.'));
+    _gateLogLine('✗ ' + t('painter.comfy_gate_error'));
     btn.disabled = false;
   };
 }
@@ -1531,14 +1527,14 @@ async function backgroundInit() {
   }
 
   if (status.comfyui_not_installed) {
-    _showGate('comfy_gate_not_installed_title', 'comfy_gate_not_installed_desc',
-              '⬡', 'comfy_gate_install_btn', _installComfyUI);
+    _showGate('painter.comfy_gate_not_installed_title', 'painter.comfy_gate_not_installed_desc',
+              '⬡', 'painter.comfy_gate_install_btn', _installComfyUI);
     return;
   }
 
   if (status.comfyui_offline) {
-    _showGate('comfy_gate_offline_title', 'comfy_gate_offline_desc',
-              '○', 'comfy_gate_start_btn', _startComfyUI);
+    _showGate('painter.comfy_gate_offline_title', 'painter.comfy_gate_offline_desc',
+              '○', 'painter.comfy_gate_start_btn', _startComfyUI);
     return;
   }
 

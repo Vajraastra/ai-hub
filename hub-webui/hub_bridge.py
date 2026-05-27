@@ -740,5 +740,49 @@ class HubBridge:
                 return
             time.sleep(0.5)
 
+    def stop_all_running(self, wait_secs: float = 4.0):
+        """Detiene todas las apps corriendo. Llamado al cerrar el hub."""
+        with self._state._lock:
+            procs = dict(self._state.running_apps)
+
+        if not procs:
+            return
+
+        print(f"\n  [hub] Deteniendo {len(procs)} app(s) en ejecución...")
+        for app_id, proc in procs.items():
+            if proc.poll() is not None:
+                continue
+            name = self._state.registry_apps.get(app_id, {}).get("name", app_id)
+            try:
+                pgid = os.getpgid(proc.pid)
+                os.killpg(pgid, signal.SIGINT)
+                print(f"  [hub] {name} — SIGINT enviado")
+            except (ProcessLookupError, OSError):
+                try:
+                    proc.send_signal(signal.SIGINT)
+                except Exception:
+                    pass
+
+        # Esperar que terminen, luego SIGKILL a los que queden
+        deadline = time.monotonic() + wait_secs
+        remaining = dict(procs)
+        while remaining and time.monotonic() < deadline:
+            time.sleep(0.3)
+            remaining = {aid: p for aid, p in remaining.items() if p.poll() is None}
+
+        for app_id, proc in remaining.items():
+            name = self._state.registry_apps.get(app_id, {}).get("name", app_id)
+            try:
+                pgid = os.getpgid(proc.pid)
+                os.killpg(pgid, signal.SIGKILL)
+                print(f"  [hub] {name} — SIGKILL (no respondió a SIGINT)")
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+
+        print("  [hub] Apps detenidas.")
+
 
 bridge = HubBridge()

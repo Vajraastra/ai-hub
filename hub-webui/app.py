@@ -6,6 +6,8 @@ Frontend: browser del sistema
 import os
 import sys
 import json
+import signal
+import atexit
 import threading
 import asyncio
 import socket
@@ -243,6 +245,13 @@ async def cleanup():
     return bridge.cleanup_stale()
 
 
+@api.post("/api/stop-all")
+async def stop_all():
+    """Detiene todas las apps. Llamado por el frontend al cerrar la pestaña."""
+    threading.Thread(target=bridge.stop_all_running, daemon=True).start()
+    return {"ok": True}
+
+
 # ── Herramientas externas ─────────────────────────────────────────────────────
 @api.post("/api/tools/{tool_id}/launch")
 async def launch_tool(tool_id: str):
@@ -296,9 +305,22 @@ def _run_server(port: int):
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
+def _shutdown():
+    """Limpieza al salir: detiene todas las apps gestionadas por el hub."""
+    bridge.stop_all_running()
+
+
 def main():
     port = _find_free_port()
     url  = f"http://127.0.0.1:{port}"
+
+    # Registrar limpieza en señales del SO y en salida normal
+    atexit.register(_shutdown)
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        try:
+            signal.signal(sig, lambda s, f: (_shutdown(), sys.exit(0)))
+        except (OSError, ValueError):
+            pass  # SIGHUP no existe en Windows
 
     server_thread = threading.Thread(target=_run_server, args=(port,), daemon=True)
     server_thread.start()
@@ -319,6 +341,7 @@ def main():
         server_thread.join()
     except KeyboardInterrupt:
         print("\n  Saliendo...")
+        _shutdown()
 
 
 if __name__ == "__main__":
