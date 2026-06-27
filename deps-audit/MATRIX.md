@@ -51,13 +51,48 @@ Total deps distintas: 110 · cruzadas (≥2 apps): **35** · únicas: 75 · cruz
 
 ### Vista: RESOLVED
 
-Apps con datos (1): comfyui
-Total deps distintas: 83 · cruzadas (≥2 apps): **0** · únicas: 83 · cruzadas con conflicto de versión: **0**
+Apps con datos (2): comfyui, dataset-refiner
+Total deps distintas: 110 · cruzadas (≥2 apps): **35** · únicas: 75 · cruzadas con conflicto de versión: **3**
 
 #### Cruzadas (candidatas a pool compartido)
 | Dependencia | #apps | Versiones por app | ¿Conflicto? |
 |---|---|---|---|
+| `annotated-doc` | 2 | comfyui=0.0.4, dataset-refiner=0.0.4 | ok |
+| `annotated-types` | 2 | comfyui=0.7.0, dataset-refiner=0.7.0 | ok |
+| `anyio` | 2 | comfyui=4.14.1, dataset-refiner=4.14.1 | ok |
+| `certifi` | 2 | comfyui=2026.6.17, dataset-refiner=2026.6.17 | ok |
+| `charset-normalizer` | 2 | comfyui=3.4.7, dataset-refiner=3.4.7 | ok |
+| `click` | 2 | comfyui=8.4.2, dataset-refiner=8.4.2 | ok |
+| `colorama` | 2 | comfyui=0.4.6, dataset-refiner=0.4.6 | ok |
+| `filelock` | 2 | comfyui=3.29.0, dataset-refiner=3.29.4 | ⚠️ SÍ |
+| `fsspec` | 2 | comfyui=2026.4.0, dataset-refiner=2026.6.0 | ⚠️ SÍ |
+| `h11` | 2 | comfyui=0.16.0, dataset-refiner=0.16.0 | ok |
+| `hf-xet` | 2 | comfyui=1.5.1, dataset-refiner=1.5.1 | ok |
+| `httpcore` | 2 | comfyui=1.0.9, dataset-refiner=1.0.9 | ok |
+| `httpx` | 2 | comfyui=0.28.1, dataset-refiner=0.28.1 | ok |
+| `huggingface-hub` | 2 | comfyui=1.21.0, dataset-refiner=1.21.0 | ok |
+| `idna` | 2 | comfyui=3.18, dataset-refiner=3.18 | ok |
+| `jinja2` | 2 | comfyui=3.1.6, dataset-refiner=3.1.6 | ok |
+| `markdown-it-py` | 2 | comfyui=4.2.0, dataset-refiner=4.2.0 | ok |
+| `markupsafe` | 2 | comfyui=3.0.3, dataset-refiner=3.0.3 | ok |
+| `mdurl` | 2 | comfyui=0.1.2, dataset-refiner=0.1.2 | ok |
+| `numpy` | 2 | comfyui=2.4.4, dataset-refiner=2.5.0 | ⚠️ SÍ |
+| `packaging` | 2 | comfyui=26.2, dataset-refiner=26.2 | ok |
+| `pillow` | 2 | comfyui=12.2.0, dataset-refiner=12.2.0 | ok |
+| `pydantic` | 2 | comfyui=2.13.4, dataset-refiner=2.13.4 | ok |
+| `pydantic-core` | 2 | comfyui=2.46.4, dataset-refiner=2.46.4 | ok |
+| `pygments` | 2 | comfyui=2.20.0, dataset-refiner=2.20.0 | ok |
+| `pyyaml` | 2 | comfyui=6.0.3, dataset-refiner=6.0.3 | ok |
+| `requests` | 2 | comfyui=2.34.2, dataset-refiner=2.34.2 | ok |
+| `rich` | 2 | comfyui=15.0.0, dataset-refiner=15.0.0 | ok |
+| `scipy` | 2 | comfyui=1.18.0, dataset-refiner=1.18.0 | ok |
+| `shellingham` | 2 | comfyui=1.5.4, dataset-refiner=1.5.4 | ok |
+| `tqdm` | 2 | comfyui=4.68.3, dataset-refiner=4.68.3 | ok |
+| `typer` | 2 | comfyui=0.25.1, dataset-refiner=0.25.1 | ok |
+| `typing-extensions` | 2 | comfyui=4.15.0, dataset-refiner=4.15.0 | ok |
+| `typing-inspection` | 2 | comfyui=0.4.2, dataset-refiner=0.4.2 | ok |
+| `urllib3` | 2 | comfyui=2.7.0, dataset-refiner=2.7.0 | ok |
 
-#### Únicas (83)
-`aiohappyeyeballs`(comfyui), `aiohttp`(comfyui), `aiosignal`(comfyui), `alembic`(comfyui), `annotated-doc`(comfyui), `annotated-types`(comfyui), `anyio`(comfyui), `attrs`(comfyui), `av`(comfyui), `blake3`(comfyui), `certifi`(comfyui), `charset-normalizer`(comfyui), `click`(comfyui), `colorama`(comfyui), `comfy-aimdo`(comfyui), `comfy-kitchen`(comfyui), `comfyui-embedded-docs`(comfyui), `comfyui-frontend-package`(comfyui), `comfyui-workflow-templates`(comfyui), `comfyui-workflow-templates-core`(comfyui), `comfyui-workflow-templates-media-api`(comfyui), `comfyui-workflow-templates-media-image`(comfyui), `comfyui-workflow-templates-media-other`(comfyui), `comfyui-workflow-templates-media-video`(comfyui), `einops`(comfyui), `filelock`(comfyui), `frozenlist`(comfyui), `fsspec`(comfyui), `glfw`(comfyui), `greenlet`(comfyui), `h11`(comfyui), `hf-xet`(comfyui), `httpcore`(comfyui), `httpx`(comfyui), `huggingface-hub`(comfyui), `idna`(comfyui), `jinja2`(comfyui), `kornia`(comfyui), `kornia-rs`(comfyui), `mako`(comfyui), `markdown-it-py`(comfyui), `markupsafe`(comfyui), `mdurl`(comfyui), `mpmath`(comfyui), `multidict`(comfyui), `networkx`(comfyui), `numpy`(comfyui), `packaging`(comfyui), `pillow`(comfyui), `propcache`(comfyui), `psutil`(comfyui), `pydantic`(comfyui), `pydantic-core`(comfyui), `pydantic-settings`(comfyui), `pygments`(comfyui), `pyopengl`(comfyui), `python-dotenv`(comfyui), `pyyaml`(comfyui), `regex`(comfyui), `requests`(comfyui), `rich`(comfyui), `safetensors`(comfyui), `scipy`(comfyui), `sentencepiece`(comfyui), `setuptools`(comfyui), `shellingham`(comfyui), `simpleeval`(comfyui), `spandrel`(comfyui), `sqlalchemy`(comfyui), `sympy`(comfyui), `tokenizers`(comfyui), `torch`(comfyui), `torchaudio`(comfyui), `torchsde`(comfyui), `torchvision`(comfyui), `tqdm`(comfyui), `trampoline`(comfyui), `transformers`(comfyui), `typer`(comfyui), `typing-extensions`(comfyui), `typing-inspection`(comfyui), `urllib3`(comfyui), `yarl`(comfyui)
+#### Únicas (75)
+`aiohappyeyeballs`(comfyui), `aiohttp`(comfyui), `aiosignal`(comfyui), `alembic`(comfyui), `attrs`(comfyui), `av`(comfyui), `beautifulsoup4`(dataset-refiner), `blake3`(comfyui), `brotli`(dataset-refiner), `comfy-aimdo`(comfyui), `comfy-kitchen`(comfyui), `comfyui-embedded-docs`(comfyui), `comfyui-frontend-package`(comfyui), `comfyui-workflow-templates`(comfyui), `comfyui-workflow-templates-core`(comfyui), `comfyui-workflow-templates-media-api`(comfyui), `comfyui-workflow-templates-media-image`(comfyui), `comfyui-workflow-templates-media-other`(comfyui), `comfyui-workflow-templates-media-video`(comfyui), `deep-translator`(dataset-refiner), `einops`(comfyui), `fastapi`(dataset-refiner), `frozenlist`(comfyui), `glfw`(comfyui), `gradio`(dataset-refiner), `gradio-client`(dataset-refiner), `greenlet`(comfyui), `groovy`(dataset-refiner), `hf-gradio`(dataset-refiner), `imagehash`(dataset-refiner), `kornia`(comfyui), `kornia-rs`(comfyui), `mako`(comfyui), `mpmath`(comfyui), `multidict`(comfyui), `narwhals`(dataset-refiner), `networkx`(comfyui), `opencv-python-headless`(dataset-refiner), `orjson`(dataset-refiner), `pandas`(dataset-refiner), `plotly`(dataset-refiner), `propcache`(comfyui), `psutil`(comfyui), `pydantic-settings`(comfyui), `pydub`(dataset-refiner), `pyopengl`(comfyui), `python-dateutil`(dataset-refiner), `python-dotenv`(comfyui), `python-multipart`(dataset-refiner), `pytz`(dataset-refiner), `pywavelets`(dataset-refiner), `regex`(comfyui), `safehttpx`(dataset-refiner), `safetensors`(comfyui), `semantic-version`(dataset-refiner), `sentencepiece`(comfyui), `setuptools`(comfyui), `simpleeval`(comfyui), `six`(dataset-refiner), `soupsieve`(dataset-refiner), `spandrel`(comfyui), `sqlalchemy`(comfyui), `starlette`(dataset-refiner), `sympy`(comfyui), `tokenizers`(comfyui), `tomlkit`(dataset-refiner), `torch`(comfyui), `torchaudio`(comfyui), `torchsde`(comfyui), `torchvision`(comfyui), `trampoline`(comfyui), `transformers`(comfyui), `tzdata`(dataset-refiner), `uvicorn`(dataset-refiner), `yarl`(comfyui)
 

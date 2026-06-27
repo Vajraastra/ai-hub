@@ -189,7 +189,7 @@
             "default_port": 7875,
             "auto_open_browser": true,
             "extra_args": [],
-            "post_install_script": "scripts/install_dataset_refiner.sh"
+            "post_install_py": "scripts/install_dataset_refiner.py"
         }
     },
     "utilities": {

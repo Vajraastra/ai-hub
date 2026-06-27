@@ -13,8 +13,8 @@ por app" a un **pool compartido** (sobre todo para torch + CUDA)._
 | ai-toolkit | _(pendiente)_ | | |
 | anima-standalone-trainer | _(pendiente)_ | | |
 | taggui | _(pendiente)_ | | |
-| facefusion | _(sin torch — usa onnxruntime)_ | — | — |
-| dataset-refiner | _(sin torch)_ | — | — |
+| facefusion | _(pendiente — usa onnxruntime, sin torch)_ | — | — |
+| dataset-refiner | **494 MB** | sin torch | — |
 
 **Hallazgo clave (Windows / cu13x):** el wheel de torch **incluye las DLLs
 de CUDA dentro de `site-packages/torch/`** (cuDNN, cuBLAS, etc.). No aparecen

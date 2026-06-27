@@ -449,28 +449,20 @@ def install_app(app_config: dict, apps_dir: str, cuda_env: dict,
         for key, value in cuda_env.items():
             logger.info("cuda", f"  {key} = {value}")
 
-    # Step 7: Run post_install_script if defined
-    # Script recibe toda la info de GPU/CUDA via env vars para decisiones de arquitectura.
+    # Step 7: Post-install. Preferimos un script Python cross-platform
+    # (post_install_py, ejecutado con el venv de la app, SIN bash); se mantiene
+    # post_install_script (.sh vía bash) como legacy para apps no migradas.
+    # Recibe info GPU/CUDA por env vars para decisiones de arquitectura.
+    post_py     = app_config.get("post_install_py", "")
     post_script = app_config.get("post_install_script", "")
-    if post_script:
-        script_path = post_script
-        if not os.path.isabs(script_path):
-            # Relativo al hub_dir, o al directorio de este módulo como fallback
-            base = hub_dir or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            script_path = os.path.join(base, post_script)
-
-        if not os.path.isfile(script_path):
-            result["error"] = f"post_install_script no encontrado: {script_path}"
-            return result
-
-        if logger:
-            logger.info("post_install", f"Ejecutando: {os.path.basename(script_path)}")
+    if post_py or post_script:
+        base = hub_dir or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
         env = _get_install_env()
         env["APP_DIR"]          = app_dir
         env["VENV_DIR"]         = os.path.join(app_dir, "venv")
-        env["VENV_PYTHON"]      = os.path.join(app_dir, "venv", "bin", "python")
-        env["HUB_DIR"]          = hub_dir or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        env["VENV_PYTHON"]      = get_app_python(app_dir)   # Scripts\python.exe en Windows
+        env["HUB_DIR"]          = base
         env["PLATFORM"]         = sys.platform  # linux, win32, darwin
         env["CUDA_TAG"]         = cuda_config.get("tag", "cu126")          if cuda_config else "cu126"
         env["TORCH_VERSION"]    = cuda_config.get("torch_version", "2.6.0") if cuda_config else "2.6.0"
@@ -481,11 +473,23 @@ def install_app(app_config: dict, apps_dir: str, cuda_env: dict,
         env["MAX_CUDA"]         = (gpu_info or {}).get("max_cuda", "")     or ""
         env.update(cuda_env)
 
-        os.chmod(script_path, 0o755)
+        if post_py:
+            script_path = post_py if os.path.isabs(post_py) else os.path.join(base, post_py)
+            runner = [get_app_python(app_dir), script_path]
+        else:
+            script_path = post_script if os.path.isabs(post_script) else os.path.join(base, post_script)
+            runner = ["bash", script_path]
+
+        if not os.path.isfile(script_path):
+            result["error"] = f"post_install no encontrado: {script_path}"
+            return result
+
+        if logger:
+            logger.info("post_install", f"Ejecutando: {os.path.basename(script_path)}")
+
         try:
             proc = subprocess.Popen(
-                ["bash", script_path],
-                env=env, cwd=app_dir,
+                runner, env=env, cwd=app_dir,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 bufsize=1, universal_newlines=True
             )
@@ -498,13 +502,13 @@ def install_app(app_config: dict, apps_dir: str, cuda_env: dict,
                         print(f"[post_install] {line}", flush=True)
             proc.wait()
             if proc.returncode != 0:
-                result["error"] = f"post_install_script falló (exit {proc.returncode})"
+                result["error"] = f"post_install falló (exit {proc.returncode})"
                 return result
             result["steps_completed"].append("post_install")
             if logger:
-                logger.success("post_install", "Script completado")
+                logger.success("post_install", "Completado")
         except (OSError, FileNotFoundError) as e:
-            result["error"] = f"Error ejecutando post_install_script: {e}"
+            result["error"] = f"Error ejecutando post_install: {e}"
             return result
 
     result["steps_completed"].append("configured")

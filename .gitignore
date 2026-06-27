@@ -169,7 +169,7 @@ handoff*
 bitacora*
 *-spec.md
 *_spec.md
-scripts/
+/scripts/
 apps/*
 !apps/model_vault/
 !apps/lora_merger/
