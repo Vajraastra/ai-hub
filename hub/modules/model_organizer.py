@@ -17,6 +17,8 @@ import os
 import json
 import logging
 
+from modules.storage_manager import _is_dir_link  # detecta junctions Windows (islink no)
+
 log = logging.getLogger(__name__)
 
 # Patrones de nombre de archivo que el plugin Krita busca por categoría.
@@ -211,7 +213,7 @@ def get_model_summary(models_dir: str) -> list[dict]:
         return summary
 
     for entry in sorted(os.scandir(models_dir), key=lambda e: e.name.lower()):
-        if entry.is_symlink() or not entry.is_dir():
+        if _is_dir_link(entry.path) or not entry.is_dir():
             continue
         if entry.name not in canonical_names:
             continue
@@ -279,7 +281,7 @@ def check_models_path(path: str) -> dict:
             if entry.is_file():
                 if os.path.splitext(entry.name)[1].lower() in MODEL_EXTENSIONS:
                     orphans.append(entry.path)
-            elif entry.is_dir() and not entry.is_symlink():
+            elif entry.is_dir() and not _is_dir_link(entry.path):
                 if entry.name not in canonical_set:
                     for root, _, files in os.walk(entry.path):
                         for f in files:
@@ -329,7 +331,7 @@ def move_orphans_to_inbox(models_dir: str) -> dict:
                 if os.path.splitext(entry.name)[1].lower() in MODEL_EXTENSIONS:
                     stem = os.path.splitext(entry.name)[0]
                     to_move.append((entry.path, stem, models_dir))
-            elif entry.is_dir() and not entry.is_symlink():
+            elif entry.is_dir() and not _is_dir_link(entry.path):
                 if entry.name not in canonical_set:
                     for root, _, files in os.walk(entry.path):
                         for f in files:

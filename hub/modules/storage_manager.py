@@ -231,7 +231,7 @@ def build_app_model_args(app_config: dict, models_dir: str, app_dir: str = "") -
             found_folders = []
             try:
                 for entry in os.scandir(models_dir):
-                    if entry.is_symlink():
+                    if _is_dir_link(entry.path):  # is_symlink() no detecta junctions Windows
                         continue
                     if not entry.is_dir():
                         continue
@@ -306,8 +306,8 @@ def build_app_model_args(app_config: dict, models_dir: str, app_dir: str = "") -
 
     for subdir_name in subdirs:
         subdir_path = os.path.join(models_dir, subdir_name)
-        if os.path.islink(subdir_path):
-            continue  # skip symlinks — only use canonical dirs
+        if _is_dir_link(subdir_path):  # islink() no detecta junctions Windows
+            continue  # skip symlinks/junctions — only use canonical dirs
         if not os.path.isdir(subdir_path):
             continue
 
@@ -411,8 +411,8 @@ def scan_model_dirs(models_dir: str) -> list:
 
     for subdir_name in subdirs:
         subdir_path = os.path.join(models_dir, subdir_name)
-        if os.path.islink(subdir_path):
-            continue  # skip symlinks — only canonical dirs
+        if _is_dir_link(subdir_path):  # islink() no detecta junctions Windows
+            continue  # skip symlinks/junctions — only canonical dirs
         if not os.path.isdir(subdir_path):
             continue
 
