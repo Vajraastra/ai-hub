@@ -14,16 +14,23 @@ import shutil
 
 def _get_uv_path() -> str:
     """Get the path to uv binary (portable or system)."""
-    # Check for portable uv from run.sh
+    # Check for portable uv from run.sh/run.bat
     uv_path = os.environ.get("AI_HUB_UV_PATH", "")
     if uv_path and os.path.isfile(uv_path):
         return uv_path
-    # Check hub/tools/uv relative to this module
     hub_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if os.name == "nt":
+        # En Windows el binario es uv.exe. OJO: hub/tools/uv (sin extensión) es
+        # el ELF Linux arrastrado del disco externo y NO es ejecutable aquí.
+        for cand in (os.path.join(hub_dir, "tools", "win", "uv.exe"),
+                     os.path.join(hub_dir, "tools", "uv.exe")):
+            if os.path.isfile(cand):
+                return cand
+        return "uv"  # del PATH
+    # POSIX: uv portable sin extensión
     tools_uv = os.path.join(hub_dir, "tools", "uv")
     if os.path.isfile(tools_uv):
         return tools_uv
-    # Fallback to system uv
     return "uv"
 
 
@@ -37,6 +44,9 @@ def _get_install_env() -> dict:
     env["UV_CACHE_DIR"] = os.path.join(hub_dir, ".cache", "uv")
     env["UV_LINK_MODE"] = "hardlink"
     env["UV_PYTHON_INSTALL_DIR"] = os.path.join(hub_dir, "tools", "python")
+    # No engancharse a Pythons PEP 514 de otros proyectos: usar solo los
+    # managed por uv (descargados a UV_PYTHON_INSTALL_DIR).
+    env["UV_PYTHON_PREFERENCE"] = "only-managed"
     return env
 
 
@@ -115,11 +125,20 @@ def create_app_venv(app_dir: str, python_version: str, use_uv: bool = True,
                     logger=None) -> bool:
     """Create an isolated venv for the app with the specified Python version."""
     venv_dir = os.path.join(app_dir, "venv")
+    venv_python = get_app_python(app_dir)
 
-    if os.path.exists(venv_dir):
+    # Sólo reutilizar el venv si tiene el python EJECUTABLE de ESTA plataforma.
+    # Un dir "venv" puede ser un venv de otro SO arrastrado (p. ej. ELF Linux
+    # con bin/ en vez de Scripts/python.exe) — inservible en Windows.
+    if os.path.isfile(venv_python):
         if logger:
             logger.info("venv", f"Venv already exists at {venv_dir}")
         return True
+    if os.path.isdir(venv_dir):
+        if logger:
+            logger.warn("venv", f"Venv inválido (sin {os.path.basename(venv_python)}) — recreando...")
+        import shutil
+        shutil.rmtree(venv_dir, ignore_errors=True)
 
     if logger:
         logger.info("venv", f"Creating venv with Python {python_version}...")

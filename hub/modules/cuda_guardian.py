@@ -156,7 +156,9 @@ def verify_app_cuda(python_path: str, expected_tag: str) -> dict:
     try:
         proc = subprocess.run(
             [python_path, "-c", check_script],
-            capture_output=True, text=True, timeout=30
+            # El primer import de torch+CUDA (cu13x en Windows) carga muchas DLLs
+            # y puede tardar bastante más de 30s. 180s evita falsos negativos.
+            capture_output=True, text=True, timeout=180
         )
 
         if proc.returncode != 0:

@@ -135,6 +135,7 @@ def load_declared(app: str, rel_files) -> dict:
 
 # ── pip freeze de un venv ───────────────────────────────────────────────────
 def snapshot(app: str, venv_python: str):
+    venv_python = os.path.abspath(venv_python)   # CreateProcess Windows no acepta rel + "/"
     if not os.path.isfile(venv_python):
         sys.exit(f"No existe el python del venv: {venv_python}")
     out = subprocess.run([venv_python, "-m", "pip", "freeze"],

@@ -83,8 +83,9 @@ def _get_cuda_version_from_smi() -> str | None:
         if result.returncode != 0:
             return None
 
-        # Parse "CUDA Version: 13.1" from nvidia-smi output
-        match = re.search(r"CUDA Version:\s*(\d+\.\d+)", result.stdout)
+        # Parse "CUDA Version: 13.1" del header de nvidia-smi. Los drivers
+        # nuevos (Blackwell, 6xx) lo renombraron a "CUDA UMD Version: 13.3".
+        match = re.search(r"CUDA(?: UMD)? Version:\s*(\d+\.\d+)", result.stdout)
         if match:
             return match.group(1)
         return None
