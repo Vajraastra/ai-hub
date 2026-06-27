@@ -51,80 +51,101 @@ Total deps distintas: 110 · cruzadas (≥2 apps): **35** · únicas: 75 · cruz
 
 ### Vista: RESOLVED
 
-Apps con datos (4): comfyui, dataset-refiner, facefusion, taggui
-Total deps distintas: 135 · cruzadas (≥2 apps): **67** · únicas: 68 · cruzadas con conflicto de versión: **17**
+Apps con datos (5): ai-toolkit, comfyui, dataset-refiner, facefusion, taggui
+Total deps distintas: 214 · cruzadas (≥2 apps): **88** · únicas: 126 · cruzadas con conflicto de versión: **23**
 
 #### Cruzadas (candidatas a pool compartido)
 | Dependencia | #apps | Versiones por app | ¿Conflicto? |
 |---|---|---|---|
-| `certifi` | 4 | comfyui=2026.6.17, dataset-refiner=2026.6.17, facefusion=2026.6.17, taggui=2026.6.17 | ok |
-| `charset-normalizer` | 4 | comfyui=3.4.7, dataset-refiner=3.4.7, facefusion=3.4.7, taggui=3.4.7 | ok |
-| `colorama` | 4 | comfyui=0.4.6, dataset-refiner=0.4.6, facefusion=0.4.6, taggui=0.4.6 | ok |
-| `filelock` | 4 | comfyui=3.29.0, dataset-refiner=3.29.4, facefusion=3.29.4, taggui=3.29.0 | ⚠️ SÍ |
-| `fsspec` | 4 | comfyui=2026.4.0, dataset-refiner=2026.6.0, facefusion=2026.6.0, taggui=2026.4.0 | ⚠️ SÍ |
-| `huggingface-hub` | 4 | comfyui=1.21.0, dataset-refiner=1.21.0, facefusion=0.36.2, taggui=0.35.3 | ⚠️ SÍ |
-| `idna` | 4 | comfyui=3.18, dataset-refiner=3.18, facefusion=3.18, taggui=3.18 | ok |
-| `jinja2` | 4 | comfyui=3.1.6, dataset-refiner=3.1.6, facefusion=3.1.6, taggui=3.1.6 | ok |
-| `markupsafe` | 4 | comfyui=3.0.3, dataset-refiner=3.0.3, facefusion=3.0.3, taggui=3.0.3 | ok |
-| `numpy` | 4 | comfyui=2.4.4, dataset-refiner=2.5.0, facefusion=2.2.1, taggui=2.4.4 | ⚠️ SÍ |
-| `packaging` | 4 | comfyui=26.2, dataset-refiner=26.2, facefusion=26.2, taggui=26.2 | ok |
-| `pillow` | 4 | comfyui=12.2.0, dataset-refiner=12.2.0, facefusion=11.3.0, taggui=11.3.0 | ⚠️ SÍ |
-| `pyyaml` | 4 | comfyui=6.0.3, dataset-refiner=6.0.3, facefusion=6.0.3, taggui=6.0.3 | ok |
-| `requests` | 4 | comfyui=2.34.2, dataset-refiner=2.34.2, facefusion=2.34.2, taggui=2.34.2 | ok |
-| `tqdm` | 4 | comfyui=4.68.3, dataset-refiner=4.68.3, facefusion=4.67.3, taggui=4.68.3 | ⚠️ SÍ |
-| `typing-extensions` | 4 | comfyui=4.15.0, dataset-refiner=4.15.0, facefusion=4.15.0, taggui=4.15.0 | ok |
-| `urllib3` | 4 | comfyui=2.7.0, dataset-refiner=2.7.0, facefusion=2.7.0, taggui=2.7.0 | ok |
-| `annotated-doc` | 3 | comfyui=0.0.4, dataset-refiner=0.0.4, facefusion=0.0.4 | ok |
-| `annotated-types` | 3 | comfyui=0.7.0, dataset-refiner=0.7.0, facefusion=0.7.0 | ok |
-| `anyio` | 3 | comfyui=4.14.1, dataset-refiner=4.14.1, facefusion=4.14.1 | ok |
-| `click` | 3 | comfyui=8.4.2, dataset-refiner=8.4.2, facefusion=8.4.2 | ok |
-| `h11` | 3 | comfyui=0.16.0, dataset-refiner=0.16.0, facefusion=0.16.0 | ok |
-| `httpcore` | 3 | comfyui=1.0.9, dataset-refiner=1.0.9, facefusion=1.0.9 | ok |
-| `httpx` | 3 | comfyui=0.28.1, dataset-refiner=0.28.1, facefusion=0.28.1 | ok |
-| `markdown-it-py` | 3 | comfyui=4.2.0, dataset-refiner=4.2.0, facefusion=4.2.0 | ok |
-| `mdurl` | 3 | comfyui=0.1.2, dataset-refiner=0.1.2, facefusion=0.1.2 | ok |
-| `pydantic` | 3 | comfyui=2.13.4, dataset-refiner=2.13.4, facefusion=2.11.10 | ⚠️ SÍ |
-| `pydantic-core` | 3 | comfyui=2.46.4, dataset-refiner=2.46.4, facefusion=2.33.2 | ⚠️ SÍ |
-| `pygments` | 3 | comfyui=2.20.0, dataset-refiner=2.20.0, facefusion=2.20.0 | ok |
-| `rich` | 3 | comfyui=15.0.0, dataset-refiner=15.0.0, facefusion=15.0.0 | ok |
-| `scipy` | 3 | comfyui=1.18.0, dataset-refiner=1.18.0, facefusion=1.17.0 | ⚠️ SÍ |
-| `shellingham` | 3 | comfyui=1.5.4, dataset-refiner=1.5.4, facefusion=1.5.4 | ok |
-| `typer` | 3 | comfyui=0.25.1, dataset-refiner=0.25.1, facefusion=0.26.8 | ⚠️ SÍ |
-| `typing-inspection` | 3 | comfyui=0.4.2, dataset-refiner=0.4.2, facefusion=0.4.2 | ok |
-| `brotli` | 2 | dataset-refiner=1.2.0, facefusion=1.2.0 | ok |
-| `fastapi` | 2 | dataset-refiner=0.138.1, facefusion=0.138.1 | ok |
+| `certifi` | 5 | ai-toolkit=2026.6.17, comfyui=2026.6.17, dataset-refiner=2026.6.17, facefusion=2026.6.17, taggui=2026.6.17 | ok |
+| `charset-normalizer` | 5 | ai-toolkit=3.4.7, comfyui=3.4.7, dataset-refiner=3.4.7, facefusion=3.4.7, taggui=3.4.7 | ok |
+| `colorama` | 5 | ai-toolkit=0.4.6, comfyui=0.4.6, dataset-refiner=0.4.6, facefusion=0.4.6, taggui=0.4.6 | ok |
+| `filelock` | 5 | ai-toolkit=3.29.0, comfyui=3.29.0, dataset-refiner=3.29.4, facefusion=3.29.4, taggui=3.29.0 | ⚠️ SÍ |
+| `fsspec` | 5 | ai-toolkit=2026.4.0, comfyui=2026.4.0, dataset-refiner=2026.6.0, facefusion=2026.6.0, taggui=2026.4.0 | ⚠️ SÍ |
+| `huggingface-hub` | 5 | ai-toolkit=1.10.1, comfyui=1.21.0, dataset-refiner=1.21.0, facefusion=0.36.2, taggui=0.35.3 | ⚠️ SÍ |
+| `idna` | 5 | ai-toolkit=3.18, comfyui=3.18, dataset-refiner=3.18, facefusion=3.18, taggui=3.18 | ok |
+| `jinja2` | 5 | ai-toolkit=3.1.6, comfyui=3.1.6, dataset-refiner=3.1.6, facefusion=3.1.6, taggui=3.1.6 | ok |
+| `markupsafe` | 5 | ai-toolkit=3.0.3, comfyui=3.0.3, dataset-refiner=3.0.3, facefusion=3.0.3, taggui=3.0.3 | ok |
+| `numpy` | 5 | ai-toolkit=2.4.4, comfyui=2.4.4, dataset-refiner=2.5.0, facefusion=2.2.1, taggui=2.4.4 | ⚠️ SÍ |
+| `packaging` | 5 | ai-toolkit=26.2, comfyui=26.2, dataset-refiner=26.2, facefusion=26.2, taggui=26.2 | ok |
+| `pillow` | 5 | ai-toolkit=11.3.0, comfyui=12.2.0, dataset-refiner=12.2.0, facefusion=11.3.0, taggui=11.3.0 | ⚠️ SÍ |
+| `pyyaml` | 5 | ai-toolkit=6.0.3, comfyui=6.0.3, dataset-refiner=6.0.3, facefusion=6.0.3, taggui=6.0.3 | ok |
+| `requests` | 5 | ai-toolkit=2.34.2, comfyui=2.34.2, dataset-refiner=2.34.2, facefusion=2.34.2, taggui=2.34.2 | ok |
+| `tqdm` | 5 | ai-toolkit=4.68.3, comfyui=4.68.3, dataset-refiner=4.68.3, facefusion=4.67.3, taggui=4.68.3 | ⚠️ SÍ |
+| `typing-extensions` | 5 | ai-toolkit=4.15.0, comfyui=4.15.0, dataset-refiner=4.15.0, facefusion=4.15.0, taggui=4.15.0 | ok |
+| `urllib3` | 5 | ai-toolkit=2.7.0, comfyui=2.7.0, dataset-refiner=2.7.0, facefusion=2.7.0, taggui=2.7.0 | ok |
+| `annotated-doc` | 4 | ai-toolkit=0.0.4, comfyui=0.0.4, dataset-refiner=0.0.4, facefusion=0.0.4 | ok |
+| `annotated-types` | 4 | ai-toolkit=0.7.0, comfyui=0.7.0, dataset-refiner=0.7.0, facefusion=0.7.0 | ok |
+| `anyio` | 4 | ai-toolkit=4.14.1, comfyui=4.14.1, dataset-refiner=4.14.1, facefusion=4.14.1 | ok |
+| `click` | 4 | ai-toolkit=8.4.2, comfyui=8.4.2, dataset-refiner=8.4.2, facefusion=8.4.2 | ok |
+| `h11` | 4 | ai-toolkit=0.16.0, comfyui=0.16.0, dataset-refiner=0.16.0, facefusion=0.16.0 | ok |
+| `httpcore` | 4 | ai-toolkit=1.0.9, comfyui=1.0.9, dataset-refiner=1.0.9, facefusion=1.0.9 | ok |
+| `httpx` | 4 | ai-toolkit=0.28.1, comfyui=0.28.1, dataset-refiner=0.28.1, facefusion=0.28.1 | ok |
+| `markdown-it-py` | 4 | ai-toolkit=4.2.0, comfyui=4.2.0, dataset-refiner=4.2.0, facefusion=4.2.0 | ok |
+| `mdurl` | 4 | ai-toolkit=0.1.2, comfyui=0.1.2, dataset-refiner=0.1.2, facefusion=0.1.2 | ok |
+| `pydantic` | 4 | ai-toolkit=2.12.3, comfyui=2.13.4, dataset-refiner=2.13.4, facefusion=2.11.10 | ⚠️ SÍ |
+| `pydantic-core` | 4 | ai-toolkit=2.41.4, comfyui=2.46.4, dataset-refiner=2.46.4, facefusion=2.33.2 | ⚠️ SÍ |
+| `pygments` | 4 | ai-toolkit=2.20.0, comfyui=2.20.0, dataset-refiner=2.20.0, facefusion=2.20.0 | ok |
+| `rich` | 4 | ai-toolkit=15.0.0, comfyui=15.0.0, dataset-refiner=15.0.0, facefusion=15.0.0 | ok |
+| `scipy` | 4 | ai-toolkit=1.18.0, comfyui=1.18.0, dataset-refiner=1.18.0, facefusion=1.17.0 | ⚠️ SÍ |
+| `shellingham` | 4 | ai-toolkit=1.5.4, comfyui=1.5.4, dataset-refiner=1.5.4, facefusion=1.5.4 | ok |
+| `typer` | 4 | ai-toolkit=0.26.8, comfyui=0.25.1, dataset-refiner=0.25.1, facefusion=0.26.8 | ⚠️ SÍ |
+| `typing-inspection` | 4 | ai-toolkit=0.4.2, comfyui=0.4.2, dataset-refiner=0.4.2, facefusion=0.4.2 | ok |
+| `brotli` | 3 | ai-toolkit=1.2.0, dataset-refiner=1.2.0, facefusion=1.2.0 | ok |
+| `fastapi` | 3 | ai-toolkit=0.138.1, dataset-refiner=0.138.1, facefusion=0.138.1 | ok |
+| `gradio` | 3 | ai-toolkit=5.50.0, dataset-refiner=6.19.0, facefusion=5.44.1 | ⚠️ SÍ |
+| `gradio-client` | 3 | ai-toolkit=1.14.0, dataset-refiner=2.5.0, facefusion=1.12.1 | ⚠️ SÍ |
+| `groovy` | 3 | ai-toolkit=0.1.2, dataset-refiner=0.1.2, facefusion=0.1.2 | ok |
+| `hf-xet` | 3 | ai-toolkit=1.5.1, comfyui=1.5.1, dataset-refiner=1.5.1 | ok |
+| `mpmath` | 3 | ai-toolkit=1.3.0, comfyui=1.3.0, taggui=1.3.0 | ok |
+| `networkx` | 3 | ai-toolkit=3.6.1, comfyui=3.6.1, taggui=3.6.1 | ok |
+| `orjson` | 3 | ai-toolkit=3.11.9, dataset-refiner=3.11.9, facefusion=3.11.9 | ok |
+| `pandas` | 3 | ai-toolkit=2.3.3, dataset-refiner=3.0.3, facefusion=2.3.3 | ⚠️ SÍ |
+| `protobuf` | 3 | ai-toolkit=7.35.1, facefusion=7.35.1, taggui=7.35.1 | ok |
+| `psutil` | 3 | ai-toolkit=7.2.2, comfyui=7.2.2, taggui=7.2.2 | ok |
+| `pydub` | 3 | ai-toolkit=0.25.1, dataset-refiner=0.25.1, facefusion=0.25.1 | ok |
+| `python-dateutil` | 3 | ai-toolkit=2.9.0.post0, dataset-refiner=2.9.0.post0, facefusion=2.9.0.post0 | ok |
+| `python-multipart` | 3 | ai-toolkit=0.0.32, dataset-refiner=0.0.32, facefusion=0.0.32 | ok |
+| `pytz` | 3 | ai-toolkit=2026.2, dataset-refiner=2026.2, facefusion=2026.2 | ok |
+| `regex` | 3 | ai-toolkit=2026.5.9, comfyui=2026.5.9, taggui=2026.5.9 | ok |
+| `safehttpx` | 3 | ai-toolkit=0.1.7, dataset-refiner=0.1.7, facefusion=0.1.7 | ok |
+| `safetensors` | 3 | ai-toolkit=0.8.0, comfyui=0.8.0, taggui=0.8.0 | ok |
+| `semantic-version` | 3 | ai-toolkit=2.10.0, dataset-refiner=2.10.0, facefusion=2.10.0 | ok |
+| `setuptools` | 3 | ai-toolkit=69.5.1, comfyui=70.2.0, taggui=70.2.0 | ⚠️ SÍ |
+| `six` | 3 | ai-toolkit=1.17.0, dataset-refiner=1.17.0, facefusion=1.17.0 | ok |
+| `starlette` | 3 | ai-toolkit=0.52.1, dataset-refiner=1.3.1, facefusion=0.52.1 | ⚠️ SÍ |
+| `sympy` | 3 | ai-toolkit=1.14.0, comfyui=1.14.0, taggui=1.14.0 | ok |
+| `tokenizers` | 3 | ai-toolkit=0.22.2, comfyui=0.22.2, taggui=0.21.4 | ⚠️ SÍ |
+| `tomlkit` | 3 | ai-toolkit=0.13.3, dataset-refiner=0.14.0, facefusion=0.13.3 | ⚠️ SÍ |
+| `torch` | 3 | ai-toolkit=2.10.0+cu130, comfyui=2.10.0+cu130, taggui=2.10.0+cu130 | ok |
+| `torchaudio` | 3 | ai-toolkit=2.10.0+cu130, comfyui=2.10.0+cu130, taggui=2.10.0+cu130 | ok |
+| `torchvision` | 3 | ai-toolkit=0.25.0+cu130, comfyui=0.25.0+cu130, taggui=0.25.0+cu130 | ok |
+| `transformers` | 3 | ai-toolkit=5.5.3, comfyui=5.12.1, taggui=4.48.3 | ⚠️ SÍ |
+| `tzdata` | 3 | ai-toolkit=2026.2, dataset-refiner=2026.2, facefusion=2026.2 | ok |
+| `uvicorn` | 3 | ai-toolkit=0.49.0, dataset-refiner=0.49.0, facefusion=0.49.0 | ok |
+| `accelerate` | 2 | ai-toolkit=1.14.0, taggui=1.10.1 | ⚠️ SÍ |
+| `aiofiles` | 2 | ai-toolkit=24.1.0, facefusion=24.1.0 | ok |
+| `attrs` | 2 | ai-toolkit=26.1.0, comfyui=26.1.0 | ok |
+| `av` | 2 | ai-toolkit=16.0.1, comfyui=17.1.0 | ⚠️ SÍ |
+| `bitsandbytes` | 2 | ai-toolkit=0.49.2, taggui=0.48.1 | ⚠️ SÍ |
+| `einops` | 2 | ai-toolkit=0.8.2, comfyui=0.8.2 | ok |
+| `ffmpy` | 2 | ai-toolkit=1.0.0, facefusion=1.0.0 | ok |
 | `flatbuffers` | 2 | facefusion=25.12.19, taggui=25.12.19 | ok |
-| `gradio` | 2 | dataset-refiner=6.19.0, facefusion=5.44.1 | ⚠️ SÍ |
-| `gradio-client` | 2 | dataset-refiner=2.5.0, facefusion=1.12.1 | ⚠️ SÍ |
-| `groovy` | 2 | dataset-refiner=0.1.2, facefusion=0.1.2 | ok |
-| `hf-xet` | 2 | comfyui=1.5.1, dataset-refiner=1.5.1 | ok |
-| `mpmath` | 2 | comfyui=1.3.0, taggui=1.3.0 | ok |
-| `networkx` | 2 | comfyui=3.6.1, taggui=3.6.1 | ok |
-| `orjson` | 2 | dataset-refiner=3.11.9, facefusion=3.11.9 | ok |
-| `pandas` | 2 | dataset-refiner=3.0.3, facefusion=2.3.3 | ⚠️ SÍ |
-| `protobuf` | 2 | facefusion=7.35.1, taggui=7.35.1 | ok |
-| `psutil` | 2 | comfyui=7.2.2, taggui=7.2.2 | ok |
-| `pydub` | 2 | dataset-refiner=0.25.1, facefusion=0.25.1 | ok |
-| `python-dateutil` | 2 | dataset-refiner=2.9.0.post0, facefusion=2.9.0.post0 | ok |
-| `python-multipart` | 2 | dataset-refiner=0.0.32, facefusion=0.0.32 | ok |
-| `pytz` | 2 | dataset-refiner=2026.2, facefusion=2026.2 | ok |
-| `regex` | 2 | comfyui=2026.5.9, taggui=2026.5.9 | ok |
-| `safehttpx` | 2 | dataset-refiner=0.1.7, facefusion=0.1.7 | ok |
-| `safetensors` | 2 | comfyui=0.8.0, taggui=0.8.0 | ok |
-| `semantic-version` | 2 | dataset-refiner=2.10.0, facefusion=2.10.0 | ok |
-| `setuptools` | 2 | comfyui=70.2.0, taggui=70.2.0 | ok |
-| `six` | 2 | dataset-refiner=1.17.0, facefusion=1.17.0 | ok |
-| `starlette` | 2 | dataset-refiner=1.3.1, facefusion=0.52.1 | ⚠️ SÍ |
-| `sympy` | 2 | comfyui=1.14.0, taggui=1.14.0 | ok |
-| `tokenizers` | 2 | comfyui=0.22.2, taggui=0.21.4 | ⚠️ SÍ |
-| `tomlkit` | 2 | dataset-refiner=0.14.0, facefusion=0.13.3 | ⚠️ SÍ |
-| `torch` | 2 | comfyui=2.10.0+cu130, taggui=2.10.0+cu130 | ok |
-| `torchaudio` | 2 | comfyui=2.10.0+cu130, taggui=2.10.0+cu130 | ok |
-| `torchvision` | 2 | comfyui=0.25.0+cu130, taggui=0.25.0+cu130 | ok |
-| `transformers` | 2 | comfyui=5.12.1, taggui=4.48.3 | ⚠️ SÍ |
-| `tzdata` | 2 | dataset-refiner=2026.2, facefusion=2026.2 | ok |
-| `uvicorn` | 2 | dataset-refiner=0.49.0, facefusion=0.49.0 | ok |
+| `kornia` | 2 | ai-toolkit=0.8.3, comfyui=0.8.3 | ok |
+| `kornia-rs` | 2 | ai-toolkit=0.1.14, comfyui=0.1.14 | ok |
+| `narwhals` | 2 | ai-toolkit=2.22.1, dataset-refiner=2.22.1 | ok |
+| `opencv-python` | 2 | ai-toolkit=4.13.0.92, facefusion=4.13.0.92 | ok |
+| `opencv-python-headless` | 2 | ai-toolkit=4.13.0.92, dataset-refiner=4.13.0.92 | ok |
+| `pyparsing` | 2 | ai-toolkit=3.3.2, taggui=3.2.5 | ⚠️ SÍ |
+| `python-dotenv` | 2 | ai-toolkit=1.2.2, comfyui=1.2.2 | ok |
+| `pywavelets` | 2 | ai-toolkit=1.9.0, dataset-refiner=1.9.0 | ok |
+| `ruff` | 2 | ai-toolkit=0.15.20, facefusion=0.15.20 | ok |
+| `sentencepiece` | 2 | ai-toolkit=0.2.1, comfyui=0.2.1 | ok |
+| `timm` | 2 | ai-toolkit=1.0.22, taggui=1.0.20 | ⚠️ SÍ |
+| `torchsde` | 2 | ai-toolkit=0.2.6, comfyui=0.2.6 | ok |
+| `trampoline` | 2 | ai-toolkit=0.1.2, comfyui=0.1.2 | ok |
+| `websockets` | 2 | ai-toolkit=15.0.1, facefusion=15.0.1 | ok |
 
-#### Únicas (68)
-`accelerate`(taggui), `aiofiles`(facefusion), `aiohappyeyeballs`(comfyui), `aiohttp`(comfyui), `aiosignal`(comfyui), `alembic`(comfyui), `attrs`(comfyui), `av`(comfyui), `beautifulsoup4`(dataset-refiner), `bitsandbytes`(taggui), `blake3`(comfyui), `coloredlogs`(taggui), `comfy-aimdo`(comfyui), `comfy-kitchen`(comfyui), `comfyui-embedded-docs`(comfyui), `comfyui-frontend-package`(comfyui), `comfyui-workflow-templates`(comfyui), `comfyui-workflow-templates-core`(comfyui), `comfyui-workflow-templates-media-api`(comfyui), `comfyui-workflow-templates-media-image`(comfyui), `comfyui-workflow-templates-media-other`(comfyui), `comfyui-workflow-templates-media-video`(comfyui), `deep-translator`(dataset-refiner), `einops`(comfyui), `exifread`(taggui), `ffmpy`(facefusion), `frozenlist`(comfyui), `glfw`(comfyui), `gradio-rangeslider`(facefusion), `greenlet`(comfyui), `hf-gradio`(dataset-refiner), `humanfriendly`(taggui), `imagehash`(dataset-refiner), `imagesize`(taggui), `kornia`(comfyui), `kornia-rs`(comfyui), `mako`(comfyui), `ml-dtypes`(facefusion), `multidict`(comfyui), `narwhals`(dataset-refiner), `onnx`(facefusion), `onnxruntime`(taggui), `onnxruntime-gpu`(facefusion), `opencv-python`(facefusion), `opencv-python-headless`(dataset-refiner), `plotly`(dataset-refiner), `propcache`(comfyui), `pydantic-settings`(comfyui), `pyopengl`(comfyui), `pyparsing`(taggui), `pyreadline3`(taggui), `pyside6`(taggui), `pyside6-addons`(taggui), `pyside6-essentials`(taggui), `python-dotenv`(comfyui), `pywavelets`(dataset-refiner), `ruff`(facefusion), `sentencepiece`(comfyui), `shiboken6`(taggui), `simpleeval`(comfyui), `soupsieve`(dataset-refiner), `spandrel`(comfyui), `sqlalchemy`(comfyui), `timm`(taggui), `torchsde`(comfyui), `trampoline`(comfyui), `websockets`(facefusion), `yarl`(comfyui)
+#### Únicas (126)
+`absl-py`(ai-toolkit), `aiohappyeyeballs`(comfyui), `aiohttp`(comfyui), `aiosignal`(comfyui), `albucore`(ai-toolkit), `albumentations`(ai-toolkit), `alembic`(comfyui), `antlr4-python3-runtime`(ai-toolkit), `audioop-lts`(ai-toolkit), `audioread`(ai-toolkit), `beautifulsoup4`(dataset-refiner), `blake3`(comfyui), `cffi`(ai-toolkit), `clean-fid`(ai-toolkit), `clip-anytorch`(ai-toolkit), `coloredlogs`(taggui), `comfy-aimdo`(comfyui), `comfy-kitchen`(comfyui), `comfyui-embedded-docs`(comfyui), `comfyui-frontend-package`(comfyui), `comfyui-workflow-templates`(comfyui), `comfyui-workflow-templates-core`(comfyui), `comfyui-workflow-templates-media-api`(comfyui), `comfyui-workflow-templates-media-image`(comfyui), `comfyui-workflow-templates-media-other`(comfyui), `comfyui-workflow-templates-media-video`(comfyui), `contourpy`(ai-toolkit), `controlnet-aux`(ai-toolkit), `cycler`(ai-toolkit), `dctorch`(ai-toolkit), `decorator`(ai-toolkit), `deep-translator`(dataset-refiner), `diffusers`(ai-toolkit), `eval-type-backport`(ai-toolkit), `exifread`(taggui), `flatten-json`(ai-toolkit), `fonttools`(ai-toolkit), `frozenlist`(comfyui), `ftfy`(ai-toolkit), `gitdb`(ai-toolkit), `gitpython`(ai-toolkit), `glfw`(comfyui), `gradio-rangeslider`(facefusion), `greenlet`(comfyui), `grpcio`(ai-toolkit), `hf-gradio`(dataset-refiner), `hf-transfer`(ai-toolkit), `humanfriendly`(taggui), `imagehash`(dataset-refiner), `imageio`(ai-toolkit), `imagesize`(taggui), `importlib-metadata`(ai-toolkit), `invisible-watermark`(ai-toolkit), `joblib`(ai-toolkit), `jsonmerge`(ai-toolkit), `jsonschema`(ai-toolkit), `jsonschema-specifications`(ai-toolkit), `k-diffusion`(ai-toolkit), `kiwisolver`(ai-toolkit), `lazy-loader`(ai-toolkit), `librosa`(ai-toolkit), `llvmlite`(ai-toolkit), `lpips`(ai-toolkit), `lycoris-lora`(ai-toolkit), `mako`(comfyui), `markdown`(ai-toolkit), `matplotlib`(ai-toolkit), `ml-dtypes`(facefusion), `msgpack`(ai-toolkit), `multidict`(comfyui), `mutagen`(ai-toolkit), `ninja`(ai-toolkit), `numba`(ai-toolkit), `omegaconf`(ai-toolkit), `onnx`(facefusion), `onnxruntime`(taggui), `onnxruntime-gpu`(facefusion), `open-clip-torch`(ai-toolkit), `optimum-quanto`(ai-toolkit), `oyaml`(ai-toolkit), `peft`(ai-toolkit), `platformdirs`(ai-toolkit), `plotly`(dataset-refiner), `pooch`(ai-toolkit), `prodigyopt`(ai-toolkit), `propcache`(comfyui), `pycparser`(ai-toolkit), `pydantic-settings`(comfyui), `pyopengl`(comfyui), `pyreadline3`(taggui), `pyside6`(taggui), `pyside6-addons`(taggui), `pyside6-essentials`(taggui), `python-slugify`(ai-toolkit), `pytorch-fid`(ai-toolkit), `pytorch-wavelets`(ai-toolkit), `referencing`(ai-toolkit), `rpds-py`(ai-toolkit), `scikit-image`(ai-toolkit), `scikit-learn`(ai-toolkit), `sentry-sdk`(ai-toolkit), `shiboken6`(taggui), `simpleeval`(comfyui), `smmap`(ai-toolkit), `soundfile`(ai-toolkit), `soupsieve`(dataset-refiner), `soxr`(ai-toolkit), `spandrel`(comfyui), `sqlalchemy`(comfyui), `standard-aifc`(ai-toolkit), `standard-chunk`(ai-toolkit), `standard-sunau`(ai-toolkit), `tensorboard`(ai-toolkit), `tensorboard-data-server`(ai-toolkit), `text-unidecode`(ai-toolkit), `threadpoolctl`(ai-toolkit), `tifffile`(ai-toolkit), `toml`(ai-toolkit), `torchao`(ai-toolkit), `torchcodec`(ai-toolkit), `torchdiffeq`(ai-toolkit), `wandb`(ai-toolkit), `wcwidth`(ai-toolkit), `werkzeug`(ai-toolkit), `yarl`(comfyui), `zipp`(ai-toolkit)
 

@@ -10,11 +10,14 @@ por app" a un **pool compartido** (sobre todo para torch + CUDA)._
 |---|---|---|---|
 | comfyui | **3.6 GB** | **2.7 GB** | 75% |
 | taggui | **3.7 GB** | **2.7 GB** | 73% |
+| ai-toolkit | **3.88 GB** | **2.59 GB** | 67% |
 | facefusion | **897 MB** | sin torch (onnxruntime-gpu) | — |
 | dataset-refiner | **494 MB** | sin torch | — |
-| sd-webui-forge-neo | _(pendiente)_ | | |
-| ai-toolkit | _(pendiente)_ | | |
-| anima-standalone-trainer | _(pendiente)_ | | |
+| sd-webui-forge-neo | _(pendiente — instala en su launch)_ | | |
+| anima-standalone-trainer | _(pendiente — instala en su launch)_ | | |
+
+> **3 apps con torch `2.10.0+cu130` idéntico** (comfyui, taggui, ai-toolkit) pese
+> a pins distintos. ~2.6–2.7 GB × 3 ≈ **~8 GB poolables solo en torch**, hoy.
 
 ## Vista RESUELTA — 4 apps con snapshot (comfyui, taggui, facefusion, dataset-refiner)
 
