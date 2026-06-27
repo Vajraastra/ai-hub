@@ -42,6 +42,47 @@ venv-base compartido con torch/torchvision/torchaudio + las apps enlazando a él
 las divergencias de numpy/pillow/transformers. Las capas 2 y 3 dan rendimientos
 decrecientes y más fricción de versiones.
 
+---
+
+## Think tank (sesión 29) — decisión: ir por el NIVEL 0
+
+**Hallazgo empírico:** los 5 torch son COPIAS reales (`stat -c %h` = `links=1`,
+inodes distintos), no hardlinks. Los 13 GB son duplicación verdadera.
+**Causa:** el `pre_install` del registry instala torch con **`--no-cache-dir`**
+(`uv pip install --no-cache-dir torch==…`), lo que impide que uv hardlinkee
+desde su cache. Cache y venvs están en el mismo volumen E: → el hardlink ES
+posible; solo lo estamos desactivando con ese flag.
+
+**Tres niveles posibles de consolidación:**
+- **Nivel 0 (elegido) — hardlinks de uv:** quitar `--no-cache-dir`, forzar
+  `UV_LINK_MODE=hardlink`, cache en el mismo volumen. uv deja 1 copia física en
+  el cache y los venvs son hardlinks. Recupera ~10 GB sin pool gestionado, sin
+  tocar las apps, riesgo ≈0 (al actualizar, uv borra+reescribe → el hardlink se
+  separa limpio). Es el pool *implícito* de uv.
+- **Nivel 1 — venv-base + .pth/junction** para la capa torch (recupera aunque
+  las versiones diverjan; más frágil: sys.path + `.dist-info`).
+- **Nivel 2 — pool por capas completo** (torch + utils + ML): rendimientos
+  decrecientes, evitar.
+
+**Matiz:** "ahorro de espacio en esta máquina" (lo da el Nivel 0/hardlinks) ≠
+"portabilidad a otra máquina" (copiar rompe los hardlinks; lo que da
+portabilidad es el instalador reproducible, no copiar GB).
+
+### Plan de acción — PRÓXIMA SESIÓN
+1. **Nivel 0:** quitar `--no-cache-dir` del `pre_install_commands` de torch en
+   `app_registry.json`; garantizar `UV_LINK_MODE=hardlink`. Validar con UNA app
+   (reinstalar → confirmar `links>1` en un .dll de torch) antes de generalizar.
+   Reinstalar/re-linkear las 5 apps con torch y **medir el espacio físico real**
+   (esperado: ~19.4 GB → ~9-10 GB).
+2. **Deprecar taggui:** el usuario tiene un tagger propio más avanzado.
+   Calcular cómo cambia la proyección al remover taggui **con sus deps**:
+   - taggui aporta deps ÚNICAS (PySide6, ExifRead, pyparsing…) → se liberan.
+   - su torch es compartido (capa 1) → con Nivel 0 NO libera espacio físico de
+     torch (lo comparten comfyui/ai-toolkit/forge/anima); sin Nivel 0 liberaría
+     ~2.7 GB lógicos.
+   - actualizar `EXTERNAL_APPS` en `audit.py`, quitar `resolved/taggui.txt`,
+     regenerar MATRIX/POOL_ANALYSIS, y recalcular el total.
+
 ## Vista RESUELTA — 4 apps con snapshot (comfyui, taggui, facefusion, dataset-refiner)
 
 **67 deps cruzadas resueltas → 50 con la MISMA versión exacta (poolables) · 17 con conflicto real.**
