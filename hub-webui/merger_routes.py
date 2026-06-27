@@ -332,8 +332,9 @@ async def start_merge(payload: MergePayload):
                     print(f"[merger] {prog.current}/{prog.total}  {prog.layer_name}")
 
             output = merge(infos, cfg, _cb)
-            print(f"[merger] Merge completado → {output}")
 
+            # Setear el estado ANTES de imprimir: en Windows un print con
+            # caracteres no-ASCII podría lanzar y dejar el merge colgado.
             with _sessions_lock:
                 _sessions[session_id] = {
                     "type":        "done",
@@ -341,10 +342,9 @@ async def start_merge(payload: MergePayload):
                     "error":       None if output else "merge() no retornó ruta",
                     "ts":          time.time(),
                 }
+            print(f"[merger] Merge completado -> {output}")
 
         except Exception as e:
-            err = f"{e}\n{traceback.format_exc()}"
-            print(f"[merger] ERROR:\n{err}")
             with _sessions_lock:
                 _sessions[session_id] = {
                     "type":        "done",
@@ -352,6 +352,7 @@ async def start_merge(payload: MergePayload):
                     "error":       str(e),
                     "ts":          time.time(),
                 }
+            print(f"[merger] ERROR:\n{e}\n{traceback.format_exc()}")
 
     threading.Thread(target=_run, daemon=True).start()
     return {"session_id": session_id}

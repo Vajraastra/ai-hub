@@ -13,6 +13,15 @@ import asyncio
 import socket
 from typing import Optional
 
+# En Windows la consola usa cp1252 por defecto y revienta (UnicodeEncodeError)
+# al imprimir caracteres no-ASCII (→, —, emojis), que abundan en los logs del
+# hub. Forzar UTF-8 en stdout/stderr evita que un simple print tumbe un thread.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 # ── Paths ──────────────────────────────────────────────────────────────────
 POC_DIR = os.path.dirname(os.path.abspath(__file__))
 HUB_DIR = os.path.join(os.path.dirname(POC_DIR), "hub")
