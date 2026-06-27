@@ -105,6 +105,17 @@ def sync_all_app_configs(hub_config: dict, registry: dict,
 # Krita priority symlinks
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _link_model_file(real_path: str, link_path: str, rel_target: str) -> None:
+    """Enlaza un archivo de modelo dentro de krita/.
+    En Windows el symlink de archivo exige privilegios: usamos hardlink
+    (os.link), que no los requiere para archivos en el mismo volumen — y
+    E:\\Models contiene tanto el archivo real como la carpeta krita/.
+    En POSIX mantenemos el symlink relativo (portable al mover la carpeta)."""
+    if os.name == "nt":
+        os.link(real_path, link_path)          # hardlink, sin privilegios
+    else:
+        os.symlink(rel_target, link_path)      # symlink relativo
+
 def sync_krita_priority(models_dir: str, dry_run: bool = False) -> dict:
     """
     Crea subcarpetas krita/ dentro de cada categoría relevante.
@@ -157,12 +168,12 @@ def sync_krita_priority(models_dir: str, dry_run: bool = False) -> dict:
 
                 try:
                     os.makedirs(krita_dir, exist_ok=True)
-                    os.symlink(rel_target, link_path)
+                    _link_model_file(real_path, link_path, rel_target)
                     stats["created"] += 1
-                    log.info("krita symlink: %s/%s → %s", category, fname, rel_target)
+                    log.info("krita link: %s/%s → %s", category, fname, rel_target)
                 except Exception as e:
                     stats["errors"].append(f"{category}/{fname}: {e}")
-                    log.error("Error creando symlink krita %s/%s: %s", category, fname, e)
+                    log.error("Error creando link krita %s/%s: %s", category, fname, e)
 
     return stats
 

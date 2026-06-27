@@ -8,6 +8,7 @@ Zero external dependencies - stdlib only.
 
 import os
 import json
+import stat
 import shutil
 
 
@@ -16,6 +17,64 @@ import shutil
 # ============================================================
 _CONFIG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "config")
 _CATEGORIES_FILE = os.path.join(_CONFIG_DIR, "model_categories.json")
+
+
+# ============================================================
+# Directory links — cross-platform (POSIX symlink / Windows junction)
+# ============================================================
+# En Windows os.symlink de directorio exige privilegios (Modo Desarrollador
+# o admin). Usamos junctions (mklink /J), que NO requieren privilegios y son
+# transparentes para las apps de terceros que escanean su propio models_dir.
+
+def _is_dir_link(path):
+    """True si `path` es un symlink (POSIX) o junction/symlink-dir (Windows)."""
+    if os.path.islink(path):
+        return True
+    if os.name == "nt":
+        # os.path.islink devuelve False para junctions: detectarlas por el
+        # atributo reparse point.
+        try:
+            attrs = os.lstat(path).st_file_attributes
+            return bool(attrs & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+        except (OSError, AttributeError):
+            return False
+    return False
+
+
+def _link_points_to(link_path, target):
+    """True si `link_path` (symlink/junction) resuelve al directorio `target`."""
+    try:
+        return os.path.samefile(link_path, target)
+    except OSError:
+        return False
+
+
+def _remove_dir_link(path):
+    """Borra el link sin tocar su contenido (rmdir sobre el reparse point en
+    Windows; unlink sobre el symlink en POSIX)."""
+    if os.name == "nt":
+        try:
+            os.rmdir(path)          # junction o symlink-a-directorio
+        except OSError:
+            os.unlink(path)         # symlink-a-archivo
+    else:
+        os.unlink(path)
+
+
+def _create_dir_link(src, dst):
+    """Crea un link de directorio `dst` -> `src`. Junction en Windows
+    (sin privilegios), symlink en POSIX. Lanza OSError si falla."""
+    if os.name == "nt":
+        import subprocess
+        # mklink espera backslashes; models_dir puede venir con "/" del config
+        result = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", os.path.normpath(dst), os.path.normpath(src)],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0 or not os.path.exists(dst):
+            raise OSError(result.stderr.strip() or "mklink /J falló")
+    else:
+        os.symlink(src, dst)
 
 
 # Hub's recommended structure — canonical ComfyUI names
@@ -213,17 +272,17 @@ def build_app_model_args(app_config: dict, models_dir: str, app_dir: str = "") -
             dst = os.path.join(app_models_dir, link_name)
             if not os.path.exists(src):
                 continue
-            if os.path.islink(dst):
-                if os.readlink(dst) == src:
+            if _is_dir_link(dst):
+                if _link_points_to(dst, src):
                     continue
-                os.remove(dst)  # symlink apunta a otro lado — reemplazar
+                _remove_dir_link(dst)  # link apunta a otro lado — reemplazar
             elif os.path.exists(dst):
                 continue  # directorio real — no tocar
             try:
                 os.makedirs(app_models_dir, exist_ok=True)
-                os.symlink(src, dst)
+                _create_dir_link(src, dst)
             except OSError as e:
-                print(f"Error creando symlink {dst} → {src}: {e}")
+                print(f"Error creando link {dst} -> {src}: {e}")
 
         # ComfyUI automatically loads extra_model_paths.yaml from its root.
         # No extra CLI flags needed for default name.

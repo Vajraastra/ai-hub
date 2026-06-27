@@ -316,11 +316,13 @@ def main():
 
     # Registrar limpieza en señales del SO y en salida normal
     atexit.register(_shutdown)
-    for sig in (signal.SIGTERM, signal.SIGHUP):
+    # SIGHUP no existe en Windows: solo registrar las señales disponibles
+    _signals = [s for s in ("SIGTERM", "SIGHUP") if hasattr(signal, s)]
+    for name in _signals:
         try:
-            signal.signal(sig, lambda s, f: (_shutdown(), sys.exit(0)))
+            signal.signal(getattr(signal, name), lambda s, f: (_shutdown(), sys.exit(0)))
         except (OSError, ValueError):
-            pass  # SIGHUP no existe en Windows
+            pass
 
     server_thread = threading.Thread(target=_run_server, args=(port,), daemon=True)
     server_thread.start()
