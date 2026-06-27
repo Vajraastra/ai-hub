@@ -145,22 +145,55 @@ except Exception as e:
     print(f"[outputs] ! No se pudo crear el junction: {e} (no bloqueante)")
 
 # ── Node.js / npm (UI web) ───────────────────────────────────────────────────
+# anima necesita Node para su UI. El hub usa Node PORTABLE en hub/tools/win/node
+# (lo baja run.bat). Aquí lo garantizamos: buscarlo y, si falta, descargarlo —
+# así instalar anima "trae" Node, sin tocar el sistema.
 import shutil
-node = os.environ.get("AI_HUB_NODE_DIR", "")
-npm = None
-if node and os.path.isfile(os.path.join(node, "npm.cmd")):
-    npm = os.path.join(node, "npm.cmd")
-elif shutil.which("npm"):
-    npm = shutil.which("npm")
+NODE_VERSION = "22.17.0"   # alineado con run.bat
 
-if npm:
+def find_npm():
+    cands = []
+    if os.environ.get("AI_HUB_NODE_DIR"):
+        cands.append(os.environ["AI_HUB_NODE_DIR"])
+    cands.append(os.path.join(HUB_DIR, "tools", "win", "node"))  # ruta fija del hub
+    for d in cands:
+        for exe in ("npm.cmd", "npm"):
+            p = os.path.join(d, exe)
+            if os.path.isfile(p):
+                return p
+    return shutil.which("npm")
+
+def ensure_node_portable():
+    """Descarga Node portable a hub/tools/win/node si no está (solo Windows)."""
+    if os.name != "nt":
+        return None
+    node_dir = os.path.join(HUB_DIR, "tools", "win", "node")
+    if os.path.isfile(os.path.join(node_dir, "node.exe")):
+        return os.path.join(node_dir, "npm.cmd")
+    import urllib.request, zipfile, tempfile
+    url = f"https://nodejs.org/dist/v{NODE_VERSION}/node-v{NODE_VERSION}-win-x64.zip"
+    print(f"[node] Descargando Node.js v{NODE_VERSION} portable...")
+    os.makedirs(os.path.dirname(node_dir), exist_ok=True)
+    with tempfile.TemporaryDirectory() as tmp:
+        zp = os.path.join(tmp, "node.zip")
+        urllib.request.urlretrieve(url, zp)
+        with zipfile.ZipFile(zp) as z:
+            z.extractall(tmp)
+        sub = next(d for d in os.listdir(tmp)
+                   if os.path.isdir(os.path.join(tmp, d)) and d.startswith("node-"))
+        if os.path.isdir(node_dir):
+            shutil.rmtree(node_dir, ignore_errors=True)
+        shutil.move(os.path.join(tmp, sub), node_dir)
+    return os.path.join(node_dir, "npm.cmd")
+
+npm = find_npm() or ensure_node_portable()
+if npm and os.path.isfile(npm):
     print("\n[node] npm install (training-ui)...")
     subprocess.run([npm, "install", "--no-audit", "--no-fund"],
                    cwd=os.path.join(APP_DIR, "training-ui"), check=True)
     print("[node] OK")
 else:
-    print("\n[node] ! Node.js no encontrado — UI web pendiente. "
-          "Instala Node.js y corre 'npm install' en training-ui/. "
+    print("\n[node] ! Node.js no disponible y no se pudo descargar — UI web pendiente. "
           "La parte de entrenamiento (Python) ya está lista.")
 
 print("\n=== install_standalone_trainer.py completado ===")
