@@ -9,12 +9,49 @@ por app" a un **pool compartido** (sobre todo para torch + CUDA)._
 | App | venv total | torch (incl. CUDA bundled) | % torch |
 |---|---|---|---|
 | comfyui | **3.6 GB** | **2.7 GB** | 75% |
+| taggui | **3.7 GB** | **2.7 GB** | 73% |
+| facefusion | **897 MB** | sin torch (onnxruntime-gpu) | — |
+| dataset-refiner | **494 MB** | sin torch | — |
 | sd-webui-forge-neo | _(pendiente)_ | | |
 | ai-toolkit | _(pendiente)_ | | |
 | anima-standalone-trainer | _(pendiente)_ | | |
-| taggui | _(pendiente)_ | | |
-| facefusion | _(pendiente — usa onnxruntime, sin torch)_ | — | — |
-| dataset-refiner | **494 MB** | sin torch | — |
+
+## Vista RESUELTA — 4 apps con snapshot (comfyui, taggui, facefusion, dataset-refiner)
+
+**67 deps cruzadas resueltas → 50 con la MISMA versión exacta (poolables) · 17 con conflicto real.**
+
+**El titular: torch ES poolable.** taggui PINEA `torch 2.8.0+cu128` en su
+requirements, pero terminó con **`torch 2.10.0+cu130` idéntico a ComfyUI**.
+El mecanismo: el guardian instala torch (cu130) en `pre_install` ANTES de
+requirements, y `uv pip install -r` respeta el ya instalado (no lo cambia).
+→ `torch` + `torchvision` + `torchaudio` = misma build en las 2 apps con torch
+= **2.7 GB poolables hoy mismo** entre ellas (y crecerá con forge/ai-toolkit/anima).
+
+> ⚠️ Matiz para un pool robusto: que uv "respete lo instalado" es conveniente
+> pero no es una garantía formal. Para un pool de verdad conviene **excluir torch
+> del requirements** de cada app (`pip_exclude_packages`) y dejar que SOLO el
+> guardian lo provea. Así el pin de la app nunca compite.
+
+**También poolables ya (misma versión):** casi todas las utilidades comunes —
+certifi, requests, urllib3, idna, jinja2, markupsafe, pyyaml, packaging,
+typing-extensions, click, rich, httpx, anyio, safetensors (0.8.0), protobuf,
+fastapi, uvicorn… (50 en total).
+
+**Conflictos reales (NO poolables sin unificar versión)** — los pesos medios de ML:
+| dep | versiones por app |
+|---|---|
+| numpy | 2.2.1 / 2.4.4 / 2.5.0 |
+| pillow | 11.3.0 / 12.2.0 |
+| transformers | 4.48.3 / 5.12.1 |
+| gradio | 5.44.1 / 6.19.0 |
+| huggingface-hub | 0.35.3 / 0.36.2 / 1.21.0 |
+| pydantic(-core) | 2.11 / 2.13 |
+| scipy, tqdm, typer, tokenizers, fsspec, filelock, pandas, starlette | micro-diferencias |
+
+**Lectura:** un pool por capas sería lo natural — (1) **torch/CUDA** (el 75% del
+peso) poolable ya vía guardian; (2) **utilidades comunes** poolables; (3) **libs
+ML medianas** (numpy/pillow/transformers/gradio) divergen por app → o se unifican
+versiones, o se quedan por-app. El ahorro gordo (torch) está en la capa 1.
 
 **Hallazgo clave (Windows / cu13x):** el wheel de torch **incluye las DLLs
 de CUDA dentro de `site-packages/torch/`** (cuDNN, cuBLAS, etc.). No aparecen
