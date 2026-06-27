@@ -110,6 +110,16 @@ async def _run_job(job_id: str, workflow: dict, params: dict):
         _jobs[job_id]["status"] = "error"
         _jobs[job_id]["error"]  = str(e)
         await q.put({"type": "error", "msg": str(e)})
+    except Exception as e:
+        # Cualquier otro fallo (p. ej. ComfyUI offline → aiohttp
+        # ConnectionRefused) debe marcar el job como error, no dejarlo
+        # colgado en "running" para siempre.
+        msg = "ComfyUI no responde — inícialo desde el hub" \
+            if isinstance(e, (ConnectionError, OSError)) or "onnect" in str(e) \
+            else f"Error inesperado: {e}"
+        _jobs[job_id]["status"] = "error"
+        _jobs[job_id]["error"]  = msg
+        await q.put({"type": "error", "msg": msg})
     finally:
         _active_job = None
 
@@ -602,6 +612,16 @@ async def _run_adetailer_job(job_id: str, req: ADetailerRequest):
         _jobs[job_id]["status"] = "error"
         _jobs[job_id]["error"]  = str(e)
         await q.put({"type": "error", "msg": str(e)})
+    except Exception as e:
+        # Cualquier otro fallo (p. ej. ComfyUI offline → aiohttp
+        # ConnectionRefused) debe marcar el job como error, no dejarlo
+        # colgado en "running" para siempre.
+        msg = "ComfyUI no responde — inícialo desde el hub" \
+            if isinstance(e, (ConnectionError, OSError)) or "onnect" in str(e) \
+            else f"Error inesperado: {e}"
+        _jobs[job_id]["status"] = "error"
+        _jobs[job_id]["error"]  = msg
+        await q.put({"type": "error", "msg": msg})
     finally:
         _active_job = None
 
