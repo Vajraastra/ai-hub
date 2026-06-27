@@ -12,15 +12,35 @@ por app" a un **pool compartido** (sobre todo para torch + CUDA)._
 | taggui | **3.7 GB** | **2.7 GB** | 73% |
 | ai-toolkit | **3.88 GB** | **2.59 GB** | 67% |
 | sd-webui-forge-neo | **3.84 GB** | **2.59 GB** | 67% |
+| anima-standalone-trainer | **3.37 GB** | **2.62 GB** | 78% |
 | facefusion | **897 MB** | sin torch (onnxruntime-gpu) | — |
 | dataset-refiner | **494 MB** | sin torch | — |
-| anima-standalone-trainer | _(pendiente — instala en su launch, torch cu128)_ | | |
 
-> **4 apps con torch `2.10.0+cu130` idéntico** (comfyui, taggui, ai-toolkit,
-> forge-neo) pese a pins distintos (taggui pedía 2.8+cu128, forge 0.22 torchvision…).
-> ~2.6–2.7 GB × 4 ≈ **~10.5 GB poolables solo en torch**, hoy. El guardian fuerza
-> la build común vía pre_install (comfy/ai-toolkit/taggui/facefusion) o vía
-> `TORCH_COMMAND` env var que forge lee en su launch.py.
+**TOTAL 7 venvs ≈ 19.4 GB.**
+
+> **5 apps con torch `2.10.0+cu130` idéntico** (comfyui, taggui, ai-toolkit,
+> forge-neo, anima) pese a pins distintos (taggui pedía 2.8+cu128, anima 2.7+cu128,
+> forge 0.22 torchvision…). El guardian fuerza la build común vía pre_install, o
+> vía `TORCH_COMMAND` env var que forge/anima leen. torch+torchvision+torchaudio
+> = misma build en las 5 → **~2.6 GB × 5 ≈ ~13 GB poolables solo en torch**.
+
+## Conclusión (7/7 apps medidas)
+
+Vista RESUELTA: **133 deps cruzadas → 85 con la MISMA versión exacta (poolables),
+48 en conflicto.** El ahorro se concentra en una capa:
+
+| Capa | Poolable | Ahorro estimado |
+|---|---|---|
+| **torch + CUDA bundled** | ✅ sí (guardian unifica a cu130) | **~13 GB** (de 19.4 GB totales) |
+| utilidades comunes (requests, jinja2, pyyaml, rich, fastapi…) | ✅ sí | cientos de MB |
+| libs ML medianas (numpy, pillow, transformers, gradio, hf-hub…) | ⚠️ no sin unificar versión | — |
+
+**Recomendación para cuando se aborde el pool:** atacar **solo la capa torch**
+primero (es ~67% del disco total y ya está homogeneizada por el guardian). Un
+venv-base compartido con torch/torchvision/torchaudio + las apps enlazando a él
+(o `--system-site-packages` apuntando al base) recupera la mayor parte sin tocar
+las divergencias de numpy/pillow/transformers. Las capas 2 y 3 dan rendimientos
+decrecientes y más fricción de versiones.
 
 ## Vista RESUELTA — 4 apps con snapshot (comfyui, taggui, facefusion, dataset-refiner)
 

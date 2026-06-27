@@ -164,7 +164,7 @@
             "install_deps": false,
             "launch_type": "shell",
             "launch_script": "launch.sh",
-            "post_install_script": "scripts/install_standalone_trainer.sh",
+            "post_install_py": "scripts/install_standalone_trainer.py",
             "model_map": {},
             "output_map": { "method": "none" },
             "default_port": 7880,
