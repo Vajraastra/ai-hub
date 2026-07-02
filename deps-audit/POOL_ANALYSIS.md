@@ -172,3 +172,37 @@ apps que pinean distinto pero **resuelven** a la misma versión sí poolean.
 2. Rellenar la tabla de pesos (venv total / torch) por app.
 3. Tras todas: `audit.py matrix` y revisar cuántas cruzadas-resueltas coinciden
    en versión exacta (esas son el pool real).
+
+---
+
+## Cierre (sesión 31, 2026-07-02) — Nivel 0 EJECUTADO + taggui deprecada
+
+**taggui deprecada y desinstalada** (el usuario tiene un tagger propio más
+avanzado): fuera de `EXTERNAL_APPS`, snapshot `resolved/taggui.txt` borrado,
+fuera del catálogo (`app_registry.json`) y del hub. Venv borrado: **3.64 GB
+recuperados** (su torch era copia, no hardlink, así que se liberó completo).
+
+**Nivel 0 aplicado (commit `012a782`):** cache uv unificado en
+`<root>\.cache\uv` (mismo volumen E: que los venvs) + `UV_LINK_MODE=hardlink`
++ `--no-cache-dir` fuera del pre_install de torch. Torch re-linkeado con
+`--reinstall-package torch`:
+
+| Grupo ABI | Apps | Copias físicas de torch |
+|---|---|---|
+| cp313 | ai-toolkit, sd-webui-forge-neo | **1** (compartida vía cache) |
+| cp312 | comfyui, anima-standalone-trainer | **1** (compartida vía cache) |
+
+Verificado con `fsutil hardlink list` (venv + cache = mismo archivo físico).
+Matiz que la sesión 29 no contemplaba: los hardlinks solo dedupean entre
+**wheels idénticos** (misma versión de torch Y misma versión de Python/ABI) —
+por eso son 2 copias físicas, no 1. Aun así: 4 venvs con torch → 2 copias.
+
+Caches obsoletos borrados (default de C: + `hub\.cache` legacy): **8.1 GB
+liberados** en total (4.5 C: + 3.6 E:). Con los 3.64 GB de taggui: **~11.7 GB
+recuperados en la sesión**. Instalaciones futuras vía hub deduplican solas
+(`_get_install_env` fuerza cache y link mode). Purga de emergencia disponible
+en WebUI → Ajustes → Mantenimiento.
+
+**Niveles 1/2 (venv-base / pool gestionado): NO se abordan** — el grueso del
+ahorro ya está capturado con riesgo cero. Este documento queda como registro
+histórico; `MATRIX.md` sigue regenerable con `audit.py matrix`.

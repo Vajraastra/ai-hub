@@ -111,28 +111,6 @@
             "auto_open_browser": true,
             "extra_args": ["--use-pytorch-cross-attention"]
         },
-        "taggui": {
-            "id": "taggui",
-            "name": "TaggerGUI",
-            "description": "Tag manager y captioner para datasets de imágenes. Soporta WD Tagger, Florence-2 y más.",
-            "repo": "https://github.com/jhc13/taggui",
-            "branch": "main",
-            "python_version": "3.12",
-            "use_uv": true,
-            "install_deps": true,
-            "launch_type": "python",
-            "launch_script": "taggui/run_gui.py",
-            "pre_install_commands": [
-                "{uv} pip install torch=={torch_version} torchvision=={torchvision_version} torchaudio=={torchaudio_version} --index-url https://download.pytorch.org/whl/{cuda_tag}"
-            ],
-            "pip_overrides": ["torch>={torch_version}", "torchvision>={torchvision_version}", "torchaudio>={torchaudio_version}"],
-            "pip_exclude_packages": ["flash-attn"],
-            "model_map": {},
-            "output_map": { "method": "none" },
-            "cuda_env_vars": { "torch_index": "PIP_EXTRA_INDEX_URL" },
-            "default_port": null,
-            "extra_args": []
-        },
         "facefusion": {
             "id": "facefusion",
             "name": "FaceFusion",

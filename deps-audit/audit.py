@@ -46,8 +46,9 @@ EXTERNAL_APPS = {
     "dataset-refiner":          ["requirements.txt"],
     "facefusion":               ["requirements.txt"],
     "sd-webui-forge-neo":       ["requirements.txt"],
-    "taggui":                   ["requirements.txt"],
 }
+# taggui: DEPRECADA (sesión 31, 2026-07-02) — el usuario tiene un tagger propio
+# más avanzado. Desinstalada del hub y quitada del catálogo.
 
 # ── Normalización de nombres (PEP 503) ──────────────────────────────────────
 def canon(name: str) -> str:
