@@ -22,6 +22,36 @@ for p in [_HUB_DIR, _ROOT_DIR]:
 from state import state as _state
 
 
+# ── Helpers de terminación de procesos (Windows-nativo) ─────────────────
+
+def _interrupt_tree(proc: subprocess.Popen):
+    """Pide cierre ordenado al proceso y su grupo.
+
+    Requiere que el hijo se haya lanzado con CREATE_NEW_PROCESS_GROUP
+    (app_launcher lo hace). Si no se puede señalizar (sin consola
+    compartida), no hay cierre ordenado posible en Windows: se mata el
+    árbol completo (terminate() solo mataría al launcher-trampoline del
+    venv de uv y dejaría huérfano al intérprete real).
+    """
+    try:
+        proc.send_signal(signal.CTRL_BREAK_EVENT)
+    except (ValueError, OSError):
+        _kill_tree(proc)
+
+
+def _kill_tree(proc: subprocess.Popen):
+    """Mata el proceso y todo su árbol, por las malas."""
+    try:
+        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                       capture_output=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+
+
 # ── Helpers de puerto ────────────────────────────────────────────────────
 
 def _is_port_in_use(port: int) -> bool:
@@ -33,16 +63,22 @@ def _is_port_in_use(port: int) -> bool:
 def _kill_processes_on_port(port: int) -> list[int]:
     killed = []
     try:
-        result = subprocess.run(["lsof", "-ti", f":{port}"],
+        result = subprocess.run(["netstat", "-ano", "-p", "tcp"],
                                 capture_output=True, text=True, timeout=5)
-        pids = [int(p) for p in result.stdout.strip().split() if p.isdigit()]
+        pids = set()
+        for line in result.stdout.splitlines():
+            parts = line.split()
+            # TCP  127.0.0.1:8188  0.0.0.0:0  LISTENING  4424
+            if (len(parts) >= 5 and parts[0] == "TCP"
+                    and parts[1].endswith(f":{port}")
+                    and parts[4].isdigit() and int(parts[4]) != 0):
+                pids.add(int(parts[4]))
         for pid in pids:
-            try:
-                os.kill(pid, signal.SIGTERM)
+            r = subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                               capture_output=True, timeout=10)
+            if r.returncode == 0:
                 killed.append(pid)
-            except ProcessLookupError:
-                pass
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         pass
     return killed
 
@@ -408,15 +444,9 @@ class HubBridge:
                 proc = self._state.running_apps.get(app_id)
                 if proc and proc.poll() is None:
                     try:
-                        pgid = os.getpgid(proc.pid)
-                        os.killpg(pgid, signal.SIGINT)
-                        lines.append({"icon": "⏹", "text": f"{name} :{port} — SIGINT enviado"})
+                        _interrupt_tree(proc)
+                        lines.append({"icon": "⏹", "text": f"{name} :{port} — interrupción enviada"})
                         killed_total += 1
-                    except (ProcessLookupError, OSError):
-                        try:
-                            proc.send_signal(signal.SIGINT)
-                        except Exception:
-                            pass
                     except Exception as e:
                         lines.append({"icon": "✗", "text": f"{name} — error: {e}"})
                 continue
@@ -579,27 +609,14 @@ class HubBridge:
 
     def _stop_thread(self, app_id: str, proc: subprocess.Popen):
         try:
-            # Intentar matar el process group completo (app + sus workers).
-            # start_new_session=True garantiza que pgid != hub pgid, así que es seguro.
-            try:
-                pgid = os.getpgid(proc.pid)
-                os.killpg(pgid, signal.SIGINT)
-            except (ProcessLookupError, OSError):
-                # Proceso ya muerto o sin process group — intentar kill directo
-                try:
-                    proc.send_signal(signal.SIGINT)
-                except (ProcessLookupError, OSError):
-                    pass
+            # Cierre ordenado del árbol completo (app + sus workers).
+            _interrupt_tree(proc)
 
             try:
                 proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
-                # SIGINT no fue suficiente — forzar SIGKILL al grupo
-                try:
-                    pgid = os.getpgid(proc.pid)
-                    os.killpg(pgid, signal.SIGKILL)
-                except (ProcessLookupError, OSError):
-                    proc.kill()
+                # No respondió — matar el árbol a la fuerza
+                _kill_tree(proc)
                 try:
                     proc.wait(timeout=5)
                 except (subprocess.TimeoutExpired, OSError):
@@ -753,17 +770,10 @@ class HubBridge:
             if proc.poll() is not None:
                 continue
             name = self._state.registry_apps.get(app_id, {}).get("name", app_id)
-            try:
-                pgid = os.getpgid(proc.pid)
-                os.killpg(pgid, signal.SIGINT)
-                print(f"  [hub] {name} — SIGINT enviado")
-            except (ProcessLookupError, OSError):
-                try:
-                    proc.send_signal(signal.SIGINT)
-                except Exception:
-                    pass
+            _interrupt_tree(proc)
+            print(f"  [hub] {name} — interrupción enviada")
 
-        # Esperar que terminen, luego SIGKILL a los que queden
+        # Esperar que terminen, luego matar a la fuerza a los que queden
         deadline = time.monotonic() + wait_secs
         remaining = dict(procs)
         while remaining and time.monotonic() < deadline:
@@ -772,15 +782,8 @@ class HubBridge:
 
         for app_id, proc in remaining.items():
             name = self._state.registry_apps.get(app_id, {}).get("name", app_id)
-            try:
-                pgid = os.getpgid(proc.pid)
-                os.killpg(pgid, signal.SIGKILL)
-                print(f"  [hub] {name} — SIGKILL (no respondió a SIGINT)")
-            except Exception:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
+            _kill_tree(proc)
+            print(f"  [hub] {name} — árbol terminado (no respondió a la interrupción)")
 
         print("  [hub] Apps detenidas.")
 
