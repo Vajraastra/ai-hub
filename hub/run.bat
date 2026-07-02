@@ -115,7 +115,7 @@ if not exist "%UI_PYTHON%" (
 REM ── Variables de entorno ─────────────────────────────────────
 set "AI_HUB_UV_PATH=%UV_BIN%"
 set "AI_HUB_TOOLS_DIR=%TOOLS_DIR%"
-set "UV_CACHE_DIR=%SCRIPT_DIR%\..\cache\uv"
+set "UV_CACHE_DIR=%SCRIPT_DIR%\..\.cache\uv"
 set "UV_LINK_MODE=hardlink"
 set "PYTHONUNBUFFERED=1"
 

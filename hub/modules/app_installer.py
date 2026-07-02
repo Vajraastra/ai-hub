@@ -38,10 +38,13 @@ def _get_install_env() -> dict:
     """Build environment for install commands with UV cache on same drive."""
     env = os.environ.copy()
     hub_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    root_dir = os.path.dirname(hub_dir)
     # Always force cache to the hub drive — overrides any env var from the host
-    # shell or distrobox that might point to a different filesystem, which would
-    # prevent uv from hardlinking and waste disk space duplicating packages.
-    env["UV_CACHE_DIR"] = os.path.join(hub_dir, ".cache", "uv")
+    # shell that might point to a different filesystem, which would prevent uv
+    # from hardlinking and waste disk space duplicating packages.
+    # Ruta ÚNICA compartida con run.bat (raíz): <root>\.cache\uv — si divergen,
+    # la deduplicación se fragmenta en caches paralelos.
+    env["UV_CACHE_DIR"] = os.path.join(root_dir, ".cache", "uv")
     env["UV_LINK_MODE"] = "hardlink"
     env["UV_PYTHON_INSTALL_DIR"] = os.path.join(hub_dir, "tools", "python")
     # No engancharse a Pythons PEP 514 de otros proyectos: usar solo los

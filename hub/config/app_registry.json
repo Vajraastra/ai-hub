@@ -53,7 +53,7 @@
             "config_dir": "config",
             "config_examples_dir": "config/examples",
             "pre_install_commands": [
-                "{uv} pip install --no-cache-dir torch=={torch_version} torchvision=={torchvision_version} torchaudio=={torchaudio_version} --index-url https://download.pytorch.org/whl/{cuda_tag}"
+                "{uv} pip install torch=={torch_version} torchvision=={torchvision_version} torchaudio=={torchaudio_version} --index-url https://download.pytorch.org/whl/{cuda_tag}"
             ],
             "pip_overrides": ["scipy>=1.14.1", "numpy>=2.1.0", "gradio<6.0"],
             "output_map": { "method": "none" },
@@ -74,7 +74,7 @@
             "launch_type": "python",
             "launch_script": "main.py",
             "pre_install_commands": [
-                "{uv} pip install --no-cache-dir torch=={torch_version} torchvision=={torchvision_version} torchaudio=={torchaudio_version} --index-url https://download.pytorch.org/whl/{cuda_tag}"
+                "{uv} pip install torch=={torch_version} torchvision=={torchvision_version} torchaudio=={torchaudio_version} --index-url https://download.pytorch.org/whl/{cuda_tag}"
             ],
             "model_map": {
                 "method": "yaml",
