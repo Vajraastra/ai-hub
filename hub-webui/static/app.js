@@ -315,6 +315,41 @@ async function saveSettings() {
   }
 }
 
+// ── Purga del cache de uv ─────────────────────────────────────────────────────
+
+function confirmPurgeUvCache() {
+  const pkg = $("set-purge-package").value.trim();
+  const msg = pkg
+    ? t("settings.purge_confirm_pkg", { pkg: `<strong>${pkg}</strong>` })
+    : t("settings.purge_confirm_all");
+  showConfirm(msg, () => purgeUvCache(pkg));
+}
+
+async function purgeUvCache(pkg) {
+  const btn = $("btn-purge-uv-cache");
+  btn.disabled = true;
+  btn.textContent = t("settings.purging");
+  try {
+    const res = await fetch("/api/settings/purge-uv-cache", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ package: pkg }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      showToast("✅ " + t("settings.purge_done", { gb: data.freed_gb }));
+      $("set-purge-package").value = "";
+    } else {
+      showToast("❌ " + t("settings.purge_error"));
+    }
+  } catch (_) {
+    showToast("❌ " + t("settings.purge_error"));
+  } finally {
+    btn.disabled = false;
+    btn.textContent = t("settings.purge_btn");
+  }
+}
+
 // ── Models Path Validation Flow ──────────────────────────────────────────────
 
 function _hidePathStatus() {
@@ -678,6 +713,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("btn-reload-settings").addEventListener("click", loadSettings);
   $("btn-validate-models-path").addEventListener("click", validateModelsPath);
   $("set-models-path").addEventListener("input", _hidePathStatus);
+  $("btn-purge-uv-cache").addEventListener("click", confirmPurgeUvCache);
   $("btn-refresh-log").addEventListener("click", loadEventLog);
 
   // Modal

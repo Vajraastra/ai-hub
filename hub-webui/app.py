@@ -136,6 +136,10 @@ class ApplyPathPayload(BaseModel):
     create_if_missing: bool = False
 
 
+class PurgeCachePayload(BaseModel):
+    package: str = ""
+
+
 # ── Rutas estáticas ──────────────────────────────────────────────────────────
 @api.get("/")
 async def index():
@@ -240,6 +244,11 @@ async def apply_models_path(payload: ApplyPathPayload):
 @api.post("/api/settings/reorganize-orphans")
 async def reorganize_orphans(payload: ValidatePathPayload):
     return bridge.reorganize_orphans(payload.path)
+
+
+@api.post("/api/settings/purge-uv-cache")
+async def purge_uv_cache(payload: PurgeCachePayload):
+    return bridge.purge_uv_cache(payload.package)
 
 
 # ── Event Log ─────────────────────────────────────────────────────────────────

@@ -165,9 +165,9 @@ html, body { height: 100%; background: var(--bg-base); color: var(--text-primary
   border-color:var(--border-bright); padding: 5px 9px; }
 .btn-icon:hover:not(:disabled) { background:rgba(255,255,255,.08);
   color:var(--text-primary); border-color:var(--accent-violet); }
-.btn-icon.danger { color:var(--accent-red); border-color:rgba(255,69,101,.2); }
-.btn-icon.danger:hover:not(:disabled) { border-color:var(--accent-red);
-  background:rgba(255,69,101,.08); }
+.btn-icon.danger, .btn-outline.danger { color:var(--accent-red); border-color:rgba(255,69,101,.2); }
+.btn-icon.danger:hover:not(:disabled), .btn-outline.danger:hover:not(:disabled) {
+  border-color:var(--accent-red); background:rgba(255,69,101,.08); }
 .btn-install { background:rgba(57,255,133,.09); color:var(--accent-green);
   border-color:rgba(57,255,133,.28); min-width:88px; }
 .btn-install:hover:not(:disabled) { background:rgba(57,255,133,.16);

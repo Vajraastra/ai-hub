@@ -465,6 +465,72 @@ class HubBridge:
             "clean":  not lines,
         }
 
+    def purge_uv_cache(self, package: str = "") -> dict:
+        """
+        Purga el cache de paquetes de uv (completo o un paquete concreto).
+
+        Seguro con venvs existentes: los hardlinks mantienen vivos los
+        archivos mientras el venv los referencie. Tras purgar, la próxima
+        instalación/actualización descarga copias frescas — es la vía de
+        recuperación si un paquete del cache se corrompe.
+        """
+        from modules.app_installer import _get_uv_path
+
+        package = (package or "").strip()
+        uv = _get_uv_path()
+        cache_dirs = [
+            os.path.join(_ROOT_DIR, ".cache", "uv"),
+            os.path.join(_HUB_DIR, ".cache", "uv"),
+        ]
+
+        def _dir_size(path: str) -> int:
+            total = 0
+            for root, _dirs, files in os.walk(path):
+                for f in files:
+                    try:
+                        total += os.path.getsize(os.path.join(root, f))
+                    except OSError:
+                        pass
+            return total
+
+        lines = []
+        freed_total = 0
+        for cache_dir in cache_dirs:
+            if not os.path.isdir(cache_dir):
+                continue
+            before = _dir_size(cache_dir)
+            cmd = [uv, "cache", "clean"] + ([package] if package else [])
+            env = os.environ.copy()
+            env["UV_CACHE_DIR"] = cache_dir
+            try:
+                result = subprocess.run(cmd, env=env, capture_output=True,
+                                        text=True, timeout=300)
+            except (OSError, subprocess.TimeoutExpired) as e:
+                lines.append({"icon": "✗", "text": f"{cache_dir} — error: {e}"})
+                continue
+            if result.returncode != 0:
+                err = (result.stderr or result.stdout or "").strip().splitlines()
+                lines.append({"icon": "✗",
+                              "text": f"{cache_dir} — {err[-1] if err else 'fallo'}"})
+                continue
+            freed = before - _dir_size(cache_dir)
+            freed_total += max(freed, 0)
+            lines.append({"icon": "✓",
+                          "text": f"{cache_dir} — {max(freed, 0) / 1e9:.2f} GB liberados"})
+
+        if not lines:
+            lines.append({"icon": "ℹ", "text": "No existe ningún cache de uv que purgar."})
+
+        self._state.log_event("CLEANUP", "hub",
+                              f"Purga de cache uv ({package or 'completa'}): "
+                              f"{freed_total / 1e9:.2f} GB liberados")
+        return {
+            "ok": True,
+            "freed_bytes": freed_total,
+            "freed_gb": round(freed_total / 1e9, 2),
+            "lines": lines,
+        }
+
     # ── Acciones de apps ────────────────────────────────────────────────
 
     def launch(self, app_id: str, open_browser: bool = True) -> bool:
