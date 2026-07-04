@@ -268,7 +268,18 @@ $('btn-clone-set').onclick = async () => {
 };
 
 $('btn-delete-set').onclick = async () => {
-  if (!confirm(`Eliminar el borrador "${currentSet.name}" y sus runs de prueba?`)) return;
+  const nRuns = runsCache.length;
+  if (nRuns) {
+    // borrar un borrador arrastra sus runs: exigir el nombre, no un simple OK
+    const typed = prompt(
+      `CUIDADO: esto elimina el set "${currentSet.name}" Y sus ${nRuns} run(s) con todas sus imágenes.\n` +
+      `Si solo quieres borrar un run, usa el 🗑 de su fila.\n\n` +
+      `Para confirmar, escribe el nombre exacto del set:`);
+    if (typed !== currentSet.name) {
+      if (typed !== null) alert('Nombre no coincide — no se borra nada.');
+      return;
+    }
+  } else if (!confirm(`Eliminar el borrador "${currentSet.name}"?`)) return;
   try {
     await api('/sets/' + encodeURIComponent(currentSet.name), { method: 'DELETE' });
     currentSet = null;
