@@ -20,6 +20,7 @@ let currentSet = null;   // dict completo del set seleccionado
 let runsCache  = [];     // runs del set seleccionado
 let selectedRuns = new Set();
 let jobTimer = null;
+let showArchived = false;
 
 async function api(path, opts = {}) {
   if (opts.body !== undefined) {
@@ -69,18 +70,24 @@ $('btn-status-toggle').onclick = () => {
 async function refreshSets(keepSelection = true) {
   const data = await api('/sets');
   const el = $('sets-list');
-  if (!data.sets.length) {
+  const visible = data.sets.filter(s => showArchived || !s.archived);
+  const nArchived = data.sets.length - data.sets.filter(s => !s.archived).length;
+  $('btn-show-archived').textContent = showArchived
+    ? 'ocultar archivados' : `mostrar archivados (${nArchived})`;
+  $('btn-show-archived').style.display = nArchived || showArchived ? '' : 'none';
+  if (!visible.length) {
     el.innerHTML = '<span class="dim">No hay sets todavía. Crea uno — arranca como borrador editable y se bloquea cuando estés conforme.</span>';
     return;
   }
   el.innerHTML = '';
-  for (const s of data.sets) {
+  for (const s of visible) {
     const row = document.createElement('div');
     row.className = 'set-row' + (currentSet && s.name === currentSet.name ? ' active' : '');
     const cats = CATEGORIES.map(c => `${c[0].toUpperCase()}:${s.categories[c]}`).join(' ');
     row.innerHTML =
       `<span class="mono">${esc(s.name)}</span>` +
       `<span class="badge ${s.locked ? 'locked' : 'draft'}">${s.locked ? '🔒 bloqueado' : 'borrador'}</span>` +
+      (s.archived ? '<span class="badge">📦 archivado</span>' : '') +
       `<span class="dim">${esc(s.arch)}</span>` +
       `<span class="dim">${s.n_prompts} prompts (${cats})</span>` +
       `<span style="flex:1"></span>` +
@@ -90,6 +97,11 @@ async function refreshSets(keepSelection = true) {
   }
   if (keepSelection && currentSet) selectSet(currentSet.name, false);
 }
+
+$('btn-show-archived').onclick = () => {
+  showArchived = !showArchived;
+  refreshSets();
+};
 
 $('btn-new-set').onclick = async () => {
   const name = prompt('Nombre del nuevo set (minúsculas, dígitos, guiones):');
@@ -152,7 +164,20 @@ function renderEditor() {
   $('btn-lock-set').style.display = locked ? 'none' : '';
   $('btn-add-prompt').style.display = locked ? 'none' : '';
   $('btn-delete-set').style.display = locked ? 'none' : '';
+  // archivar: solo tiene sentido en sets bloqueados (los borradores se eliminan)
+  $('btn-archive-set').style.display = locked ? '' : 'none';
+  $('btn-archive-set').textContent = s.archived_at ? 'Desarchivar' : 'Archivar';
 }
+
+$('btn-archive-set').onclick = async () => {
+  const action = currentSet.archived_at ? 'unarchive' : 'archive';
+  try {
+    currentSet = await api(`/sets/${encodeURIComponent(currentSet.name)}/${action}`,
+                           { method: 'POST' });
+    renderEditor();
+    await refreshSets();
+  } catch (e) { alert('Error: ' + e.message); }
+};
 
 function promptRow(p, locked) {
   const row = document.createElement('div');
@@ -327,6 +352,22 @@ async function refreshRuns() {
       `<span class="dim mono">${esc(r.model)}</span>` +
       `<span style="flex:1"></span>` +
       `<span class="dim">${r.results.length} imgs · ${Math.round(r.seconds)}s</span>`);
+    const del = document.createElement('button');
+    del.className = 'prompt-del';
+    del.textContent = '🗑';
+    del.title = 'Borrar este run (imágenes incluidas)';
+    del.onclick = async (ev) => {
+      ev.stopPropagation();
+      if (!confirm(`Borrar el run ${r.run_id} (${r.results.length} imágenes)?\nEl set no se toca; solo se libera el espacio de este run.`)) return;
+      try {
+        await api(`/runs/${encodeURIComponent(currentSet.name)}/${encodeURIComponent(r.run_id)}`,
+                  { method: 'DELETE' });
+        selectedRuns.delete(r.run_id);
+        await refreshSets();
+        await refreshRuns();
+      } catch (e) { alert('Error borrando run: ' + e.message); }
+    };
+    row.appendChild(del);
     el.appendChild(row);
   }
   renderGrid();

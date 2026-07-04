@@ -167,6 +167,20 @@ async def sets_lock(name: str):
     return vs.to_dict()
 
 
+@forge_router.post("/sets/{name}/archive")
+async def sets_archive(name: str):
+    vs = _vs_or_404(name)
+    vs.archive()
+    return vs.to_dict()
+
+
+@forge_router.post("/sets/{name}/unarchive")
+async def sets_unarchive(name: str):
+    vs = _vs_or_404(name)
+    vs.unarchive()
+    return vs.to_dict()
+
+
 @forge_router.post("/sets/{name}/clone")
 async def sets_clone(name: str, body: SetCloneBody):
     vs = _vs_or_404(name)
@@ -242,6 +256,18 @@ async def job_get(job_id: str):
 async def runs_list(name: str):
     _vs_or_404(name)
     return {"runs": vsets.list_runs(name)}
+
+
+@forge_router.delete("/runs/{set_name}/{run_id}")
+async def run_delete(set_name: str, run_id: str):
+    if any(j["status"] == "running" and j["set"] == set_name
+           for j in _jobs.values()):
+        raise HTTPException(409, "hay una regeneración en curso sobre este set")
+    try:
+        vsets.delete_run(set_name, run_id)
+    except ValidationSetError as e:
+        raise HTTPException(404, str(e))
+    return {"deleted": f"{set_name}/{run_id}"}
 
 
 @forge_router.get("/runs/{set_name}/{run_id}/{filename}")

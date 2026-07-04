@@ -13,68 +13,89 @@
   },
   "prompts": [
     {
-      "id": "target-pixar",
+      "id": "target-anime",
       "category": "target",
-      "text": "3d render of a cheerful young explorer girl with a backpack standing on a mossy forest rock, pixar animation style, soft studio lighting, subsurface scattering, high quality",
+      "text": "anime illustration of a young swordswoman standing on a hilltop at golden hour, full body, flowing hair, clean lineart, cel shading, detailed eyes, wind-blown cape",
       "negative": "",
       "seed": 101101
     },
     {
-      "id": "target-clay",
+      "id": "target-cartoon",
       "category": "target",
-      "text": "claymation style 3d render of a small friendly dragon cooking soup in a rustic kitchen, stop motion look, handcrafted textures, warm lighting",
+      "text": "modern western cartoon style illustration of a clumsy wizard cat casting a spell that backfires, bold outlines, flat colors with simple shading, expressive face, dynamic composition",
       "negative": "",
       "seed": 202202
     },
     {
-      "id": "target-lowpoly",
+      "id": "target-3d-pixar",
       "category": "target",
-      "text": "low poly 3d render of a lighthouse on a coastal cliff at sunset, isometric view, flat shading, vibrant colors, clean geometry",
+      "text": "3d render of a cheerful young explorer girl with a backpack standing on a mossy forest rock, pixar animation style, soft studio lighting, subsurface scattering, high quality",
       "negative": "",
       "seed": 303303
+    },
+    {
+      "id": "target-3d-stylized",
+      "category": "target",
+      "text": "stylized 3d render of a female sci-fi mechanic leaning on a hover bike in a neon garage, exaggerated proportions, handpainted textures, blender octane style, rim lighting",
+      "negative": "",
+      "seed": 404404
+    },
+    {
+      "id": "target-human",
+      "category": "target",
+      "text": "full body portrait of a woman in a linen summer dress standing in a sunlit courtyard, natural pose, photorealistic, accurate anatomy, detailed face and hands, 85mm lens",
+      "negative": "",
+      "seed": 505505
     },
     {
       "id": "general-photo",
       "category": "general",
       "text": "documentary photograph of an elderly fisherman repairing a net at dawn, natural light, 35mm film grain, shallow depth of field",
       "negative": "",
-      "seed": 404404
+      "seed": 606606
     },
     {
       "id": "general-oil",
       "category": "general",
       "text": "oil painting of a stormy sea with a small sailboat, impressionist brushstrokes, dramatic sky, muted palette",
       "negative": "",
-      "seed": 505505
+      "seed": 707707
     },
     {
-      "id": "general-anime",
+      "id": "general-macro",
       "category": "general",
-      "text": "2d anime illustration of a student reading under a cherry blossom tree, clean lineart, cel shading, spring afternoon",
+      "text": "macro photograph of a dew-covered dragonfly perched on a reed, early morning bokeh, extreme detail, nature photography",
       "negative": "",
-      "seed": 606606
+      "seed": 808808
     },
     {
       "id": "stress-hands",
       "category": "stress",
       "text": "close-up of two hands shuffling playing cards, interlaced fingers clearly visible, photorealistic, sharp focus",
       "negative": "",
-      "seed": 707707
+      "seed": 909909
     },
     {
-      "id": "stress-crowd",
+      "id": "stress-multichar",
       "category": "stress",
-      "text": "three chefs arguing in a busy restaurant kitchen, one pointing at a burnt dish, another holding a frying pan, dynamic poses, full bodies visible",
+      "text": "two anime characters arm wrestling at a wooden table while a third leans in cheering, arms and hands clearly visible, dynamic angle, consistent style",
       "negative": "",
-      "seed": 808808
+      "seed": 111222
+    },
+    {
+      "id": "stress-pose",
+      "category": "stress",
+      "text": "3d render of a parkour athlete mid-vault over a railing, extreme foreshortening, low angle view, full body, dynamic action pose, anatomically correct",
+      "negative": "",
+      "seed": 333444
     },
     {
       "id": "stress-text",
       "category": "stress",
-      "text": "storefront of a small bakery with a wooden sign that reads 'PAN DE ORO', chalkboard menu with prices by the door, morning light",
+      "text": "storefront of a small bakery with a wooden sign that reads 'PAN DE ORO', morning light",
       "negative": "",
-      "seed": 909909
+      "seed": 555666
     }
   ],
-  "fingerprint": "8500d44cff76520c768acd33e0c0219e72bd09b34959717d6d50a463638fecf7"
+  "fingerprint": "eeae21fc2cf3070fa25a3670faf2c34b5da83c63999eb386db11854aa56db999"
 }

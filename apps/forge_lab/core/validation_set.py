@@ -99,7 +99,8 @@ def _validate_sampling(sampling: dict) -> dict:
 
 class ValidationSet:
     def __init__(self, name: str, arch: str, sampling: dict, prompts: list[dict],
-                 created_at: str | None = None, locked_at: str | None = None):
+                 created_at: str | None = None, locked_at: str | None = None,
+                 archived_at: str | None = None):
         if not _SLUG_RE.match(name):
             raise ValidationSetError(
                 f"nombre inválido {name!r} (minúsculas/dígitos/guiones, sin espacios)")
@@ -109,6 +110,7 @@ class ValidationSet:
         self.prompts = _validate_prompts(prompts)
         self.created_at = created_at or _now()
         self.locked_at = locked_at
+        self.archived_at = archived_at
 
     # ── Persistencia ───────────────────────────────────────────────────────
 
@@ -120,9 +122,14 @@ class ValidationSet:
     def locked(self) -> bool:
         return self.locked_at is not None
 
+    @property
+    def archived(self) -> bool:
+        return self.archived_at is not None
+
     def to_dict(self) -> dict:
         return {"name": self.name, "arch": self.arch,
                 "created_at": self.created_at, "locked_at": self.locked_at,
+                "archived_at": self.archived_at,
                 "sampling": self.sampling, "prompts": self.prompts,
                 "fingerprint": self.fingerprint()}
 
@@ -148,7 +155,7 @@ class ValidationSet:
             raise ValidationSetError(f"no existe el set {name!r}")
         d = json.loads(path.read_text(encoding="utf-8"))
         return cls(d["name"], d["arch"], d["sampling"], d["prompts"],
-                   d.get("created_at"), d.get("locked_at"))
+                   d.get("created_at"), d.get("locked_at"), d.get("archived_at"))
 
     def delete(self):
         """Solo borradores. Un set bloqueado es un activo de reproducibilidad."""
@@ -189,6 +196,18 @@ class ValidationSet:
         return ValidationSet.create(new_name, self.arch,
                                     dict(self.sampling),
                                     [dict(p) for p in self.prompts])
+
+    def archive(self):
+        """Oculta el set de la lista sin destruirlo (para sets temáticos ya
+        cerrados). El JSON pesa KBs y es lo único que permite reinterpretar
+        los experimentos viejos — se conserva siempre; borrar de verdad solo
+        se permite en borradores."""
+        self.archived_at = _now()
+        self.save()
+
+    def unarchive(self):
+        self.archived_at = None
+        self.save()
 
     def fingerprint(self) -> str:
         """SHA256 del contenido efectivo (arch+sampling+prompts, orden canónico)."""
@@ -274,11 +293,12 @@ def list_sets() -> list[dict]:
             out.append({"name": d["name"], "arch": d["arch"],
                         "locked": d.get("locked_at") is not None,
                         "locked_at": d.get("locked_at"),
+                        "archived": d.get("archived_at") is not None,
                         "created_at": d.get("created_at"),
                         "n_prompts": len(d.get("prompts", [])),
                         "categories": counts,
                         "n_runs": len(list_runs(d["name"]))})
-    out.sort(key=lambda s: (s["locked"], s["name"]))
+    out.sort(key=lambda s: (s["archived"], s["locked"], s["name"]))
     return out
 
 
@@ -292,6 +312,16 @@ def list_runs(set_name: str) -> list[dict]:
             if mf.exists():
                 out.append(json.loads(mf.read_text(encoding="utf-8")))
     return out
+
+
+def delete_run(set_name: str, run_id: str):
+    """Borra un run (imágenes + manifiesto). Los runs son la parte pesada;
+    el set en sí nunca se toca desde aquí."""
+    base = RUNS_DIR.resolve()
+    path = (base / set_name / run_id).resolve()
+    if not path.is_relative_to(base) or not (path / "run.json").exists():
+        raise ValidationSetError(f"no existe el run {run_id!r} del set {set_name!r}")
+    shutil.rmtree(path)
 
 
 # ── Set inicial de arranque (borrador editable) ────────────────────────────
