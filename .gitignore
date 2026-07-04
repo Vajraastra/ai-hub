@@ -173,6 +173,7 @@ bitacora*
 apps/*
 !apps/model_vault/
 !apps/lora_merger/
+!apps/forge_lab/
 models/
 outputs/
 backups/

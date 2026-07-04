@@ -41,6 +41,7 @@ from hub_bridge import bridge
 from merger_routes import merger_router
 from vault_routes import vault_router
 from painter_routes import painter_router
+from forge_routes import forge_router
 
 # ── WebSocket clients ───────────────────────────────────────────────────────
 _ws_clients: list[WebSocket] = []
@@ -93,7 +94,7 @@ bridge.on_log(_on_log)
 api = FastAPI(title="AI Hub WebUI")
 
 
-_NO_CACHE_PATHS = {"/", "/merger", "/vault", "/painter"}
+_NO_CACHE_PATHS = {"/", "/merger", "/vault", "/painter", "/forge"}
 
 class _NoCacheStatic(BaseHTTPMiddleware):
     """Fuerza no-cache en todas las rutas HTML y estáticos para evitar cache persistente de WebKit2GTK."""
@@ -112,6 +113,7 @@ api.mount("/static", StaticFiles(directory=os.path.join(POC_DIR, "static")), nam
 api.include_router(merger_router)
 api.include_router(vault_router)
 api.include_router(painter_router)
+api.include_router(forge_router)
 
 
 # ── Models Pydantic ──────────────────────────────────────────────────────────
@@ -156,6 +158,10 @@ async def vault_page():
 @api.get("/painter")
 async def painter_page():
     return FileResponse(os.path.join(POC_DIR, "static", "painter.html"))
+
+@api.get("/forge")
+async def forge_page():
+    return FileResponse(os.path.join(POC_DIR, "static", "forge.html"))
 
 
 # ── Apps ─────────────────────────────────────────────────────────────────────

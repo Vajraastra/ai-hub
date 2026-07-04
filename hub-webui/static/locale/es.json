@@ -57,6 +57,8 @@
     "section_title": "Herramientas del Hub",
     "vault_desc": "Gestiona y organiza modelos. Integración con Civitai.",
     "merger_desc": "Combina LoRAs con métodos avanzados: slerp, TIES, DARE.",
+    "painter_desc": "Editor de imagen AI: generate, inpaint, outpaint, upscale.",
+    "forge_desc": "Derivación de checkpoints: merge por bloques con validación reproducible.",
     "open": "Abrir",
     "launched": "Herramienta iniciada.",
     "launch_error": "No se pudo iniciar.",

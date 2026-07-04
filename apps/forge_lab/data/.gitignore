@@ -1,0 +1,3 @@
+# Datos de runtime de Forge Lab. Los sets JSON se versionan (activos de reproducibilidad); la BD no.
+*.sqlite
+*.sqlite-journal

@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Forge Lab — AI Hub</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+  <style>
+    #tool-wrap { display:flex; flex-direction:column; min-height:100vh; }
+    #tool-header {
+      display:flex; align-items:center; gap:12px;
+      padding:0 16px; height:52px; flex-shrink:0;
+      background:var(--bg-card); border-bottom:1px solid var(--border);
+    }
+    .back-btn {
+      background:none; border:1px solid var(--border); color:var(--text-secondary);
+      border-radius:6px; padding:4px 10px; font-size:12px; cursor:pointer;
+      transition:color .15s, border-color .15s;
+    }
+    .back-btn:hover { color:var(--text-primary); border-color:var(--accent-purple); }
+    #tool-header h1 { font-size:15px; font-weight:600; color:var(--text-primary); }
+
+    #forge-body { padding:24px; max-width:720px; }
+    .status-card {
+      background:var(--bg-card); border:1px solid var(--border);
+      border-radius:8px; padding:16px 20px; margin-bottom:16px;
+    }
+    .status-card h2 { font-size:13px; font-weight:600; color:var(--text-secondary); margin-bottom:10px; }
+    .status-row { display:flex; justify-content:space-between; gap:12px;
+                  font-size:13px; padding:4px 0; color:var(--text-primary); }
+    .status-row .path { color:var(--text-dim); font-family:'JetBrains Mono',monospace; font-size:12px; }
+    .ok  { color:#4caf82; }
+    .bad { color:#e05c5c; }
+  </style>
+</head>
+<body>
+  <div id="tool-wrap">
+    <div id="tool-header">
+      <button class="back-btn" onclick="location.href='/'">← Hub</button>
+      <h1>🔬 Forge Lab</h1>
+      <span id="arch-label" style="font-size:12px;color:var(--text-dim)"></span>
+    </div>
+    <div id="forge-body">
+      <div class="status-card">
+        <h2>Estado (Fase 0 — esqueleto)</h2>
+        <div id="status-content">Cargando…</div>
+      </div>
+    </div>
+  </div>
+  <script src="/static/forge.js"></script>
+</body>
+</html>
