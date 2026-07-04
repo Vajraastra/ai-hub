@@ -1,5 +1,5 @@
 {
-  "_comment": "Z-Image De-Turbo txt2img. Carga por piezas: DiT (UNETLoader) + Qwen3-4B (CLIPLoader type lumina2, detección por pesos resuelve al TE de Z-Image) + VAE de Flux (latent_formats.Flux). Placeholders: model, prompt, negative, seed, steps, cfg, width, height.",
+  "_comment": "Z-Image De-Turbo txt2img. Carga por piezas: DiT (UNETLoader) + Qwen3-4B (CLIPLoader type lumina2, detección por pesos resuelve al TE de Z-Image) + VAE de Flux (latent_formats.Flux). Placeholders: model, prompt, negative, seed, steps, cfg, sampler, scheduler, width, height.",
   "1": {
     "class_type": "UNETLoader",
     "inputs": { "unet_name": "{{model}}", "weight_dtype": "default" }
@@ -34,8 +34,8 @@
       "seed": "{{seed}}",
       "steps": "{{steps}}",
       "cfg": "{{cfg}}",
-      "sampler_name": "euler",
-      "scheduler": "simple",
+      "sampler_name": "{{sampler}}",
+      "scheduler": "{{scheduler}}",
       "denoise": 1.0
     }
   },

@@ -23,17 +23,86 @@
     .back-btn:hover { color:var(--text-primary); border-color:var(--accent-purple); }
     #tool-header h1 { font-size:15px; font-weight:600; color:var(--text-primary); }
 
-    #forge-body { padding:24px; max-width:720px; }
-    .status-card {
+    #forge-body { padding:24px; max-width:1280px; display:flex; flex-direction:column; gap:16px; }
+    .card {
       background:var(--bg-card); border:1px solid var(--border);
-      border-radius:8px; padding:16px 20px; margin-bottom:16px;
+      border-radius:8px; padding:16px 20px;
     }
-    .status-card h2 { font-size:13px; font-weight:600; color:var(--text-secondary); margin-bottom:10px; }
+    .card h2 { font-size:13px; font-weight:600; color:var(--text-secondary); margin-bottom:10px;
+               display:flex; align-items:center; gap:8px; }
+    .card h2 .spacer { flex:1; }
     .status-row { display:flex; justify-content:space-between; gap:12px;
                   font-size:13px; padding:4px 0; color:var(--text-primary); }
     .status-row .path { color:var(--text-dim); font-family:'JetBrains Mono',monospace; font-size:12px; }
     .ok  { color:#4caf82; }
     .bad { color:#e05c5c; }
+    .mono { font-family:'JetBrains Mono',monospace; }
+    .dim  { color:var(--text-dim); }
+
+    /* lista de sets */
+    .set-row {
+      display:flex; align-items:center; gap:10px; padding:7px 10px;
+      border:1px solid var(--border); border-radius:6px; margin-bottom:6px;
+      cursor:pointer; font-size:13px; color:var(--text-primary);
+      transition:border-color .15s, background .15s;
+    }
+    .set-row:hover { border-color:var(--accent-purple); }
+    .set-row.active { border-color:var(--accent-purple); background:rgba(140,100,255,.07); }
+    .badge {
+      font-size:10px; padding:1px 7px; border-radius:9px; border:1px solid var(--border);
+      color:var(--text-secondary); white-space:nowrap;
+    }
+    .badge.locked { color:#d9a44a; border-color:#d9a44a; }
+    .badge.draft  { color:#4caf82; border-color:#4caf82; }
+
+    /* editor */
+    .sampling-grid { display:flex; flex-wrap:wrap; gap:10px; margin-bottom:14px; }
+    .sampling-grid label { display:flex; flex-direction:column; gap:3px;
+                           font-size:11px; color:var(--text-secondary); }
+    .sampling-grid input {
+      width:92px; background:var(--bg-input,#14141c); border:1px solid var(--border);
+      color:var(--text-primary); border-radius:5px; padding:5px 8px; font-size:12px;
+    }
+    .cat-title { font-size:11px; font-weight:600; letter-spacing:.5px; text-transform:uppercase;
+                 color:var(--text-dim); margin:12px 0 6px; }
+    .prompt-row {
+      display:grid; grid-template-columns:150px 90px 1fr 30px; gap:8px;
+      margin-bottom:6px; align-items:start;
+    }
+    .prompt-row input, .prompt-row textarea, .prompt-row select {
+      background:var(--bg-input,#14141c); border:1px solid var(--border);
+      color:var(--text-primary); border-radius:5px; padding:5px 8px; font-size:12px;
+      width:100%; font-family:inherit;
+    }
+    .prompt-row textarea { resize:vertical; min-height:52px; }
+    .prompt-del { background:none; border:none; color:var(--text-dim); cursor:pointer;
+                  font-size:14px; padding:4px; }
+    .prompt-del:hover { color:#e05c5c; }
+    input:disabled, textarea:disabled, select:disabled { opacity:.55; cursor:not-allowed; }
+    .editor-actions { display:flex; gap:8px; margin-top:14px; flex-wrap:wrap; }
+
+    /* progreso */
+    #run-progress { display:none; margin-top:12px; }
+    .pbar { height:8px; background:var(--bg-input,#14141c); border:1px solid var(--border);
+            border-radius:5px; overflow:hidden; }
+    .pbar > div { height:100%; width:0%; background:var(--accent-purple); transition:width .4s; }
+    #run-progress .plabel { font-size:12px; color:var(--text-secondary); margin-bottom:5px;
+                            font-family:'JetBrains Mono',monospace; }
+
+    /* runs + grid */
+    .run-row { display:flex; align-items:center; gap:10px; font-size:12px; padding:5px 8px;
+               border-bottom:1px solid var(--border); color:var(--text-primary); }
+    .run-row:last-child { border-bottom:none; }
+    #grid-wrap { overflow-x:auto; }
+    table.result-grid { border-collapse:collapse; }
+    table.result-grid th, table.result-grid td {
+      border:1px solid var(--border); padding:6px; font-size:11px;
+      color:var(--text-secondary); vertical-align:top; text-align:center;
+    }
+    table.result-grid th.rowh { text-align:left; max-width:220px; }
+    table.result-grid img { width:224px; height:auto; display:block; border-radius:4px;
+                            cursor:zoom-in; }
+    .cell-missing { color:var(--text-dim); font-size:18px; }
   </style>
 </head>
 <body>
@@ -42,12 +111,52 @@
       <button class="back-btn" onclick="location.href='/'">← Hub</button>
       <h1>🔬 Forge Lab</h1>
       <span id="arch-label" style="font-size:12px;color:var(--text-dim)"></span>
+      <div style="flex:1"></div>
+      <span id="comfy-pill" class="badge">ComfyUI: …</span>
     </div>
+
     <div id="forge-body">
-      <div class="status-card">
-        <h2>Estado (Fase 0 — esqueleto)</h2>
-        <div id="status-content">Cargando…</div>
+
+      <div class="card" id="status-card">
+        <h2>Diagnóstico <span class="spacer"></span>
+            <button class="back-btn" id="btn-status-toggle">mostrar</button></h2>
+        <div id="status-content" style="display:none">Cargando…</div>
       </div>
+
+      <div class="card">
+        <h2>Sets de validación <span class="spacer"></span>
+            <button class="back-btn" id="btn-new-set">＋ Nuevo set</button></h2>
+        <div id="sets-list" class="dim" style="font-size:13px">Cargando…</div>
+      </div>
+
+      <div class="card" id="editor-card" style="display:none">
+        <h2><span id="editor-title"></span> <span id="editor-badge"></span>
+            <span class="spacer"></span></h2>
+        <div class="sampling-grid" id="sampling-grid"></div>
+        <div id="prompts-editor"></div>
+        <div class="editor-actions">
+          <button class="btn btn-outline" id="btn-add-prompt">＋ Prompt</button>
+          <button class="btn btn-primary" id="btn-save-set">Guardar borrador</button>
+          <button class="btn btn-outline" id="btn-lock-set">🔒 Bloquear</button>
+          <button class="btn btn-outline" id="btn-clone-set">Clonar</button>
+          <button class="btn btn-outline danger" id="btn-delete-set">Eliminar</button>
+          <div style="flex:1"></div>
+          <button class="btn btn-primary" id="btn-run-set">▶ Regenerar set</button>
+        </div>
+        <div id="run-progress">
+          <div class="plabel" id="run-progress-label"></div>
+          <div class="pbar"><div id="run-progress-fill"></div></div>
+        </div>
+      </div>
+
+      <div class="card" id="runs-card" style="display:none">
+        <h2>Runs del set <span class="spacer"></span>
+            <span class="dim" style="font-size:11px;font-weight:400">
+              marca runs para compararlos en el grid</span></h2>
+        <div id="runs-list"></div>
+        <div id="grid-wrap" style="margin-top:14px"></div>
+      </div>
+
     </div>
   </div>
   <script src="/static/forge.js"></script>

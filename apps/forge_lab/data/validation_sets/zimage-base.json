@@ -1,0 +1,80 @@
+{
+  "name": "zimage-base",
+  "arch": "zimage",
+  "created_at": "2026-07-04T14:30:48-06:00",
+  "locked_at": null,
+  "sampling": {
+    "cfg": 2.5,
+    "steps": 25,
+    "sampler": "euler",
+    "scheduler": "simple",
+    "width": 1024,
+    "height": 1024
+  },
+  "prompts": [
+    {
+      "id": "target-pixar",
+      "category": "target",
+      "text": "3d render of a cheerful young explorer girl with a backpack standing on a mossy forest rock, pixar animation style, soft studio lighting, subsurface scattering, high quality",
+      "negative": "",
+      "seed": 101101
+    },
+    {
+      "id": "target-clay",
+      "category": "target",
+      "text": "claymation style 3d render of a small friendly dragon cooking soup in a rustic kitchen, stop motion look, handcrafted textures, warm lighting",
+      "negative": "",
+      "seed": 202202
+    },
+    {
+      "id": "target-lowpoly",
+      "category": "target",
+      "text": "low poly 3d render of a lighthouse on a coastal cliff at sunset, isometric view, flat shading, vibrant colors, clean geometry",
+      "negative": "",
+      "seed": 303303
+    },
+    {
+      "id": "general-photo",
+      "category": "general",
+      "text": "documentary photograph of an elderly fisherman repairing a net at dawn, natural light, 35mm film grain, shallow depth of field",
+      "negative": "",
+      "seed": 404404
+    },
+    {
+      "id": "general-oil",
+      "category": "general",
+      "text": "oil painting of a stormy sea with a small sailboat, impressionist brushstrokes, dramatic sky, muted palette",
+      "negative": "",
+      "seed": 505505
+    },
+    {
+      "id": "general-anime",
+      "category": "general",
+      "text": "2d anime illustration of a student reading under a cherry blossom tree, clean lineart, cel shading, spring afternoon",
+      "negative": "",
+      "seed": 606606
+    },
+    {
+      "id": "stress-hands",
+      "category": "stress",
+      "text": "close-up of two hands shuffling playing cards, interlaced fingers clearly visible, photorealistic, sharp focus",
+      "negative": "",
+      "seed": 707707
+    },
+    {
+      "id": "stress-crowd",
+      "category": "stress",
+      "text": "three chefs arguing in a busy restaurant kitchen, one pointing at a burnt dish, another holding a frying pan, dynamic poses, full bodies visible",
+      "negative": "",
+      "seed": 808808
+    },
+    {
+      "id": "stress-text",
+      "category": "stress",
+      "text": "storefront of a small bakery with a wooden sign that reads 'PAN DE ORO', chalkboard menu with prices by the door, morning light",
+      "negative": "",
+      "seed": 909909
+    }
+  ],
+  "fingerprint": "8500d44cff76520c768acd33e0c0219e72bd09b34959717d6d50a463638fecf7"
+}
