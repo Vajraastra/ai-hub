@@ -46,6 +46,22 @@ _REQUIRED_NODES = [
 _SAMPLERS = ["euler", "euler_ancestral", "dpmpp_2m", "dpmpp_2m_sde", "dpmpp_sde",
              "ddim", "lcm", "res_multistep"]
 
+# Ideogram 4 exige un encoder Qwen3-VL (el CLIPLoader usa type:"ideogram4") y el
+# VAE de Flux2 (16 canales). Cualquier otro encoder/VAE hace que un nodo de
+# ComfyUI reviente al desempaquetar shapes distintos ("expected 4, got 1" en
+# CLIPTextEncode con gemma4/t5, o mismatch de canales en el VAE con ae/flux1).
+# Filtramos los catálogos a lo compatible para que la UI no pueda ofrecer trampas.
+_CLIP_OK = ("qwen3vl",)
+_VAE_OK = ("flux2",)
+
+
+def _compat(items: list[str], needles: tuple[str, ...]) -> list[str]:
+    """Filtra por subcadena (case-insensitive). Si nada casa, devuelve la lista
+    completa como fallback para no dejar el desplegable vacío en instalaciones
+    con nombres inesperados."""
+    hit = [m for m in items if any(n in m.lower() for n in needles)]
+    return hit or items
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Diagnóstico / catálogos
@@ -83,8 +99,16 @@ async def models():
     for m in (te_a or []) + (te_b or []):
         if m not in seen:
             seen.add(m); text_encoders.append(m)
-    _te_pat = ("qwen3vl", "gemma4", "ideogram")
+    # Solo encoders compatibles con Ideogram 4 (Qwen3-VL). Antes se listaban los
+    # 15 encoders del sistema (t5, clip_l, gemma4…) y el 1º del orden alfabético
+    # era gemma4 → CLIPTextEncode reventaba con "expected 4, got 1".
+    text_encoders = _compat(text_encoders, _CLIP_OK)
+    _te_pat = ("qwen3vl", "ideogram")
     text_encoders.sort(key=lambda m: (not any(p in m.lower() for p in _te_pat), m.lower()))
+
+    # Solo VAEs de Flux2 (16 canales). Un ae/flux1 (4 canales) daría un mismatch
+    # de shape análogo dentro del VAELoader/decode.
+    vae = _compat(vae, _VAE_OK)
 
     # partir difusión en condicional / incondicional por el nombre
     cond = [m for m in diffusion if "unconditional" not in m.lower() and "ideogram" in m.lower()]
@@ -125,8 +149,8 @@ async def unload_llm():
 class CaptionBody(BaseModel):
     description: str
     llm_model: str
-    width: int = 1024
-    height: int = 1024
+    width: int = 2048
+    height: int = 2048
     temperature: float = 0.6
 
 
@@ -148,6 +172,38 @@ async def make_caption(body: CaptionBody):
     return {"caption": caption, "prompt": cap.to_prompt_string(caption)}
 
 
+class RefineBody(BaseModel):
+    caption: dict            # borrador manual (cajas ya colocadas por el usuario)
+    llm_model: str
+    general: str = ""        # prompt general opcional (refuerza high_level_description)
+    width: int = 2048
+    height: int = 2048
+    temperature: float = 0.6
+
+
+@ideogram_router.post("/refine")
+async def refine_caption(body: RefineBody):
+    """MODO MANUAL: el usuario arma las cajas a mano y el LLM completa el resto
+    (estilo/fondo/paletas/resumen) SIN tocar su composición."""
+    try:
+        manual = cap.validate_and_clean(body.caption)   # limpia/valida la geometría del usuario
+    except cap.CaptionError as e:
+        raise HTTPException(400, f"borrador manual inválido (¿dibujaste alguna caja?): {e}")
+    if not await _lm.health_check():
+        raise HTTPException(503, "LM Studio no responde en :1234")
+    try:
+        messages = cap.build_refine_messages(manual, body.general, body.width, body.height)
+        raw = await _lm.chat_json(body.llm_model, messages, cap.IDEOGRAM_JSON_SCHEMA,
+                                  temperature=body.temperature)
+        if "__raw__" in raw:
+            raw = cap.parse_llm_output(raw["__raw__"])
+        refined = cap.validate_and_clean(raw)
+        merged = cap.preserve_geometry(manual, refined, body.general)
+    except (LMStudioError, cap.CaptionError) as e:
+        raise HTTPException(502, f"fallo configurando el caption: {e}")
+    return {"caption": merged, "prompt": cap.to_prompt_string(merged)}
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Generación (pipeline completo como job en background)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -161,15 +217,21 @@ class GenerateBody(BaseModel):
     unet_uncond: str = ""
     clip_name: str
     vae_name: str
-    width: int = 1024
-    height: int = 1024
+    width: int = 2048
+    height: int = 2048
     steps: int = 20
     mu: float = 0.5
     std: float = 1.75
-    cfg: float = 7.0
+    cfg: float = 3.0
     sampler: str = "euler"
     seed: int = -1
     manage_vram: bool = True
+    # Anti-bloqueo (experimental): perturba el arranque del sampleo para escapar
+    # del cuadro gris del filtro. Off por defecto — no altera el flujo normal.
+    bypass_enabled: bool = False
+    bypass_method: str = "ruido"          # "ruido" (ModelNoiseScale) | "sigma" (SetFirstSigma)
+    bypass_noise_scale: float = 2.0
+    bypass_first_sigma: float = 136.0
 
 
 _jobs: dict[str, dict] = {}
@@ -204,6 +266,14 @@ async def generate(body: GenerateBody):
         raise HTTPException(400, "hace falta una descripción o un JSON de prompt")
     if not body.unet_uncond:
         raise HTTPException(400, "falta el modelo incondicional (unet_uncond)")
+    # Guard de compatibilidad: rechazar encoder/VAE incompatibles con un mensaje
+    # claro en vez de dejar que un nodo de ComfyUI reviente a mitad de render.
+    if not any(n in body.clip_name.lower() for n in _CLIP_OK):
+        raise HTTPException(400, f"CLIP '{body.clip_name}' incompatible con Ideogram 4; "
+                                 f"usa un encoder Qwen3-VL (type:ideogram4).")
+    if not any(n in body.vae_name.lower() for n in _VAE_OK):
+        raise HTTPException(400, f"VAE '{body.vae_name}' incompatible con Ideogram 4; "
+                                 f"usa el VAE de Flux2 (16 canales).")
 
     params = GenParams(**body.model_dump())
     job_id = uuid.uuid4().hex[:12]

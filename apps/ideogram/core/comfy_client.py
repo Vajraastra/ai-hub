@@ -27,6 +27,25 @@ class ComfyError(Exception):
     pass
 
 
+def _format_exec_error(d: dict) -> str:
+    """Construye un mensaje útil desde el evento execution_error de ComfyUI.
+    ComfyUI manda node_type/node_id/exception_type/exception_message/traceback;
+    el cliente antes solo pasaba exception_message, dejando 'expected 4, got 1'
+    sin decir QUÉ nodo lo lanzó. Ahora se identifica el nodo y el tipo."""
+    node_type = d.get("node_type") or "?"
+    node_id = d.get("node_id") or "?"
+    exc_type = d.get("exception_type") or ""
+    msg = d.get("exception_message") or "Error desconocido en ComfyUI"
+    tb = d.get("traceback")
+    tail = ""
+    if isinstance(tb, list) and tb:
+        tail = "\n" + "".join(tb[-4:]).rstrip()
+    elif isinstance(tb, str) and tb.strip():
+        tail = "\n" + "\n".join(tb.strip().splitlines()[-4:])
+    exc = f"{exc_type}: " if exc_type else ""
+    return f"nodo {node_type} (#{node_id}) — {exc}{msg}{tail}"
+
+
 class ComfyClient:
     def __init__(self, host: str = "localhost", port: int = 8188):
         self.base_url = f"http://{host}:{port}"
@@ -125,9 +144,7 @@ class ComfyClient:
                         elif mtype == "execution_error":
                             d = data.get("data", {})
                             if d.get("prompt_id") == prompt_id:
-                                raise ComfyError(
-                                    d.get("exception_message", "Error desconocido en ComfyUI")
-                                )
+                                raise ComfyError(_format_exec_error(d))
 
                         elif mtype == "execution_interrupted":
                             raise ComfyError("Generación cancelada por el usuario")

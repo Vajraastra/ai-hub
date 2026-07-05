@@ -50,20 +50,63 @@ class GenParams:
     clip_name: str = ""
     vae_name: str = ""
     # sampling
-    width: int = 1024
-    height: int = 1024
+    width: int = 2048
+    height: int = 2048
     steps: int = 20
     mu: float = 0.5
     std: float = 1.75
-    cfg: float = 7.0
+    cfg: float = 3.0
     sampler: str = "euler"
     seed: int = -1
+    # anti-bloqueo (experimental): perturba el arranque del sampleo
+    bypass_enabled: bool = False
+    bypass_method: str = "ruido"      # "ruido" | "sigma"
+    bypass_noise_scale: float = 2.0
+    bypass_first_sigma: float = 136.0
     # orquestación
     manage_vram: bool = True
 
 
 def _resolve_seed(seed: int) -> int:
     return random.randint(0, MAX_SEED) if seed is None or seed < 0 else int(seed)
+
+
+def _apply_bypass(wf: dict, params: GenParams) -> dict:
+    """Parchea el workflow (nodos NATIVOS, sin customs) para perturbar el arranque
+    del sampleo y escapar del cuadro gris del filtro. Dos técnicas seleccionables:
+
+    - "ruido": envuelve ambos UNET con ModelNoiseScale(noise_scale) antes del
+      DualModelGuider → amplifica el ruido (Method 2 del research, ×2 por defecto).
+    - "sigma": inserta SetFirstSigma(sigma) entre el Ideogram4Scheduler y el
+      SamplerCustomAdvanced → fija el primer sigma (Method 1; es absoluto, no un
+      +delta, porque ComfyUI nativo no tiene un nodo de suma sobre sigmas).
+
+    Devuelve la info aplicada (para el manifest). No-op si bypass_enabled=False.
+    """
+    if not params.bypass_enabled:
+        return {}
+
+    method = params.bypass_method
+    if method == "ruido":
+        scale = float(params.bypass_noise_scale)
+        # UNET cond (nodo "1") y uncond (nodo "2") → cada uno pasa por su wrapper.
+        wf["20"] = {"class_type": "ModelNoiseScale",
+                    "inputs": {"model": ["1", 0], "noise_scale": scale}}
+        wf["21"] = {"class_type": "ModelNoiseScale",
+                    "inputs": {"model": ["2", 0], "noise_scale": scale}}
+        wf["6"]["inputs"]["model"] = ["20", 0]
+        wf["6"]["inputs"]["model_negative"] = ["21", 0]
+        return {"method": "ruido", "noise_scale": scale}
+
+    if method == "sigma":
+        val = float(params.bypass_first_sigma)
+        # Los sigmas salen del Ideogram4Scheduler (nodo "7") hacia el sampler ("11").
+        wf["22"] = {"class_type": "SetFirstSigma",
+                    "inputs": {"sigmas": ["7", 0], "sigma": val}}
+        wf["11"]["inputs"]["sigmas"] = ["22", 0]
+        return {"method": "sigma", "first_sigma": val}
+
+    raise PipelineError(f"método de anti-bloqueo desconocido: {method!r}")
 
 
 async def build_caption(lm: LMStudio, params: GenParams,
@@ -125,6 +168,7 @@ async def generate(comfy: ComfyClient, lm: LMStudio, params: GenParams,
         raise PipelineError("ComfyUI no responde en :8188 — arráncalo desde el Hub")
 
     wf = load_workflow(_WORKFLOW)
+    bypass_info = _apply_bypass(wf, params)
     render_params = {
         "unet_cond": params.unet_cond,
         "unet_uncond": params.unet_uncond,
@@ -141,6 +185,8 @@ async def generate(comfy: ComfyClient, lm: LMStudio, params: GenParams,
         "seed": seed,
     }
     png = await comfy.run_workflow(wf, render_params, on_progress=on_step)
+    if bypass_info:
+        render_params["bypass"] = bypass_info   # solo para el manifest
 
     # 4. blockguard
     phase("check")

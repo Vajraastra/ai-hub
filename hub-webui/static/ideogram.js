@@ -9,6 +9,7 @@ const state = {
   sel: -1,                // índice de caja seleccionada
   jobTimer: null,
   models: null,
+  mode: "auto",           // "auto" (LLM arma todo) | "manual" (usuario dibuja, LLM completa)
 };
 
 // ── Tabs ─────────────────────────────────────────────────────────────────────
@@ -48,10 +49,19 @@ async function init(){
     fillSelect($("vaeName"), m.vae);
     fillSelect($("psampler"), m.samplers, "euler");
     fillSelect($("llmModel"), m.llms.map(x=>x.id));
-    // preseleccionar vae flux2 si existe
-    const flux = (m.vae||[]).find(v=>/flux2/i.test(v)); if(flux) $("vaeName").value=flux;
+    // Preseleccionar la config óptima validada con GPU (batería, sesión 36d):
+    // cond=int8_convrot · uncond=nvfp4_mixed · clip=qwen3vl_8b_fp8 · vae=flux2.
+    // Sin esto los selectores caen en el 1º del desplegable — p.ej. el CLIP
+    // por defecto sería gemma4 (orden alfabético), incompatible con el tipo
+    // ideogram4 → nodo de ComfyUI revienta con un unpack de shape.
+    const pick=(sel,arr,re)=>{ const v=(arr||[]).find(x=>re.test(x)); if(v) sel.value=v; };
+    pick($("unetCond"),   m.cond,          /int8_convrot/i);
+    pick($("unetUncond"), m.uncond,        /unconditional.*nvfp4/i);
+    pick($("clipName"),   m.text_encoders, /qwen3vl.*fp8/i);
+    pick($("vaeName"),    m.vae,           /flux2/i);
     if(m.lm_error) banner($("genBanner"), "LM Studio: "+m.lm_error+" (puedes pegar un JSON a mano).","warn");
   } catch(e){ banner($("genBanner"),"No se pudieron cargar los modelos: "+e.message,"err"); }
+  setMode("auto");
   drawCanvas();
 }
 
@@ -69,6 +79,43 @@ $("btnCaption").onclick = async () => {
     applyCaption(r.caption);
   }catch(e){ banner($("genBanner"),"Fallo del LLM: "+e.message,"err"); }
   $("btnCaption").disabled=false; $("btnCaption").textContent="Generar JSON";
+};
+
+// ── Switch Automático / Manual ────────────────────────────────────────────────
+function setMode(m){
+  state.mode = m;
+  const manual = m === "manual";
+  $("modeAuto").className   = manual ? "ghost" : "act";
+  $("modeManual").className = manual ? "act"   : "ghost";
+  $("lblDesc").textContent  = manual ? "1 · Prompt general" : "1 · Descripción";
+  $("desc").placeholder     = manual
+    ? "Idea global de la escena (tema, estilo, ambiente). Tú dibujas las cajas abajo; el LLM solo completa el resto."
+    : "Describe la imagen en lenguaje natural. Ej: un gato naranja dormido en un sofá de terciopelo azul junto a una ventana al atardecer.";
+  $("btnCaption").style.display = manual ? "none" : "";
+  $("btnRefine").style.display  = manual ? "" : "none";
+  $("descHint").textContent = manual
+    ? "Manual: doble-clic o «+ Caja» para añadir, arrastra/redimensiona y escribe el desc de cada una. «Configurar con LLM» completa estilo y fondo sin mover tus cajas."
+    : "El LLM descompone la escena en sujeto + entorno (varias cajas = evita el filtro).";
+}
+$("modeAuto").onclick   = () => setMode("auto");
+$("modeManual").onclick = () => setMode("manual");
+
+// ── Configurar con LLM (modo manual): completa el borrador sin tocar las cajas ─
+$("btnRefine").onclick = async () => {
+  if(!state.caption || !state.boxes.length){ banner($("genBanner"),"Dibuja al menos una caja primero.","warn"); return; }
+  const llm=$("llmModel").value;
+  if(!llm){ banner($("genBanner"),"No hay LLM en LM Studio. Rellena el JSON a mano.","warn"); return; }
+  const general=$("desc").value.trim();
+  if(general && !(state.caption.high_level_description||"").trim()) state.caption.high_level_description=general;
+  syncJsonFromState();
+  $("btnRefine").disabled=true; $("btnRefine").textContent="Configurando…"; banner($("genBanner"),"","");
+  try{
+    const r=await jpost("/refine",{caption:state.caption, llm_model:llm, general,
+      width:+$("pw").value, height:+$("ph").value});
+    applyCaption(r.caption);
+    banner($("genBanner"),"JSON configurado por el LLM (tus cajas se conservan). Revisa y renderiza.","warn");
+  }catch(e){ banner($("genBanner"),"Fallo configurando: "+e.message,"err"); }
+  $("btnRefine").disabled=false; $("btnRefine").textContent="Configurar con LLM";
 };
 
 function applyCaption(caption){
@@ -127,6 +174,14 @@ function setCanvasAspect(){
 }
 ["pw","ph"].forEach(id=>$(id).addEventListener("input",()=>{setCanvasAspect();drawCanvas();}));
 
+// ── Anti-bloqueo (experimental): mostrar opciones + campo según método ─────────
+$("bypassOn").addEventListener("change",()=>{ $("bypassOpts").style.display=$("bypassOn").checked?"block":"none"; });
+$("bypassMethod").addEventListener("change",()=>{
+  const sigma=$("bypassMethod").value==="sigma";
+  $("fldBypassSigma").style.display=sigma?"":"none";
+  $("fldBypassNoise").style.display=sigma?"none":"";
+});
+
 function toLogic(ev){
   const r=cv.getBoundingClientRect();
   return { x: Math.max(0,Math.min(G,(ev.clientX-r.left)/r.width*G)),
@@ -160,13 +215,15 @@ function drawCanvas(){
   });
 }
 
-cv.addEventListener("dblclick",(ev)=>{
-  const p=toLogic(ev); const s=120;
-  const nb={type:"obj",bbox:[Math.max(0,p.y-s),Math.max(0,p.x-s),Math.min(G,p.y+s),Math.min(G,p.x+s)],desc:"nuevo elemento"};
+function addBox(cy=500, cx=500, s=140){
+  const nb={type:"obj",bbox:[Math.max(0,Math.round(cy-s)),Math.max(0,Math.round(cx-s)),
+                             Math.min(G,Math.round(cy+s)),Math.min(G,Math.round(cx+s))],desc:"nuevo elemento"};
   if(!state.caption) state.caption={high_level_description:"",style_description:{aesthetics:"",lighting:"",medium:""},compositional_deconstruction:{background:"",elements:[]}};
   state.boxes.push(nb); state.sel=state.boxes.length-1;
   syncJsonFromState(); refreshBoxList(); drawCanvas();
-});
+}
+cv.addEventListener("dblclick",(ev)=>{ const p=toLogic(ev); addBox(p.y,p.x,120); });
+$("btnAddBox").onclick = () => addBox();
 
 cv.addEventListener("pointerdown",(ev)=>{
   const p=toLogic(ev);
@@ -192,6 +249,12 @@ document.addEventListener("keydown",(e)=>{ if(e.key==="Delete"&&state.sel>=0&&do
 
 // ── Render (pipeline completo) ────────────────────────────────────────────────
 $("btnGenerate").onclick = async () => {
+  // En manual el textarea es el prompt general: se vuelca al resumen si aún no lo hay.
+  if(state.mode==="manual" && state.caption){
+    const g=$("desc").value.trim();
+    if(g && !(state.caption.high_level_description||"").trim()) state.caption.high_level_description=g;
+    syncJsonFromState();
+  }
   const body = {
     description: $("desc").value.trim(),
     json_prompt: $("jsonPrompt").value.trim(),
@@ -204,6 +267,10 @@ $("btnGenerate").onclick = async () => {
     cfg:+$("pcfg").value, mu:+$("pmu").value, std:+$("pstd").value,
     sampler:$("psampler").value, seed:+$("pseed").value,
     manage_vram: $("manageVram").checked,
+    bypass_enabled: $("bypassOn").checked,
+    bypass_method: $("bypassMethod").value,
+    bypass_noise_scale: +$("bypassNoise").value,
+    bypass_first_sigma: +$("bypassSigma").value,
   };
   if(!body.unet_cond||!body.unet_uncond){ banner($("genBanner"),"Selecciona modelo condicional e incondicional.","warn"); return; }
   banner($("genBanner"),"","");

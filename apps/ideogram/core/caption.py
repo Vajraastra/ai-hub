@@ -117,6 +117,39 @@ Devuelve EXCLUSIVAMENTE el objeto JSON, sin explicaciones ni ```.\
 """
 
 
+# Prompt para el MODO MANUAL: el usuario ya colocó las cajas; el LLM solo
+# completa/normaliza el borrador SIN tocar la composición. La geometría se
+# refuerza además en el backend (preserve_geometry), así que aunque el LLM
+# desobedezca, las cajas del usuario se conservan intactas.
+REFINE_SYSTEM_PROMPT = """\
+Eres un compositor experto de captions JSON para el modelo de imagen Ideogram 4.
+El usuario YA ha colocado a mano las cajas (bounding boxes) de la composición y
+ha escrito sus descripciones. Tu tarea es COMPLETAR y NORMALIZAR ese borrador,
+NUNCA rehacerlo.
+
+REGLAS ABSOLUTAS:
+
+1. NO añadas, elimines, muevas ni redimensiones ninguna caja. Respeta EXACTAMENTE
+   el número, el orden, las coordenadas "bbox", el "type" y el "text" que llegan.
+
+2. Puedes pulir la redacción de cada "desc" para que sea clara y evocadora, sin
+   cambiar su significado ni el objeto que describe.
+
+3. Rellena lo global que falte: "high_level_description" (una o dos frases que
+   resuman la escena, coherentes con el prompt general del usuario si lo hay),
+   "style_description" (aesthetics, lighting y medium obligatorios; photo o
+   art_style y color_palette cuando ayuden) y "background" (entorno en prosa breve).
+
+4. Añade "color_palette" (hex #RRGGBB) a los elementos donde aporte, sin inventar
+   contenido nuevo ni cajas nuevas.
+
+5. Sé fiel a lo que el usuario compuso; no infles el prompt (el upsampling agresivo
+   dispara el filtro de seguridad).
+
+Devuelve EXCLUSIVAMENTE el objeto JSON completo, sin explicaciones ni ```.\
+"""
+
+
 def build_messages(description: str, width: int = 1024, height: int = 1024) -> list[dict]:
     """Mensajes para el chat del LLM. La descripción del usuario + el aspecto
     del lienzo (ayuda al LLM a ubicar las cajas)."""
@@ -128,6 +161,24 @@ def build_messages(description: str, width: int = 1024, height: int = 1024) -> l
     )
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": user},
+    ]
+
+
+def build_refine_messages(manual: dict, general: str = "",
+                          width: int = 2048, height: int = 2048) -> list[dict]:
+    """Mensajes para el MODO MANUAL: se le pasa al LLM el borrador con las cajas
+    ya colocadas para que lo complete/normalice sin alterar la composición."""
+    aspect = _aspect_hint(width, height)
+    payload = json.dumps(manual, ensure_ascii=False, indent=2)
+    gp = f"\nPrompt general del usuario:\n{general.strip()}\n" if general.strip() else ""
+    user = (
+        f"Lienzo: {width}x{height} px ({aspect}). Rejilla de bounding boxes 0-1000.\n{gp}\n"
+        f"Borrador manual del usuario (cajas ya colocadas):\n{payload}\n\n"
+        "Completa y normaliza este caption siguiendo las reglas. Conserva las cajas intactas."
+    )
+    return [
+        {"role": "system", "content": REFINE_SYSTEM_PROMPT},
         {"role": "user", "content": user},
     ]
 
@@ -244,6 +295,34 @@ def validate_and_clean(obj: dict) -> dict:
         "elements": elements,
     }
     return out
+
+
+def preserve_geometry(manual: dict, refined: dict, general: str = "") -> dict:
+    """Fusiona el refinado del LLM sobre el borrador manual GARANTIZANDO que la
+    geometría del usuario manda: fuerza bbox/type/text de cada caja manual y solo
+    toma del LLM la redacción de "desc", las paletas y los campos globales
+    (estilo, fondo, resumen). Blindaje: aunque el LLM mueva/añada/borre cajas, la
+    composición del usuario se conserva intacta."""
+    man_els = manual.get("compositional_deconstruction", {}).get("elements", [])
+    comp = refined.setdefault("compositional_deconstruction", {})
+    ref_els = comp.get("elements") if isinstance(comp.get("elements"), list) else []
+    merged = []
+    for i, m in enumerate(man_els):
+        e = {"type": m["type"], "bbox": m["bbox"], "desc": m.get("desc", "")}
+        if m["type"] == "text":
+            e["text"] = m.get("text", "")
+        r = ref_els[i] if i < len(ref_els) else {}
+        if isinstance(r, dict):
+            if r.get("desc"):
+                e["desc"] = str(r["desc"])
+            pal = _clean_palette(r.get("color_palette"), 5)
+            if pal:
+                e["color_palette"] = pal
+        merged.append(e)
+    comp["elements"] = merged
+    if general.strip() and not str(refined.get("high_level_description", "")).strip():
+        refined["high_level_description"] = general.strip()
+    return refined
 
 
 def to_prompt_string(caption: dict) -> str:

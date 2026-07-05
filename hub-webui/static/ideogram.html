@@ -112,13 +112,18 @@
       <!-- Columna izquierda: prompt + cajas -->
       <div>
         <div class="card">
-          <h2>1 · Descripción</h2>
+          <h2><span id="lblDesc">1 · Descripción</span>
+            <span class="spacer"></span>
+            <button class="act" id="modeAuto" style="padding:4px 12px">Automático</button>
+            <button class="ghost" id="modeManual" style="padding:4px 12px">Manual</button>
+          </h2>
           <textarea id="desc" rows="4" placeholder="Describe la imagen en lenguaje natural. Ej: un gato naranja dormido en un sofá de terciopelo azul junto a una ventana al atardecer."></textarea>
           <div class="row" style="margin-top:8px; align-items:center;">
             <select id="llmModel" style="flex:2"></select>
             <button class="ghost" id="btnCaption" style="flex:1">Generar JSON</button>
+            <button class="ghost" id="btnRefine" style="flex:1; display:none">Configurar con LLM</button>
           </div>
-          <div class="dim" style="margin-top:6px">El LLM descompone la escena en sujeto + entorno (varias cajas = evita el filtro).</div>
+          <div class="dim" id="descHint" style="margin-top:6px">El LLM descompone la escena en sujeto + entorno (varias cajas = evita el filtro).</div>
         </div>
 
         <div class="card">
@@ -132,6 +137,7 @@
               <option value="obj">obj</option><option value="text">text</option>
             </select>
             <input type="text" id="selBoxText" placeholder="texto a rotular (si type=text)" style="flex:2">
+            <button class="ghost" id="btnAddBox">+ Caja</button>
             <button class="ghost" id="btnDelBox">Borrar caja</button>
           </div>
           <input type="text" id="selBoxDesc" placeholder="descripción de la caja seleccionada" style="margin-top:8px">
@@ -162,12 +168,12 @@
         <div class="card">
           <h2>Sampling</h2>
           <div class="row3">
-            <div><label class="fld">Ancho</label><input type="number" id="pw" value="1024" step="16"></div>
-            <div><label class="fld">Alto</label><input type="number" id="ph" value="1024" step="16"></div>
+            <div><label class="fld">Ancho</label><input type="number" id="pw" value="2048" step="16"></div>
+            <div><label class="fld">Alto</label><input type="number" id="ph" value="2048" step="16"></div>
             <div><label class="fld">Steps</label><input type="number" id="psteps" value="20" min="1"></div>
           </div>
           <div class="row3">
-            <div><label class="fld">cfg</label><input type="number" id="pcfg" value="7" step="0.1"></div>
+            <div><label class="fld">cfg</label><input type="number" id="pcfg" value="3" step="0.1"></div>
             <div><label class="fld">mu</label><input type="number" id="pmu" value="0.5" step="0.05"></div>
             <div><label class="fld">std</label><input type="number" id="pstd" value="1.75" step="0.05"></div>
           </div>
@@ -178,6 +184,25 @@
           <label class="fld" style="margin-top:10px">
             <input type="checkbox" id="manageVram" checked style="width:auto"> Descargar el LLM de la VRAM antes de renderizar
           </label>
+
+          <div style="margin-top:10px; border-top:1px solid var(--border); padding-top:10px">
+            <label class="fld">
+              <input type="checkbox" id="bypassOn" style="width:auto"> Anti-bloqueo del filtro (experimental)
+            </label>
+            <div id="bypassOpts" style="display:none; margin-top:8px">
+              <div class="row3">
+                <div><label class="fld">Método</label><select id="bypassMethod">
+                  <option value="ruido">Ruido (×)</option>
+                  <option value="sigma">Primer sigma</option>
+                </select></div>
+                <div id="fldBypassNoise"><label class="fld">Escala de ruido</label><input type="number" id="bypassNoise" value="2.0" step="0.1" min="0"></div>
+                <div id="fldBypassSigma" style="display:none"><label class="fld">Primer sigma</label><input type="number" id="bypassSigma" value="136" step="0.001"></div>
+              </div>
+              <div class="fld" style="color:var(--text-dim); margin-top:4px; font-size:11px">
+                Perturba el arranque del sampleo para escapar del cuadro gris de bloqueo. Afínalo por ensayo.
+              </div>
+            </div>
+          </div>
         </div>
 
         <div class="card">
