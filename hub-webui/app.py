@@ -96,6 +96,29 @@ api = FastAPI(title="AI Hub WebUI")
 
 _NO_CACHE_PATHS = {"/", "/merger", "/vault", "/painter", "/forge"}
 
+# ── Stop-all con periodo de gracia ───────────────────────────────────────────
+_STOP_GRACE_SECS = 8.0
+_pending_stop: Optional[threading.Timer] = None
+_pending_stop_lock = threading.Lock()
+
+
+def _cancel_pending_stop():
+    global _pending_stop
+    with _pending_stop_lock:
+        if _pending_stop is not None:
+            _pending_stop.cancel()
+            _pending_stop = None
+
+
+class _CancelPendingStop(BaseHTTPMiddleware):
+    """Cualquier página o petición API tras el beacon de stop-all significa
+    que el hub sigue en uso (recarga u otra pestaña) → cancelar el stop."""
+    async def dispatch(self, request: Request, call_next):
+        p = request.url.path
+        if p in _NO_CACHE_PATHS or (p.startswith("/api/") and p != "/api/stop-all"):
+            _cancel_pending_stop()
+        return await call_next(request)
+
 class _NoCacheStatic(BaseHTTPMiddleware):
     """Fuerza no-cache en todas las rutas HTML y estáticos para evitar cache persistente de WebKit2GTK."""
     async def dispatch(self, request: Request, call_next):
@@ -109,6 +132,7 @@ class _NoCacheStatic(BaseHTTPMiddleware):
 
 
 api.add_middleware(_NoCacheStatic)
+api.add_middleware(_CancelPendingStop)
 api.mount("/static", StaticFiles(directory=os.path.join(POC_DIR, "static")), name="static")
 api.include_router(merger_router)
 api.include_router(vault_router)
@@ -271,9 +295,28 @@ async def cleanup():
 
 @api.post("/api/stop-all")
 async def stop_all():
-    """Detiene todas las apps. Llamado por el frontend al cerrar la pestaña."""
-    threading.Thread(target=bridge.stop_all_running, daemon=True).start()
-    return {"ok": True}
+    """Programa el stop de todas las apps con periodo de gracia.
+
+    El beacon de beforeunload también se dispara en un simple F5 o al navegar,
+    así que no se puede matar las apps al instante: se programa el stop y
+    cualquier petición posterior (la página recargada u otra pestaña del hub
+    aún viva) lo cancela vía _CancelPendingStop.
+    """
+    global _pending_stop
+    with _pending_stop_lock:
+        if _pending_stop is not None:
+            _pending_stop.cancel()
+
+        def _fire():
+            global _pending_stop
+            with _pending_stop_lock:
+                _pending_stop = None
+            bridge.stop_all_running()
+
+        _pending_stop = threading.Timer(_STOP_GRACE_SECS, _fire)
+        _pending_stop.daemon = True
+        _pending_stop.start()
+    return {"ok": True, "grace_secs": _STOP_GRACE_SECS}
 
 
 # ── Herramientas externas ─────────────────────────────────────────────────────
