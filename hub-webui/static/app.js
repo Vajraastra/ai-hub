@@ -136,16 +136,16 @@ function buildCardHTML(app, effectiveStatus) {
   } else if (app.status === "running") {
     btns = `<div class="btn-row">
       <button class="btn btn-stop" onclick="appAction('stop','${app.id}')">${t("apps.btn.stop")}</button>
-      <button class="btn btn-icon" onclick="openAppSettings('${app.id}')" title="${t("apps.btn.settings")}">${t("apps.btn.settings")}</button>
+      <button class="btn btn-icon" onclick="openAppSettings('${app.id}')" title="${t("apps.btn.settings_tip")}">${t("apps.btn.settings")}</button>
     </div>`;
   } else if (app.status === "installed") {
     const dis = app.any_running ? "disabled" : "";
     const tip = app.any_running ? `title="${t("apps.blocked")}"` : "";
     btns = `<div class="btn-row">
       <button class="btn btn-launch" onclick="appAction('launch','${app.id}')" ${dis} ${tip}>${t("apps.btn.launch")}</button>
-      <button class="btn btn-icon"   onclick="appAction('update','${app.id}')"   title="${t("apps.btn.update")}">${t("apps.btn.update")}</button>
-      <button class="btn btn-icon"   onclick="openAppSettings('${app.id}')"      title="${t("apps.btn.settings")}">${t("apps.btn.settings")}</button>
-      <button class="btn btn-icon danger" onclick="confirmUninstall('${app.id}','${app.name}')" title="${t("apps.btn.uninstall")}">${t("apps.btn.uninstall")}</button>
+      <button class="btn btn-icon"   onclick="appAction('update','${app.id}')"   title="${t("apps.btn.update_tip")}">${t("apps.btn.update")}</button>
+      <button class="btn btn-icon"   onclick="openAppSettings('${app.id}')"      title="${t("apps.btn.settings_tip")}">${t("apps.btn.settings")}</button>
+      <button class="btn btn-icon danger" onclick="confirmUninstall('${app.id}','${app.name}')" title="${t("apps.btn.uninstall_tip")}">${t("apps.btn.uninstall")}</button>
     </div>`;
   } else {
     btns = `<div class="btn-row">

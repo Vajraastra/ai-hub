@@ -46,7 +46,10 @@
       "install": "↓ Instalar",
       "update": "↑",
       "settings": "⚙",
-      "uninstall": "✕"
+      "uninstall": "🗑",
+      "update_tip": "Actualizar la app (git pull + dependencias)",
+      "settings_tip": "Ajustes de la app",
+      "uninstall_tip": "Desinstalar — borra el directorio completo de la app"
     },
     "blocked": "Otra app activa. Deténla primero.",
     "uninstall_confirm": "¿Desinstalar <strong>{name}</strong>?<br><br>Se eliminará su directorio completo. Esta acción no se puede deshacer.",

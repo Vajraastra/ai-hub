@@ -46,7 +46,10 @@
       "install": "↓ Install",
       "update": "↑",
       "settings": "⚙",
-      "uninstall": "✕"
+      "uninstall": "🗑",
+      "update_tip": "Update the app (git pull + dependencies)",
+      "settings_tip": "App settings",
+      "uninstall_tip": "Uninstall — deletes the app's entire directory"
     },
     "blocked": "Another app is running. Stop it first.",
     "uninstall_confirm": "Uninstall <strong>{name}</strong>?<br><br>Its entire directory will be deleted. This action cannot be undone.",
