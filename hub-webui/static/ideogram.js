@@ -1,0 +1,277 @@
+"use strict";
+// Ideogram 4 — lógica del módulo.
+const $ = (id) => document.getElementById(id);
+const API = "/api/ideogram";
+
+const state = {
+  caption: null,          // objeto caption completo (fuente para style/background)
+  boxes: [],              // elements: {type,bbox:[ymin,xmin,ymax,xmax],desc,text,color_palette}
+  sel: -1,                // índice de caja seleccionada
+  jobTimer: null,
+  models: null,
+};
+
+// ── Tabs ─────────────────────────────────────────────────────────────────────
+document.querySelectorAll(".tab").forEach(t => t.onclick = () => {
+  document.querySelectorAll(".tab").forEach(x => x.classList.remove("active"));
+  document.querySelectorAll(".page").forEach(x => x.classList.remove("active"));
+  t.classList.add("active");
+  $("page-" + t.dataset.page).classList.add("active");
+  if (t.dataset.page === "hist") loadHistory();
+  if (t.dataset.page === "diag") loadDiag();
+});
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+async function jget(p){ const r = await fetch(API+p); if(!r.ok) throw new Error((await r.json()).detail||r.status); return r.json(); }
+async function jpost(p,b){ const r = await fetch(API+p,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b||{})});
+  if(!r.ok) throw new Error((await r.json().catch(()=>({}))).detail||r.status); return r.json(); }
+async function jdel(p){ const r = await fetch(API+p,{method:"DELETE"}); if(!r.ok) throw new Error(r.status); return r.json(); }
+function banner(el,msg,kind){ el.innerHTML = msg ? `<div class="banner ${kind||'warn'}">${msg}</div>` : ""; }
+function fillSelect(sel,arr,cur){ sel.innerHTML=""; (arr||[]).forEach(v=>{ const o=document.createElement("option");
+  o.value=typeof v==="string"?v:v.id; o.textContent=typeof v==="string"?v:v.id; sel.appendChild(o); });
+  if(cur) sel.value=cur; }
+
+// ── Init: estado + modelos ────────────────────────────────────────────────────
+async function init(){
+  try {
+    const st = await jget("/status");
+    $("hdrStatus").innerHTML = `ComfyUI ${st.comfyui?'<span class="ok">●</span>':'<span class="bad">●</span>'} · LM Studio ${st.lmstudio?'<span class="ok">●</span>':'<span class="bad">●</span>'}`;
+    if(!st.comfyui) banner($("genBanner"),"ComfyUI no responde en :8188 — arráncalo desde el Hub.","err");
+    else if(!st.nodes_ok) banner($("genBanner"),"Faltan nodos nativos de Ideogram 4. Actualiza ComfyUI (0.27+).","err");
+  } catch(e){ $("hdrStatus").innerHTML=`<span class="bad">sin conexión</span>`; }
+
+  try {
+    const m = await jget("/models"); state.models = m;
+    fillSelect($("unetCond"), m.cond);
+    fillSelect($("unetUncond"), m.uncond);
+    fillSelect($("clipName"), m.text_encoders);
+    fillSelect($("vaeName"), m.vae);
+    fillSelect($("psampler"), m.samplers, "euler");
+    fillSelect($("llmModel"), m.llms.map(x=>x.id));
+    // preseleccionar vae flux2 si existe
+    const flux = (m.vae||[]).find(v=>/flux2/i.test(v)); if(flux) $("vaeName").value=flux;
+    if(m.lm_error) banner($("genBanner"), "LM Studio: "+m.lm_error+" (puedes pegar un JSON a mano).","warn");
+  } catch(e){ banner($("genBanner"),"No se pudieron cargar los modelos: "+e.message,"err"); }
+  drawCanvas();
+}
+
+// ── Caption (descripción → JSON vía LLM) ──────────────────────────────────────
+$("btnCaption").onclick = async () => {
+  const desc = $("desc").value.trim();
+  if(!desc){ banner($("genBanner"),"Escribe una descripción primero.","warn"); return; }
+  const llm = $("llmModel").value;
+  if(!llm){ banner($("genBanner"),"No hay LLM en LM Studio. Pega un JSON a mano.","warn"); return; }
+  $("btnCaption").disabled=true; $("btnCaption").textContent="Generando…";
+  banner($("genBanner"),"","");
+  try{
+    const r = await jpost("/caption",{description:desc,llm_model:llm,
+      width:+$("pw").value,height:+$("ph").value});
+    applyCaption(r.caption);
+  }catch(e){ banner($("genBanner"),"Fallo del LLM: "+e.message,"err"); }
+  $("btnCaption").disabled=false; $("btnCaption").textContent="Generar JSON";
+};
+
+function applyCaption(caption){
+  state.caption = caption;
+  state.boxes = (caption.compositional_deconstruction?.elements)||[];
+  state.sel = state.boxes.length? 0 : -1;
+  syncJsonFromState(); refreshBoxList(); drawCanvas();
+}
+
+function syncJsonFromState(){
+  if(state.caption){
+    state.caption.compositional_deconstruction = state.caption.compositional_deconstruction||{background:"",elements:[]};
+    state.caption.compositional_deconstruction.elements = state.boxes;
+    $("jsonPrompt").value = JSON.stringify(state.caption,null,2);
+  }
+}
+
+$("btnSyncFromJson").onclick = () => {
+  try{
+    const obj = JSON.parse($("jsonPrompt").value);
+    applyCaption(obj);
+    banner($("genBanner"),"","");
+  }catch(e){ banner($("genBanner"),"JSON inválido: "+e.message,"err"); }
+};
+
+// ── Lista/edición de la caja seleccionada ─────────────────────────────────────
+function refreshBoxList(){
+  const sel=$("selBox"); sel.innerHTML="";
+  state.boxes.forEach((b,i)=>{ const o=document.createElement("option");
+    o.value=i; o.textContent=`${i+1}. ${b.type} — ${(b.desc||b.text||"").slice(0,40)}`; sel.appendChild(o); });
+  sel.value=state.sel;
+  syncSelFields();
+}
+function syncSelFields(){
+  const b=state.boxes[state.sel];
+  $("selBoxType").value=b?b.type:"obj";
+  $("selBoxText").value=b?(b.text||""):"";
+  $("selBoxDesc").value=b?(b.desc||""):"";
+}
+$("selBox").onchange = () => { state.sel=+$("selBox").value; syncSelFields(); drawCanvas(); };
+$("selBoxType").onchange = () => { const b=state.boxes[state.sel]; if(b){ b.type=$("selBoxType").value; if(b.type!=="text") delete b.text; syncJsonFromState(); refreshBoxList(); } };
+$("selBoxText").oninput = () => { const b=state.boxes[state.sel]; if(b){ b.text=$("selBoxText").value; syncJsonFromState(); } };
+$("selBoxDesc").oninput = () => { const b=state.boxes[state.sel]; if(b){ b.desc=$("selBoxDesc").value; syncJsonFromState(); } };
+$("btnDelBox").onclick = () => delBox();
+function delBox(){ if(state.sel<0) return; state.boxes.splice(state.sel,1);
+  state.sel=Math.min(state.sel,state.boxes.length-1); syncJsonFromState(); refreshBoxList(); drawCanvas(); }
+
+// ── Canvas de bounding boxes (grid 0-1000) ────────────────────────────────────
+const cv=$("bboxCanvas"), ctx=cv.getContext("2d");
+const G=1000; // rejilla lógica
+let drag=null; // {mode:'move'|'resize', ox,oy, box}
+
+function setCanvasAspect(){
+  const w=+$("pw").value||1024, h=+$("ph").value||1024;
+  cv.style.aspectRatio = `${w} / ${h}`;
+}
+["pw","ph"].forEach(id=>$(id).addEventListener("input",()=>{setCanvasAspect();drawCanvas();}));
+
+function toLogic(ev){
+  const r=cv.getBoundingClientRect();
+  return { x: Math.max(0,Math.min(G,(ev.clientX-r.left)/r.width*G)),
+           y: Math.max(0,Math.min(G,(ev.clientY-r.top)/r.height*G)) };
+}
+function boxRect(b){ const [y0,x0,y1,x1]=b.bbox; return {x0,y0,x1,y1}; }
+const COLORS=["#8b7bff","#4caf82","#e0a94c","#e05c5c","#4c9be0","#c86ac8","#6ad0c8","#d0a06a"];
+
+function drawCanvas(){
+  setCanvasAspect();
+  ctx.clearRect(0,0,G,G);
+  ctx.fillStyle="#101014"; ctx.fillRect(0,0,G,G);
+  // rejilla
+  ctx.strokeStyle="rgba(255,255,255,.05)"; ctx.lineWidth=1;
+  for(let i=1;i<10;i++){ ctx.beginPath(); ctx.moveTo(i*100,0); ctx.lineTo(i*100,G); ctx.moveTo(0,i*100); ctx.lineTo(G,i*100); ctx.stroke(); }
+  state.boxes.forEach((b,i)=>{
+    const {x0,y0,x1,y1}=boxRect(b); const c=COLORS[i%COLORS.length];
+    const seld=i===state.sel;
+    ctx.strokeStyle=c; ctx.lineWidth=seld?4:2;
+    ctx.strokeRect(x0,y0,x1-x0,y1-y0);
+    ctx.fillStyle=c+"22"; ctx.fillRect(x0,y0,x1-x0,y1-y0);
+    // etiqueta
+    ctx.fillStyle=c; ctx.fillRect(x0,y0,60,34); ctx.fillStyle="#000";
+    ctx.font="bold 22px Inter,sans-serif"; ctx.fillText(String(i+1),x0+8,y0+25);
+    // handle resize
+    if(seld){ ctx.fillStyle=c; ctx.fillRect(x1-16,y1-16,16,16); }
+    // texto
+    ctx.fillStyle="#ddd"; ctx.font="18px Inter,sans-serif";
+    const t=(b.type==="text"&&b.text)?`"${b.text}"`:(b.desc||"");
+    if(t) ctx.fillText(t.slice(0,34), x0+6, y0+52);
+  });
+}
+
+cv.addEventListener("dblclick",(ev)=>{
+  const p=toLogic(ev); const s=120;
+  const nb={type:"obj",bbox:[Math.max(0,p.y-s),Math.max(0,p.x-s),Math.min(G,p.y+s),Math.min(G,p.x+s)],desc:"nuevo elemento"};
+  if(!state.caption) state.caption={high_level_description:"",style_description:{aesthetics:"",lighting:"",medium:""},compositional_deconstruction:{background:"",elements:[]}};
+  state.boxes.push(nb); state.sel=state.boxes.length-1;
+  syncJsonFromState(); refreshBoxList(); drawCanvas();
+});
+
+cv.addEventListener("pointerdown",(ev)=>{
+  const p=toLogic(ev);
+  for(let i=state.boxes.length-1;i>=0;i--){
+    const {x0,y0,x1,y1}=boxRect(state.boxes[i]);
+    if(i===state.sel && p.x>=x1-24 && p.y>=y1-24 && p.x<=x1+8 && p.y<=y1+8){
+      drag={mode:"resize",box:state.boxes[i]}; cv.setPointerCapture(ev.pointerId); return; }
+    if(p.x>=x0&&p.x<=x1&&p.y>=y0&&p.y<=y1){
+      state.sel=i; refreshBoxList(); drawCanvas();
+      drag={mode:"move",box:state.boxes[i],ox:p.x,oy:p.y}; cv.setPointerCapture(ev.pointerId); return; }
+  }
+});
+cv.addEventListener("pointermove",(ev)=>{
+  if(!drag) return; const p=toLogic(ev); const b=drag.box;
+  if(drag.mode==="resize"){ b.bbox[2]=Math.max(b.bbox[0]+20,Math.round(p.y)); b.bbox[3]=Math.max(b.bbox[1]+20,Math.round(p.x)); }
+  else { const dx=p.x-drag.ox, dy=p.y-drag.oy; let [y0,x0,y1,x1]=b.bbox;
+    const w=x1-x0,h=y1-y0; x0=Math.max(0,Math.min(G-w,x0+dx)); y0=Math.max(0,Math.min(G-h,y0+dy));
+    b.bbox=[Math.round(y0),Math.round(x0),Math.round(y0+h),Math.round(x0+w)]; drag.ox=p.x; drag.oy=p.y; }
+  drawCanvas();
+});
+cv.addEventListener("pointerup",()=>{ if(drag){ drag=null; syncJsonFromState(); } });
+document.addEventListener("keydown",(e)=>{ if(e.key==="Delete"&&state.sel>=0&&document.activeElement.tagName!=="INPUT"&&document.activeElement.tagName!=="TEXTAREA") delBox(); });
+
+// ── Render (pipeline completo) ────────────────────────────────────────────────
+$("btnGenerate").onclick = async () => {
+  const body = {
+    description: $("desc").value.trim(),
+    json_prompt: $("jsonPrompt").value.trim(),
+    llm_model: $("llmModel").value,
+    unet_cond: $("unetCond").value,
+    unet_uncond: $("unetUncond").value,
+    clip_name: $("clipName").value,
+    vae_name: $("vaeName").value,
+    width:+$("pw").value, height:+$("ph").value, steps:+$("psteps").value,
+    cfg:+$("pcfg").value, mu:+$("pmu").value, std:+$("pstd").value,
+    sampler:$("psampler").value, seed:+$("pseed").value,
+    manage_vram: $("manageVram").checked,
+  };
+  if(!body.unet_cond||!body.unet_uncond){ banner($("genBanner"),"Selecciona modelo condicional e incondicional.","warn"); return; }
+  banner($("genBanner"),"","");
+  $("btnGenerate").disabled=true;
+  try{
+    const {job_id}=await jpost("/generate",body);
+    pollJob(job_id);
+  }catch(e){ banner($("genBanner"),"No se pudo lanzar: "+e.message,"err"); $("btnGenerate").disabled=false; }
+};
+
+const PHASE={queued:"En cola",caption:"Generando JSON",unload:"Liberando VRAM",render:"Renderizando",check:"Verificando",save:"Guardando",done:"Listo"};
+function pollJob(id){
+  $("jobStatus").style.display="block"; $("resultBox").innerHTML="";
+  clearInterval(state.jobTimer);
+  state.jobTimer=setInterval(async ()=>{
+    let j; try{ j=await jget("/jobs/"+id); }catch(e){ return; }
+    $("jobPhase").textContent=PHASE[j.phase]||j.phase;
+    if(j.phase==="render"&&j.steps_total){ $("jobStep").textContent=`${j.step}/${j.steps_total}`;
+      $("jobBar").style.width=(100*j.step/j.steps_total)+"%"; }
+    if(j.status==="done"){ clearInterval(state.jobTimer); $("btnGenerate").disabled=false;
+      $("jobBar").style.width="100%"; $("jobPhase").textContent="Listo"; $("jobStep").textContent="";
+      showResult(j.run_id,j.blocked); }
+    if(j.status==="error"){ clearInterval(state.jobTimer); $("btnGenerate").disabled=false;
+      $("jobStatus").style.display="none"; banner($("genBanner"),"Error: "+j.error,"err"); }
+  },600);
+}
+function showResult(runId,blocked){
+  const warn = blocked ? `<div class="banner warn">⚠ Posible banner de bloqueo del filtro. Reintenta con otra seed o añade más cajas de entorno.</div>` : "";
+  $("resultBox").innerHTML = warn + `<img id="resultImg" src="${API}/history/${runId}/image?t=${Date.now()}">`;
+}
+
+$("btnUnload").onclick = async () => {
+  $("btnUnload").disabled=true; $("btnUnload").textContent="Liberando…";
+  try{ const r=await jpost("/unload"); banner($("genBanner"), r.ok?"VRAM del LLM liberada.":"No se pudo (¿lms CLI?): "+(r.reason||r.hint||""), r.ok?"warn":"err"); }
+  catch(e){ banner($("genBanner"),"Error: "+e.message,"err"); }
+  $("btnUnload").disabled=false; $("btnUnload").textContent="Liberar VRAM";
+};
+
+// ── Historial ─────────────────────────────────────────────────────────────────
+$("btnReloadHist").onclick=loadHistory;
+async function loadHistory(){
+  try{
+    const {runs}=await jget("/history");
+    $("gallery").innerHTML = runs.length? runs.map(r=>`
+      <div class="gcard">
+        <img src="${API}/history/${r.id}/image" onclick="window.open('${API}/history/${r.id}/image')">
+        <div class="meta">
+          <div class="mono">${r.id}</div>
+          <div>${(r.description||"—").slice(0,50)}</div>
+          ${r.blocked?'<div class="blocked">⚠ posible bloqueo</div>':''}
+          <button class="ghost" style="margin-top:6px;padding:3px 8px" onclick="delRun('${r.id}')">Borrar</button>
+        </div>
+      </div>`).join("") : '<div class="dim">Sin generaciones todavía.</div>';
+  }catch(e){ $("gallery").innerHTML='<div class="bad">'+e.message+'</div>'; }
+}
+window.delRun = async (id)=>{ if(!confirm("¿Borrar "+id+"?")) return; await jdel("/history/"+id); loadHistory(); };
+
+// ── Diagnóstico ───────────────────────────────────────────────────────────────
+$("btnReloadDiag").onclick=loadDiag;
+async function loadDiag(){
+  try{
+    const st=await jget("/status");
+    $("diagServices").innerHTML=`
+      <div class="status-row"><span>ComfyUI (:8188)</span><span class="${st.comfyui?'ok':'bad'}">${st.comfyui?'en línea':'apagado'}</span></div>
+      <div class="status-row"><span>LM Studio (:1234)</span><span class="${st.lmstudio?'ok':'bad'}">${st.lmstudio?'en línea':'apagado'}</span></div>`;
+    $("diagNodes").innerHTML=Object.entries(st.nodes||{}).map(([n,ok])=>
+      `<div class="status-row"><span class="mono">${n}</span><span class="${ok?'ok':'bad'}">${ok?'✓':'✗'}</span></div>`).join("")||'<div class="dim">Arranca ComfyUI para sondear.</div>';
+  }catch(e){ $("diagServices").innerHTML='<div class="bad">'+e.message+'</div>'; }
+}
+
+init();

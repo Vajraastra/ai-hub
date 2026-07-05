@@ -1,0 +1,108 @@
+{
+  "_comment": "Ideogram 4.0 text-to-image (JSON+bbox). Formato API de ComfyUI. Espejo del template oficial image_ideogram4_t2i.json (nodos nativos, ComfyUI 0.27+). El prompt JSON se inyecta como STRING en CLIPTextEncode. DualModelGuider corre el condicional en el modelo principal y el incondicional en el gemelo; negative = ConditioningZeroOut(positive) (drop de tokens de texto). Placeholders {{...}} los sustituye ComfyClient.build_workflow.",
+  "1": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "{{unet_cond}}",
+      "weight_dtype": "default"
+    }
+  },
+  "2": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "{{unet_uncond}}",
+      "weight_dtype": "default"
+    }
+  },
+  "3": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "{{clip_name}}",
+      "type": "ideogram4",
+      "device": "default"
+    }
+  },
+  "4": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": ["3", 0],
+      "text": "{{json_prompt}}"
+    }
+  },
+  "5": {
+    "class_type": "ConditioningZeroOut",
+    "inputs": {
+      "conditioning": ["4", 0]
+    }
+  },
+  "6": {
+    "class_type": "DualModelGuider",
+    "inputs": {
+      "model": ["1", 0],
+      "model_negative": ["2", 0],
+      "positive": ["4", 0],
+      "negative": ["5", 0],
+      "cfg": "{{cfg}}"
+    }
+  },
+  "7": {
+    "class_type": "Ideogram4Scheduler",
+    "inputs": {
+      "steps": "{{steps}}",
+      "width": "{{width}}",
+      "height": "{{height}}",
+      "mu": "{{mu}}",
+      "std": "{{std}}"
+    }
+  },
+  "8": {
+    "class_type": "KSamplerSelect",
+    "inputs": {
+      "sampler_name": "{{sampler}}"
+    }
+  },
+  "9": {
+    "class_type": "RandomNoise",
+    "inputs": {
+      "noise_seed": "{{seed}}"
+    }
+  },
+  "10": {
+    "class_type": "EmptyFlux2LatentImage",
+    "inputs": {
+      "width": "{{width}}",
+      "height": "{{height}}",
+      "batch_size": 1
+    }
+  },
+  "11": {
+    "class_type": "SamplerCustomAdvanced",
+    "inputs": {
+      "noise": ["9", 0],
+      "guider": ["6", 0],
+      "sampler": ["8", 0],
+      "sigmas": ["7", 0],
+      "latent_image": ["10", 0]
+    }
+  },
+  "12": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "{{vae_name}}"
+    }
+  },
+  "13": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": ["11", 0],
+      "vae": ["12", 0]
+    }
+  },
+  "14": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": ["13", 0],
+      "filename_prefix": "ideogram"
+    }
+  }
+}

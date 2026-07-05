@@ -1,0 +1,220 @@
+"""
+Orquestación de una generación Ideogram 4 de principio a fin.
+
+Fases (se reportan por callback para el seguimiento del job):
+  1. caption  — descripción libre → caption JSON (LM Studio, structured output).
+                Se omite si el usuario ya pasa un JSON hecho a mano.
+  2. unload   — descargar el LLM de la VRAM (lms unload) + pedir a ComfyUI que
+                libere memoria, para no solapar LLM e Ideogram en 16 GB.
+  3. render   — workflow ComfyUI con DualModelGuider (cond + incond).
+  4. check    — BlockGuard: ¿la imagen es el banner de bloqueo?
+  5. done     — guardar PNG + metadata en data/history/<id>/.
+
+El LLM se recarga solo (JIT) en la siguiente generación con descripción.
+"""
+import io
+import json
+import time
+import random
+import asyncio
+from pathlib import Path
+from dataclasses import dataclass, field, asdict
+
+from . import caption as cap
+from . import blockguard
+from .comfy_client import ComfyClient, load_workflow
+from .lmstudio import LMStudio
+
+_DATA = Path(__file__).parent.parent / "data"
+HISTORY_DIR = _DATA / "history"
+_WORKFLOW = "ideogram4_t2i.json"
+
+MAX_SEED = 0xFFFFFFFFFFFFFFFF
+
+
+class PipelineError(Exception):
+    pass
+
+
+@dataclass
+class GenParams:
+    # entrada: una de las dos
+    description: str = ""          # texto libre → el LLM hace el JSON
+    json_prompt: str = ""         # JSON ya hecho (salta el paso LLM)
+    # LLM
+    llm_model: str = ""
+    temperature: float = 0.6
+    # modelos de render (nombres tal como los ve ComfyUI)
+    unet_cond: str = ""
+    unet_uncond: str = ""
+    clip_name: str = ""
+    vae_name: str = ""
+    # sampling
+    width: int = 1024
+    height: int = 1024
+    steps: int = 20
+    mu: float = 0.5
+    std: float = 1.75
+    cfg: float = 7.0
+    sampler: str = "euler"
+    seed: int = -1
+    # orquestación
+    manage_vram: bool = True
+
+
+def _resolve_seed(seed: int) -> int:
+    return random.randint(0, MAX_SEED) if seed is None or seed < 0 else int(seed)
+
+
+async def build_caption(lm: LMStudio, params: GenParams,
+                        on_progress=None) -> tuple[dict, str]:
+    """Devuelve (caption_dict, prompt_string). Usa el JSON del usuario si lo hay;
+    si no, se lo pide al LLM con structured output y lo valida."""
+    if params.json_prompt.strip():
+        obj = cap.parse_llm_output(params.json_prompt)
+        caption = cap.validate_and_clean(obj)
+        return caption, cap.to_prompt_string(caption)
+
+    if not params.description.strip():
+        raise PipelineError("hace falta una descripción o un JSON de prompt")
+    if not params.llm_model:
+        raise PipelineError("no se indicó modelo LLM para generar el JSON")
+
+    messages = cap.build_messages(params.description, params.width, params.height)
+    raw = await lm.chat_json(params.llm_model, messages, cap.IDEOGRAM_JSON_SCHEMA,
+                             temperature=params.temperature)
+    if "__raw__" in raw:
+        raw = cap.parse_llm_output(raw["__raw__"])
+    caption = cap.validate_and_clean(raw)
+    return caption, cap.to_prompt_string(caption)
+
+
+async def _free_vram(lm: LMStudio, comfy: ComfyClient) -> dict:
+    """Descarga el LLM y pide a ComfyUI liberar memoria. Best-effort."""
+    unload = await lm.unload_all()
+    await comfy.free_memory()
+    return unload
+
+
+async def generate(comfy: ComfyClient, lm: LMStudio, params: GenParams,
+                   on_phase=None, on_step=None) -> dict:
+    """Ejecuta el pipeline completo. Devuelve el manifest de la generación.
+
+    on_phase(name, extra_dict) — cambio de fase.
+    on_step(step, total)       — progreso del sampler.
+    """
+    def phase(name, **extra):
+        if on_phase:
+            on_phase(name, extra)
+
+    seed = _resolve_seed(params.seed)
+
+    # 1. caption
+    phase("caption")
+    caption, prompt_str = await build_caption(lm, params)
+
+    # 2. unload LLM + free ComfyUI
+    unload_info = {}
+    if params.manage_vram and not params.json_prompt.strip():
+        phase("unload")
+        unload_info = await _free_vram(lm, comfy)
+
+    # 3. render
+    phase("render", seed=seed)
+    if not await comfy.health_check():
+        raise PipelineError("ComfyUI no responde en :8188 — arráncalo desde el Hub")
+
+    wf = load_workflow(_WORKFLOW)
+    render_params = {
+        "unet_cond": params.unet_cond,
+        "unet_uncond": params.unet_uncond,
+        "clip_name": params.clip_name,
+        "vae_name": params.vae_name,
+        "json_prompt": prompt_str,
+        "width": int(params.width),
+        "height": int(params.height),
+        "steps": int(params.steps),
+        "mu": float(params.mu),
+        "std": float(params.std),
+        "cfg": float(params.cfg),
+        "sampler": params.sampler,
+        "seed": seed,
+    }
+    png = await comfy.run_workflow(wf, render_params, on_progress=on_step)
+
+    # 4. blockguard
+    phase("check")
+    blocked, metrics = blockguard.is_safety_block(png)
+
+    # 5. guardar
+    phase("save")
+    manifest = _save(png, params, caption, prompt_str, seed, blocked, metrics,
+                     unload_info, render_params)
+    phase("done", run_id=manifest["id"], blocked=blocked)
+    return manifest
+
+
+def _save(png: bytes, params: GenParams, caption: dict, prompt_str: str,
+          seed: int, blocked: bool, metrics: dict, unload_info: dict,
+          render_params: dict) -> dict:
+    run_id = time.strftime("%Y%m%d-%H%M%S") + f"-{seed & 0xFFFF:04x}"
+    out = HISTORY_DIR / run_id
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "image.png").write_bytes(png)
+    manifest = {
+        "id": run_id,
+        "created": time.time(),
+        "description": params.description,
+        "caption": caption,
+        "prompt": prompt_str,
+        "seed": seed,
+        "blocked": blocked,
+        "block_metrics": metrics,
+        "unload": unload_info,
+        "render": {k: v for k, v in render_params.items() if k != "json_prompt"},
+    }
+    (out / "meta.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2),
+                                   encoding="utf-8")
+    return manifest
+
+
+def list_history(limit: int = 60) -> list[dict]:
+    if not HISTORY_DIR.exists():
+        return []
+    runs = []
+    for d in sorted(HISTORY_DIR.iterdir(), reverse=True):
+        meta = d / "meta.json"
+        if meta.is_file():
+            try:
+                m = json.loads(meta.read_text(encoding="utf-8"))
+                runs.append({"id": m["id"], "created": m.get("created"),
+                             "description": m.get("description", ""),
+                             "seed": m.get("seed"), "blocked": m.get("blocked", False),
+                             "render": m.get("render", {})})
+            except Exception:
+                continue
+        if len(runs) >= limit:
+            break
+    return runs
+
+
+def history_image(run_id: str) -> Path:
+    p = (HISTORY_DIR / run_id / "image.png").resolve()
+    if not p.is_relative_to(HISTORY_DIR.resolve()) or not p.is_file():
+        raise PipelineError("imagen no encontrada")
+    return p
+
+
+def history_meta(run_id: str) -> dict:
+    p = (HISTORY_DIR / run_id / "meta.json").resolve()
+    if not p.is_relative_to(HISTORY_DIR.resolve()) or not p.is_file():
+        raise PipelineError("run no encontrado")
+    return json.loads(p.read_text(encoding="utf-8"))
+
+
+def delete_run(run_id: str):
+    import shutil
+    p = (HISTORY_DIR / run_id).resolve()
+    if not p.is_relative_to(HISTORY_DIR.resolve()) or not p.is_dir():
+        raise PipelineError("run no encontrado")
+    shutil.rmtree(p)

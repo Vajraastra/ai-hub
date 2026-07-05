@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ideogram 4 — AI Hub</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+  <style>
+    #tool-wrap { display:flex; flex-direction:column; min-height:100vh; }
+    #tool-header {
+      display:flex; align-items:center; gap:12px;
+      padding:0 16px; height:52px; flex-shrink:0;
+      background:var(--bg-card); border-bottom:1px solid var(--border);
+    }
+    .back-btn {
+      background:none; border:1px solid var(--border); color:var(--text-secondary);
+      border-radius:6px; padding:4px 10px; font-size:12px; cursor:pointer;
+      transition:color .15s, border-color .15s;
+    }
+    .back-btn:hover { color:var(--text-primary); border-color:var(--accent-purple); }
+    #tool-header h1 { font-size:15px; font-weight:600; color:var(--text-primary); }
+    #tool-header .badge { font-size:11px; padding:2px 8px; border-radius:10px;
+      border:1px solid var(--border); color:var(--text-dim); }
+
+    .tabs { display:flex; gap:2px; padding:0 16px; background:var(--bg-card);
+      border-bottom:1px solid var(--border); }
+    .tab { background:none; border:none; border-bottom:2px solid transparent;
+      color:var(--text-dim); padding:10px 16px; font-size:13px; cursor:pointer; }
+    .tab.active { color:var(--text-primary); border-bottom-color:var(--accent-purple); }
+
+    .page { display:none; padding:20px; max-width:1360px; }
+    .page.active { display:block; }
+    .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:16px; align-items:start; }
+    @media (max-width:1080px){ .grid2 { grid-template-columns:1fr; } }
+
+    .card { background:var(--bg-card); border:1px solid var(--border);
+      border-radius:8px; padding:16px 18px; margin-bottom:16px; }
+    .card h2 { font-size:12px; font-weight:600; color:var(--text-secondary);
+      margin-bottom:12px; text-transform:uppercase; letter-spacing:.4px;
+      display:flex; align-items:center; gap:8px; }
+    .card h2 .spacer { flex:1; }
+
+    label.fld { display:block; font-size:12px; color:var(--text-dim); margin:8px 0 4px; }
+    input[type=text], input[type=number], select, textarea {
+      width:100%; background:var(--bg-input,#141414); border:1px solid var(--border);
+      color:var(--text-primary); border-radius:6px; padding:7px 9px; font-size:13px;
+      font-family:inherit; }
+    textarea { resize:vertical; font-family:'JetBrains Mono',monospace; font-size:12px; line-height:1.5; }
+    .row { display:flex; gap:10px; } .row > * { flex:1; }
+    .row3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; }
+
+    button.act { background:var(--accent-purple); border:none; color:#fff;
+      border-radius:6px; padding:9px 16px; font-size:13px; font-weight:600; cursor:pointer; }
+    button.act:disabled { opacity:.5; cursor:not-allowed; }
+    button.ghost { background:none; border:1px solid var(--border); color:var(--text-secondary);
+      border-radius:6px; padding:8px 14px; font-size:12px; cursor:pointer; }
+    button.ghost:hover { border-color:var(--accent-purple); color:var(--text-primary); }
+
+    .ok{color:#4caf82;} .bad{color:#e05c5c;} .warn{color:#e0a94c;}
+    .mono{font-family:'JetBrains Mono',monospace;} .dim{color:var(--text-dim);font-size:12px;}
+    .status-row{display:flex;justify-content:space-between;font-size:13px;padding:3px 0;}
+
+    /* canvas de bounding boxes */
+    #bboxWrap { position:relative; border:1px solid var(--border); border-radius:6px;
+      overflow:hidden; background:#101014; }
+    #bboxCanvas { display:block; width:100%; cursor:crosshair; touch-action:none; }
+    .bbox-tools { display:flex; gap:8px; align-items:center; margin-top:8px; flex-wrap:wrap; }
+
+    /* resultado */
+    #resultImg { max-width:100%; border-radius:8px; border:1px solid var(--border); }
+    .phase-pill { font-size:11px; padding:2px 8px; border-radius:10px;
+      background:var(--bg-input,#141414); border:1px solid var(--border); color:var(--text-dim); }
+    .progress { height:6px; background:var(--bg-input,#141414); border-radius:3px; overflow:hidden; margin-top:8px; }
+    .progress > div { height:100%; width:0; background:var(--accent-purple); transition:width .2s; }
+
+    .gallery { display:grid; grid-template-columns:repeat(auto-fill,minmax(190px,1fr)); gap:12px; }
+    .gcard { background:var(--bg-card); border:1px solid var(--border); border-radius:8px; overflow:hidden; }
+    .gcard img { width:100%; display:block; aspect-ratio:1; object-fit:cover; cursor:pointer; }
+    .gcard .meta { padding:8px 10px; font-size:11px; color:var(--text-dim); }
+    .gcard .blocked { color:#e0a94c; }
+
+    .credits { font-size:11px; color:var(--text-dim); line-height:1.7; }
+    .credits a { color:var(--accent-purple); text-decoration:none; }
+    .banner { padding:8px 12px; border-radius:6px; font-size:12px; margin-bottom:12px; }
+    .banner.warn { background:rgba(224,169,76,.1); border:1px solid rgba(224,169,76,.4); color:#e0a94c; }
+    .banner.err  { background:rgba(224,92,92,.1); border:1px solid rgba(224,92,92,.4); color:#e05c5c; }
+  </style>
+</head>
+<body>
+<div id="tool-wrap">
+  <header id="tool-header">
+    <button class="back-btn" onclick="location.href='/'">← Hub</button>
+    <h1>Ideogram 4.0</h1>
+    <span class="badge">JSON + bounding boxes</span>
+    <span class="spacer" style="flex:1"></span>
+    <span id="hdrStatus" class="dim mono"></span>
+  </header>
+
+  <div class="tabs">
+    <button class="tab active" data-page="gen">Generar</button>
+    <button class="tab" data-page="hist">Historial</button>
+    <button class="tab" data-page="diag">Diagnóstico</button>
+  </div>
+
+  <!-- ══════════════ GENERAR ══════════════ -->
+  <div class="page active" id="page-gen">
+    <div id="genBanner"></div>
+    <div class="grid2">
+      <!-- Columna izquierda: prompt + cajas -->
+      <div>
+        <div class="card">
+          <h2>1 · Descripción</h2>
+          <textarea id="desc" rows="4" placeholder="Describe la imagen en lenguaje natural. Ej: un gato naranja dormido en un sofá de terciopelo azul junto a una ventana al atardecer."></textarea>
+          <div class="row" style="margin-top:8px; align-items:center;">
+            <select id="llmModel" style="flex:2"></select>
+            <button class="ghost" id="btnCaption" style="flex:1">Generar JSON</button>
+          </div>
+          <div class="dim" style="margin-top:6px">El LLM descompone la escena en sujeto + entorno (varias cajas = evita el filtro).</div>
+        </div>
+
+        <div class="card">
+          <h2>2 · Cajas <span class="spacer"></span>
+            <span class="dim" id="bboxHint">doble-clic: nueva · arrastra: mover · esquina: redimensionar · Supr: borrar</span>
+          </h2>
+          <div id="bboxWrap"><canvas id="bboxCanvas" width="1024" height="1024"></canvas></div>
+          <div class="bbox-tools">
+            <select id="selBox" style="flex:2"></select>
+            <select id="selBoxType" style="width:90px">
+              <option value="obj">obj</option><option value="text">text</option>
+            </select>
+            <input type="text" id="selBoxText" placeholder="texto a rotular (si type=text)" style="flex:2">
+            <button class="ghost" id="btnDelBox">Borrar caja</button>
+          </div>
+          <input type="text" id="selBoxDesc" placeholder="descripción de la caja seleccionada" style="margin-top:8px">
+        </div>
+
+        <div class="card">
+          <h2>JSON del prompt <span class="spacer"></span>
+            <button class="ghost" id="btnSyncFromJson">Aplicar JSON → cajas</button>
+          </h2>
+          <textarea id="jsonPrompt" rows="10" placeholder="El caption JSON aparece aquí. Editable."></textarea>
+        </div>
+      </div>
+
+      <!-- Columna derecha: modelos + params + render + resultado -->
+      <div>
+        <div class="card">
+          <h2>Modelos de render</h2>
+          <label class="fld">Condicional (diffusion)</label>
+          <select id="unetCond"></select>
+          <label class="fld">Incondicional (gemelo)</label>
+          <select id="unetUncond"></select>
+          <div class="row">
+            <div><label class="fld">Text encoder (CLIP)</label><select id="clipName"></select></div>
+            <div><label class="fld">VAE</label><select id="vaeName"></select></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Sampling</h2>
+          <div class="row3">
+            <div><label class="fld">Ancho</label><input type="number" id="pw" value="1024" step="16"></div>
+            <div><label class="fld">Alto</label><input type="number" id="ph" value="1024" step="16"></div>
+            <div><label class="fld">Steps</label><input type="number" id="psteps" value="20" min="1"></div>
+          </div>
+          <div class="row3">
+            <div><label class="fld">cfg</label><input type="number" id="pcfg" value="7" step="0.1"></div>
+            <div><label class="fld">mu</label><input type="number" id="pmu" value="0.5" step="0.05"></div>
+            <div><label class="fld">std</label><input type="number" id="pstd" value="1.75" step="0.05"></div>
+          </div>
+          <div class="row">
+            <div style="flex:2"><label class="fld">Sampler</label><select id="psampler"></select></div>
+            <div style="flex:2"><label class="fld">Seed (-1 = azar)</label><input type="number" id="pseed" value="-1"></div>
+          </div>
+          <label class="fld" style="margin-top:10px">
+            <input type="checkbox" id="manageVram" checked style="width:auto"> Descargar el LLM de la VRAM antes de renderizar
+          </label>
+        </div>
+
+        <div class="card">
+          <h2>Render</h2>
+          <div class="row">
+            <button class="act" id="btnGenerate" style="flex:2">Renderizar</button>
+            <button class="ghost" id="btnUnload">Liberar VRAM</button>
+          </div>
+          <div id="jobStatus" style="margin-top:12px; display:none;">
+            <div style="display:flex; align-items:center; gap:8px;">
+              <span class="phase-pill" id="jobPhase">…</span>
+              <span class="dim mono" id="jobStep"></span>
+            </div>
+            <div class="progress"><div id="jobBar"></div></div>
+          </div>
+          <div id="resultBox" style="margin-top:12px;"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════ HISTORIAL ══════════════ -->
+  <div class="page" id="page-hist">
+    <div class="card">
+      <h2>Historial <span class="spacer"></span><button class="ghost" id="btnReloadHist">Recargar</button></h2>
+      <div class="gallery" id="gallery"></div>
+    </div>
+  </div>
+
+  <!-- ══════════════ DIAGNÓSTICO ══════════════ -->
+  <div class="page" id="page-diag">
+    <div class="card">
+      <h2>Servicios <span class="spacer"></span><button class="ghost" id="btnReloadDiag">Recargar</button></h2>
+      <div id="diagServices"></div>
+    </div>
+    <div class="card">
+      <h2>Nodos nativos requeridos</h2>
+      <div id="diagNodes"></div>
+    </div>
+    <div class="card">
+      <h2>Créditos y método</h2>
+      <div class="credits">
+        <p><b>Vía principal — JSON + bounding boxes.</b> Ideogram 4 se entrenó con captions JSON
+        estructurados. Estructurar el prompt en varias cajas (sujeto + entorno) usa el modelo como
+        fue diseñado y evita los falsos positivos del filtro de seguridad, sin pérdida de calidad.</p>
+        <p>Nodos nativos de <b>ComfyUI</b> (soporte Ideogram 4 día-0, PR de kijai / Comfy-Org):
+        <span class="mono">DualModelGuider</span>, <span class="mono">Ideogram4Scheduler</span>,
+        <span class="mono">CreateBoundingBoxes</span>, <span class="mono">BuildJsonPromptIdeogram</span>.</p>
+        <p>Detección del banner de bloqueo inspirada en el nodo
+        <b>ComfyUI-BlockGuard</b> de INSANEF00L / Dragon7108
+        (<a href="https://github.com/Dragon7108/ComfyUI-BlockGuard" target="_blank">github.com/Dragon7108/ComfyUI-BlockGuard</a>),
+        reimplementada aquí como análisis de imagen para no depender de un nodo custom.</p>
+        <p>Modelo Ideogram 4.0 © Ideogram — <i>Non-Commercial Model Agreement</i>. Uso personal/research.</p>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="/static/ideogram.js"></script>
+</body>
+</html>

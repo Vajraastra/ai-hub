@@ -1,0 +1,4 @@
+# Historial de generaciones (imágenes + metadata) — local, no se versiona
+history/
+# Resultados de la batería de pruebas (imágenes + montajes) — local
+battery/
