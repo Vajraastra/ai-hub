@@ -172,6 +172,25 @@ async def make_caption(body: CaptionBody):
     return {"caption": caption, "prompt": cap.to_prompt_string(caption)}
 
 
+class AssembleBody(BaseModel):
+    caption: dict            # borrador manual del usuario
+    general: str = ""        # prompt general → high_level_description (fallback)
+
+
+@ideogram_router.post("/assemble")
+async def assemble_caption(body: AssembleBody):
+    """MODO MANUAL SIN LLM: organiza/valida el borrador en el schema de Ideogram
+    respetando los textos del usuario al pie de la letra. Solo estructura: recorta
+    bboxes al rango, degrada 'text' vacío a 'obj', limpia paletas. No toca el LLM."""
+    try:
+        caption = cap.validate_and_clean(body.caption)
+    except cap.CaptionError as e:
+        raise HTTPException(400, f"borrador inválido (¿dibujaste alguna caja?): {e}")
+    if body.general.strip() and not str(caption.get("high_level_description", "")).strip():
+        caption["high_level_description"] = body.general.strip()
+    return {"caption": caption, "prompt": cap.to_prompt_string(caption)}
+
+
 class RefineBody(BaseModel):
     caption: dict            # borrador manual (cajas ya colocadas por el usuario)
     llm_model: str
@@ -231,7 +250,7 @@ class GenerateBody(BaseModel):
     bypass_enabled: bool = False
     bypass_method: str = "ruido"          # "ruido" (ModelNoiseScale) | "sigma" (SetFirstSigma)
     bypass_noise_scale: float = 2.0
-    bypass_first_sigma: float = 136.0
+    bypass_first_sigma: float = 1.005      # natural ≈0.99988; +0.005 = empujón anti-bloqueo
 
 
 _jobs: dict[str, dict] = {}

@@ -62,7 +62,7 @@ class GenParams:
     bypass_enabled: bool = False
     bypass_method: str = "ruido"      # "ruido" | "sigma"
     bypass_noise_scale: float = 2.0
-    bypass_first_sigma: float = 136.0
+    bypass_first_sigma: float = 1.005     # natural ≈0.99988; +0.005 = empujón anti-bloqueo
     # orquestación
     manage_vram: bool = True
 

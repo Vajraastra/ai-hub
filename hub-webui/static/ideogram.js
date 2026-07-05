@@ -91,14 +91,28 @@ function setMode(m){
   $("desc").placeholder     = manual
     ? "Idea global de la escena (tema, estilo, ambiente). Tú dibujas las cajas abajo; el LLM solo completa el resto."
     : "Describe la imagen en lenguaje natural. Ej: un gato naranja dormido en un sofá de terciopelo azul junto a una ventana al atardecer.";
-  $("btnCaption").style.display = manual ? "none" : "";
-  $("btnRefine").style.display  = manual ? "" : "none";
+  $("btnCaption").style.display  = manual ? "none" : "";
+  $("btnAssemble").style.display = manual ? "" : "none";
+  $("btnRefine").style.display   = manual ? "" : "none";
   $("descHint").textContent = manual
-    ? "Manual: doble-clic o «+ Caja» para añadir, arrastra/redimensiona y escribe el desc de cada una. «Configurar con LLM» completa estilo y fondo sin mover tus cajas."
+    ? "Manual: dibuja las cajas (doble-clic / «+ Caja»), muévelas y escribe el desc de cada una + el prompt general. «Organizar JSON» arma el JSON sin LLM (respeta tus textos); «Configurar con LLM» además completa estilo y fondo."
     : "El LLM descompone la escena en sujeto + entorno (varias cajas = evita el filtro).";
 }
 $("modeAuto").onclick   = () => setMode("auto");
 $("modeManual").onclick = () => setMode("manual");
+
+// ── Organizar JSON (modo manual SIN LLM): estructura/valida respetando textos ──
+$("btnAssemble").onclick = async () => {
+  if(!state.caption || !state.boxes.length){ banner($("genBanner"),"Dibuja al menos una caja primero.","warn"); return; }
+  const general=$("desc").value.trim();
+  if(general) state.caption.high_level_description=general;   // el prompt general manda, sin LLM
+  syncJsonFromState(); banner($("genBanner"),"","");
+  try{
+    const r=await jpost("/assemble",{caption:state.caption, general});
+    applyCaption(r.caption);
+    banner($("genBanner"),"JSON organizado sin LLM: tus textos intactos, estructura validada.","warn");
+  }catch(e){ banner($("genBanner"),"No se pudo organizar: "+e.message,"err"); }
+};
 
 // ── Configurar con LLM (modo manual): completa el borrador sin tocar las cajas ─
 $("btnRefine").onclick = async () => {
@@ -190,6 +204,22 @@ function toLogic(ev){
 function boxRect(b){ const [y0,x0,y1,x1]=b.bbox; return {x0,y0,x1,y1}; }
 const COLORS=["#8b7bff","#4caf82","#e0a94c","#e05c5c","#4c9be0","#c86ac8","#6ad0c8","#d0a06a"];
 
+// Zona de agarre y tamaño de handle van en PÍXELES de pantalla y se convierten a
+// unidades lógicas (0-1000) según el tamaño real del canvas: así agarrar una
+// esquina cuesta lo mismo con el canvas grande (2048²) o pequeño.
+function px2logic(px){ const r=cv.getBoundingClientRect(); return {x:px/r.width*G, y:px/r.height*G}; }
+const CURSOR={nw:"nwse-resize", se:"nwse-resize", ne:"nesw-resize", sw:"nesw-resize"};
+// ¿Sobre qué esquina de la caja cae el puntero? (null si ninguna). Radio ~16px.
+function cornerAt(p, b){
+  const {x0,y0,x1,y1}=boxRect(b), g=px2logic(16);
+  const near=(cx,cy)=>Math.abs(p.x-cx)<=g.x && Math.abs(p.y-cy)<=g.y;
+  if(near(x0,y0)) return "nw";
+  if(near(x1,y0)) return "ne";
+  if(near(x0,y1)) return "sw";
+  if(near(x1,y1)) return "se";
+  return null;
+}
+
 function drawCanvas(){
   setCanvasAspect();
   ctx.clearRect(0,0,G,G);
@@ -206,12 +236,19 @@ function drawCanvas(){
     // etiqueta
     ctx.fillStyle=c; ctx.fillRect(x0,y0,60,34); ctx.fillStyle="#000";
     ctx.font="bold 22px Inter,sans-serif"; ctx.fillText(String(i+1),x0+8,y0+25);
-    // handle resize
-    if(seld){ ctx.fillStyle=c; ctx.fillRect(x1-16,y1-16,16,16); }
     // texto
     ctx.fillStyle="#ddd"; ctx.font="18px Inter,sans-serif";
     const t=(b.type==="text"&&b.text)?`"${b.text}"`:(b.desc||"");
     if(t) ctx.fillText(t.slice(0,34), x0+6, y0+52);
+    // handles de resize en las 4 esquinas (solo la caja seleccionada), al frente
+    if(seld){
+      const h=px2logic(12);
+      ctx.fillStyle=c; ctx.strokeStyle="#fff"; ctx.lineWidth=2;
+      [[x0,y0],[x1,y0],[x0,y1],[x1,y1]].forEach(([hx,hy])=>{
+        ctx.fillRect(hx-h.x/2, hy-h.y/2, h.x, h.y);
+        ctx.strokeRect(hx-h.x/2, hy-h.y/2, h.x, h.y);
+      });
+    }
   });
 }
 
@@ -227,24 +264,54 @@ $("btnAddBox").onclick = () => addBox();
 
 cv.addEventListener("pointerdown",(ev)=>{
   const p=toLogic(ev);
+  // 1) resize: ¿el puntero cae sobre una esquina de la caja seleccionada?
+  const selB=state.boxes[state.sel];
+  if(selB){
+    const c=cornerAt(p, selB);
+    if(c){ drag={mode:"resize",corner:c,box:selB}; cv.style.cursor=CURSOR[c];
+           cv.setPointerCapture(ev.pointerId); return; }
+  }
+  // 2) mover / seleccionar: primera caja (de arriba) que contiene el puntero
   for(let i=state.boxes.length-1;i>=0;i--){
     const {x0,y0,x1,y1}=boxRect(state.boxes[i]);
-    if(i===state.sel && p.x>=x1-24 && p.y>=y1-24 && p.x<=x1+8 && p.y<=y1+8){
-      drag={mode:"resize",box:state.boxes[i]}; cv.setPointerCapture(ev.pointerId); return; }
     if(p.x>=x0&&p.x<=x1&&p.y>=y0&&p.y<=y1){
       state.sel=i; refreshBoxList(); drawCanvas();
-      drag={mode:"move",box:state.boxes[i],ox:p.x,oy:p.y}; cv.setPointerCapture(ev.pointerId); return; }
+      drag={mode:"move",box:state.boxes[i],ox:p.x,oy:p.y}; cv.style.cursor="move";
+      cv.setPointerCapture(ev.pointerId); return; }
   }
 });
 cv.addEventListener("pointermove",(ev)=>{
-  if(!drag) return; const p=toLogic(ev); const b=drag.box;
-  if(drag.mode==="resize"){ b.bbox[2]=Math.max(b.bbox[0]+20,Math.round(p.y)); b.bbox[3]=Math.max(b.bbox[1]+20,Math.round(p.x)); }
-  else { const dx=p.x-drag.ox, dy=p.y-drag.oy; let [y0,x0,y1,x1]=b.bbox;
+  const p=toLogic(ev);
+  if(!drag){ updateHoverCursor(p); return; }
+  const b=drag.box;
+  if(drag.mode==="resize"){
+    // La esquina arrastrada mueve solo sus dos bordes; el opuesto queda fijo.
+    let [y0,x0,y1,x1]=b.bbox; const c=drag.corner, MIN=20;
+    if(c.includes("n")) y0=Math.min(p.y, y1-MIN);
+    if(c.includes("s")) y1=Math.max(p.y, y0+MIN);
+    if(c.includes("w")) x0=Math.min(p.x, x1-MIN);
+    if(c.includes("e")) x1=Math.max(p.x, x0+MIN);
+    b.bbox=[Math.round(Math.max(0,y0)),Math.round(Math.max(0,x0)),
+            Math.round(Math.min(G,y1)),Math.round(Math.min(G,x1))];
+  } else {
+    const dx=p.x-drag.ox, dy=p.y-drag.oy; let [y0,x0,y1,x1]=b.bbox;
     const w=x1-x0,h=y1-y0; x0=Math.max(0,Math.min(G-w,x0+dx)); y0=Math.max(0,Math.min(G-h,y0+dy));
-    b.bbox=[Math.round(y0),Math.round(x0),Math.round(y0+h),Math.round(x0+w)]; drag.ox=p.x; drag.oy=p.y; }
+    b.bbox=[Math.round(y0),Math.round(x0),Math.round(y0+h),Math.round(x0+w)]; drag.ox=p.x; drag.oy=p.y;
+  }
   drawCanvas();
 });
-cv.addEventListener("pointerup",()=>{ if(drag){ drag=null; syncJsonFromState(); } });
+// Feedback de cursor sin arrastrar: resize en esquinas, move dentro, crosshair fuera.
+function updateHoverCursor(p){
+  const b=state.boxes[state.sel];
+  if(b){ const c=cornerAt(p,b); if(c){ cv.style.cursor=CURSOR[c]; return; } }
+  for(let i=state.boxes.length-1;i>=0;i--){
+    const {x0,y0,x1,y1}=boxRect(state.boxes[i]);
+    if(p.x>=x0&&p.x<=x1&&p.y>=y0&&p.y<=y1){ cv.style.cursor="move"; return; }
+  }
+  cv.style.cursor="crosshair";
+}
+cv.addEventListener("pointerup",(ev)=>{ if(drag){ drag=null; syncJsonFromState(); updateHoverCursor(toLogic(ev)); } });
+cv.addEventListener("pointerleave",()=>{ if(!drag) cv.style.cursor="crosshair"; });
 document.addEventListener("keydown",(e)=>{ if(e.key==="Delete"&&state.sel>=0&&document.activeElement.tagName!=="INPUT"&&document.activeElement.tagName!=="TEXTAREA") delBox(); });
 
 // ── Render (pipeline completo) ────────────────────────────────────────────────

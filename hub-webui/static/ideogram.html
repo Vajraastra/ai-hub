@@ -121,6 +121,7 @@
           <div class="row" style="margin-top:8px; align-items:center;">
             <select id="llmModel" style="flex:2"></select>
             <button class="ghost" id="btnCaption" style="flex:1">Generar JSON</button>
+            <button class="ghost" id="btnAssemble" style="flex:1; display:none">Organizar JSON</button>
             <button class="ghost" id="btnRefine" style="flex:1; display:none">Configurar con LLM</button>
           </div>
           <div class="dim" id="descHint" style="margin-top:6px">El LLM descompone la escena en sujeto + entorno (varias cajas = evita el filtro).</div>
@@ -191,15 +192,18 @@
             </label>
             <div id="bypassOpts" style="display:none; margin-top:8px">
               <div class="row3">
-                <div><label class="fld">Método</label><select id="bypassMethod">
-                  <option value="ruido">Ruido (×)</option>
-                  <option value="sigma">Primer sigma</option>
+                <div><label class="fld">Método</label><select id="bypassMethod"
+                  title="Ruido: escala el ruido en TODO el sampleo; fácil de sobrepasar → puntos de colores esparcidos. Sigma: perturba solo el PRIMER paso; más limpio, cambia composición/contraste sin ensuciar la imagen.">
+                  <option value="ruido" title="ModelNoiseScale: amplifica el ruido en cada paso. 1.0 = neutral. Valores altos dejan confeti sin resolver.">Ruido (×)</option>
+                  <option value="sigma" title="SetFirstSigma: fija el ruido inicial. El natural de Ideogram 4 es ≈1.0; súbelo a ~1.005 (+0.005) para empujar el arranque. No produce el confeti del método ruido.">Primer sigma</option>
                 </select></div>
-                <div id="fldBypassNoise"><label class="fld">Escala de ruido</label><input type="number" id="bypassNoise" value="2.0" step="0.1" min="0"></div>
-                <div id="fldBypassSigma" style="display:none"><label class="fld">Primer sigma</label><input type="number" id="bypassSigma" value="136" step="0.001"></div>
+                <div id="fldBypassNoise"><label class="fld">Escala de ruido</label><input type="number" id="bypassNoise" value="2.0" step="0.1" min="0"
+                  title="1.0 = neutral (sin efecto). Es la escala de ruido de entrenamiento del modelo. Valores altos (p. ej. 2.0) dejan puntos de colores esparcidos sin resolver: si aparecen, baja hacia 1.05–1.2 y/o sube los steps (28–32)."></div>
+                <div id="fldBypassSigma" style="display:none"><label class="fld">Primer sigma</label><input type="number" id="bypassSigma" value="1.005" step="0.001" min="0" max="1.05"
+                  title="Ruido inicial (absoluto). El natural de Ideogram 4 es 0.99988 (≈1.0). Empujón anti-bloqueo típico: +0.005 → 1.005. Rango útil 1.00–1.02 en pasos de ~0.005; por debajo de ~1.003 no hace casi nada, por encima de ~1.02 empieza a deformar la composición."></div>
               </div>
               <div class="fld" style="color:var(--text-dim); margin-top:4px; font-size:11px">
-                Perturba el arranque del sampleo para escapar del cuadro gris de bloqueo. Afínalo por ensayo.
+                Perturba el arranque del sampleo para escapar del cuadro gris de bloqueo. Úsalo solo si aparece; afínalo por ensayo (pasa el cursor por cada campo).
               </div>
             </div>
           </div>
