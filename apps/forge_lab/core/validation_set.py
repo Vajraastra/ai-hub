@@ -238,12 +238,14 @@ class ValidationSet:
         """
         from .architectures import get_adapter
         from .comfy_client import load_workflow
+        from .model_config import model_files, loader_name
 
         if not self.prompts:
             raise ValidationSetError(f"el set {self.name!r} no tiene prompts")
         adapter = get_adapter(self.arch)
+        files = model_files(self.arch)     # paths efectivos (config del usuario)
         if model is None:
-            model = Path(adapter.model_files().diffusion_model).name
+            model = loader_name(files["diffusion_model"])
         if template is None:
             template = load_workflow(adapter.workflow_name("txt2img"), self.arch)
 
@@ -265,6 +267,8 @@ class ValidationSet:
             _cb(0, self.sampling["steps"])
             params = {"model": model, "prompt": p["text"],
                       "negative": p["negative"], "seed": p["seed"],
+                      "text_encoder": loader_name(files["text_encoder"]),
+                      "vae": loader_name(files["vae"]),
                       **self.sampling, **(extra_params or {})}
             t0 = time.time()
             png = await comfy.run_workflow(template, params, on_progress=_cb)
@@ -278,6 +282,10 @@ class ValidationSet:
             "run_id": run_id, "set": self.name, "arch": self.arch,
             "fingerprint": self.fingerprint(), "draft": not self.locked,
             "model": model_desc or model, "label": label,
+            # trazabilidad: con qué TE/VAE se generó (si cambian, los runs
+            # anteriores dejan de ser comparables y esto es la evidencia)
+            "model_files": {"text_encoder": files["text_encoder"],
+                            "vae": files["vae"]},
             "sampling": dict(self.sampling),
             "started_at": started, "finished_at": _now(),
             "seconds": round(time.time() - t_run, 1),

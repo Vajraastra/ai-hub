@@ -64,6 +64,16 @@ def _read_st_header(path: Path) -> tuple[dict, dict]:
     return hdr, meta
 
 
+def _find_preview(p: Path) -> Path | None:
+    """Imagen de preview junto al safetensors (misma convención del Vault)."""
+    base = str(p)[: -len(p.suffix)] if p.suffix else str(p)
+    for ext in (".preview.jpeg", ".preview.jpg", ".preview.png", ".preview.webp"):
+        c = Path(base + ext)
+        if c.is_file():
+            return c
+    return None
+
+
 def _sha256(path: Path, on_progress: Callable[[int, int], None] | None = None) -> str:
     h = hashlib.sha256()
     total = path.stat().st_size
@@ -118,6 +128,8 @@ class MergeOrchestrator:
             entry = {
                 "file": p.relative_to(base).as_posix(),
                 "name": p.stem,
+                "subfolder": ("" if p.parent == base
+                              else p.parent.relative_to(base).as_posix()),
                 "size_bytes": st.st_size,
                 "arch_match": is_arch,
                 "base_model": base_model or None,
@@ -127,8 +139,24 @@ class MergeOrchestrator:
             }
             self._lora_cache[cache_key] = (stamp, entry)
             out.append(entry)
+        # has_preview fuera del cache: el .preview.* puede aparecer/borrarse
+        # sin que cambie el mtime del safetensors (llave del cache)
+        out = [{**e, "has_preview":
+                _find_preview(self.models_root / "loras" / e["file"]) is not None}
+               for e in out]
         out.sort(key=lambda e: (not e["arch_match"], e["name"].lower()))
         return out
+
+    def lora_preview_path(self, lora_file: str) -> Path:
+        """Path del preview de un LoRA (rel posix a <models>/loras) o error."""
+        base = (self.models_root / "loras").resolve()
+        p = (base / lora_file).resolve()
+        if not p.is_relative_to(base) or not p.is_file():
+            raise MergeError(f"no existe el LoRA {lora_file!r}")
+        prev = _find_preview(p)
+        if prev is None:
+            raise MergeError(f"{lora_file!r} no tiene preview")
+        return prev
 
     # ── Registro de checkpoints ───────────────────────────────────────────
 
@@ -136,14 +164,14 @@ class MergeOrchestrator:
         return self.models_root / "diffusion_models" / DERIVED_SUBDIR
 
     def _official_entry(self, arch: str) -> dict:
-        from .architectures import get_adapter
-        rel = get_adapter(arch).model_files().diffusion_model
+        from .model_config import model_files, loader_name
+        rel = model_files(arch)["diffusion_model"]
         path = self.models_root / rel
         name = Path(rel).name
         return {
             "kind": "official", "name": name.removesuffix(".safetensors"),
             "arch": arch, "file": Path(rel).relative_to("diffusion_models").as_posix(),
-            "unet_name": name,          # vive en la raíz de diffusion_models
+            "unet_name": loader_name(rel),   # subpath con os.sep si está anidado
             "present": path.exists(),
             "size_bytes": path.stat().st_size if path.exists() else None,
             "label": "base oficial (De-Turbo)",

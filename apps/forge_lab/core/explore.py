@@ -193,6 +193,8 @@ async def generate(comfy, config: dict,
 
     template = load_workflow("txt2img_lora_selective.json", session["arch"])
     template["10"]["inputs"].update(node_inputs(config))
+    from .model_config import model_files, loader_name
+    files = model_files(session["arch"])
     params = {
         "model": session["model"],
         "lora": session["lora"].replace("/", os.sep),
@@ -200,6 +202,8 @@ async def generate(comfy, config: dict,
         "prompt": session["prompt"]["text"],
         "negative": session["prompt"]["negative"],
         "seed": session["prompt"]["seed"],
+        "text_encoder": loader_name(files["text_encoder"]),
+        "vae": loader_name(files["vae"]),
         **session["sampling"],
     }
     t0 = time.time()

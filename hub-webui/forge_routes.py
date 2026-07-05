@@ -32,9 +32,11 @@ from forge_lab.core.comfy_client import ComfyClient, load_workflow
 from forge_lab.core.architectures import get_adapter, SUPPORTED_ARCHITECTURES
 from forge_lab.core import validation_set as vsets
 from forge_lab.core import explore
+from forge_lab.core import model_config
 from forge_lab.core.validation_set import ValidationSet, ValidationSetError, LockedError
 from forge_lab.core.merge import MergeOrchestrator, MergeError
 from forge_lab.core.explore import ExploreError
+from forge_lab.core.model_config import ModelConfigError
 
 forge_router = APIRouter(prefix="/api/forge", tags=["forge"])
 
@@ -81,7 +83,7 @@ async def status(arch: str = "zimage"):
         raise HTTPException(400, str(e))
 
     root = _models_root()
-    files = vars(adapter.model_files())
+    files = model_config.model_files(arch)   # defaults + overrides del usuario
     models = {k: {"path": v, "present": (root / v).exists()} for k, v in files.items()}
 
     comfy_up = await _comfy.health_check()
@@ -276,9 +278,82 @@ class MergeBody(BaseModel):
     blocks: dict[str, float] | list[str] | None = None
 
 
+def _norm_arch(s: str) -> str:
+    """'Z-Image' / 'z_image' / 'ZImage Turbo' → comparable con 'zimage'."""
+    import re as _re
+    return _re.sub(r"[^a-z0-9]", "", (s or "").lower())
+
+
+async def _vault_arch_map() -> dict:
+    """{stem_lower: base_model} del Model Vault; vacío si el vault no está."""
+    try:
+        import vault_routes
+        amap = await vault_routes.arch_map()
+        return {k.lower(): v for k, v in amap.items()}
+    except Exception:
+        return {}
+
+
 @forge_router.get("/loras")
 async def loras_list(arch: str = "zimage"):
-    return {"loras": _merger.list_loras(arch)}
+    """Catálogo de LoRAs. arch_match combina dos señales: el header del
+    safetensors (detección de merge.py) y la clasificación base_model del
+    Model Vault — un LoRA sin metadata reconocible pero catalogado en el
+    vault como Z-Image cuenta como match (petición del usuario: al elegir
+    checkpoint de una arquitectura, ver solo sus LoRAs)."""
+    loras = _merger.list_loras(arch)
+    amap = await _vault_arch_map()
+    target = _norm_arch(arch)
+    for l in loras:
+        bm = amap.get(Path(l["file"]).stem.lower())
+        if bm:
+            l["vault_arch"] = bm
+            if not l["arch_match"] and target and target in _norm_arch(bm):
+                l["arch_match"] = True
+    loras.sort(key=lambda e: (not e["arch_match"], e["name"].lower()))
+    return {"loras": loras}
+
+
+@forge_router.get("/lora-preview")
+async def lora_preview(file: str):
+    """Imagen .preview.* junto al safetensors (convención del Vault)."""
+    try:
+        return FileResponse(_merger.lora_preview_path(file))
+    except MergeError:
+        raise HTTPException(404, "sin preview")
+
+
+class ModelFilesBody(BaseModel):
+    arch: str = "zimage"
+    files: dict                    # {clave: path relativo | "" (= default)}
+
+
+@forge_router.get("/model-files")
+async def model_files_get(arch: str = "zimage"):
+    """Paths de modelo efectivos + defaults del adaptador + opciones
+    elegibles escaneadas del almacén global."""
+    try:
+        adapter = get_adapter(arch)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {
+        "arch": arch,
+        "files": model_config.model_files(arch),
+        "defaults": vars(adapter.model_files()),
+        "options": model_config.list_options(_models_root()),
+    }
+
+
+@forge_router.put("/model-files")
+async def model_files_put(body: ModelFilesBody):
+    if any(j["status"] == "running" for j in _jobs.values()):
+        raise HTTPException(409, "hay un job en curso; espera a que termine")
+    try:
+        files = model_config.set_model_files(body.arch, body.files,
+                                             _models_root())
+    except (ModelConfigError, ValueError) as e:
+        raise HTTPException(400, str(e))
+    return {"arch": body.arch, "files": files}
 
 
 @forge_router.get("/checkpoints")

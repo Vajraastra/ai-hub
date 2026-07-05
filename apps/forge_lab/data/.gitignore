@@ -5,3 +5,5 @@
 validation_runs/
 # Imágenes temporales de exploración por bloques (efímeras por diseño)
 explore_tmp/
+# Preferencia local de paths de modelos (como hub_config: no se versiona)
+model_config.json

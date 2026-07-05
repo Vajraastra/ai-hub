@@ -1,16 +1,16 @@
 {
-  "_comment": "Z-Image De-Turbo txt2img + ZImageSelectiveLoRALoader (exploración por bloques, Fase 4). Placeholders: model, lora, lora_strength, prompt, negative, seed, steps, cfg, sampler, scheduler, width, height. Los toggles/dosis por capa (layer_N / layer_N_str / other_weights) los inyecta explore.py mutando inputs del nodo 10 — OJO: el nodo escala lora_A y lora_B, así que layer_N_str actúa al CUADRADO sobre el delta; explore.py pasa sqrt(dosis) para que la dosis sea lineal.",
+  "_comment": "Z-Image De-Turbo txt2img + ZImageSelectiveLoRALoader (exploración por bloques, Fase 4). Placeholders: model, text_encoder, vae, lora, lora_strength, prompt, negative, seed, steps, cfg, sampler, scheduler, width, height. Los toggles/dosis por capa (layer_N / layer_N_str / other_weights) los inyecta explore.py mutando inputs del nodo 10 — OJO: el nodo escala lora_A y lora_B, así que layer_N_str actúa al CUADRADO sobre el delta; explore.py pasa sqrt(dosis) para que la dosis sea lineal.",
   "1": {
     "class_type": "UNETLoader",
     "inputs": { "unet_name": "{{model}}", "weight_dtype": "default" }
   },
   "2": {
     "class_type": "CLIPLoader",
-    "inputs": { "clip_name": "qwen_3_4b.safetensors", "type": "lumina2" }
+    "inputs": { "clip_name": "{{text_encoder}}", "type": "lumina2" }
   },
   "3": {
     "class_type": "VAELoader",
-    "inputs": { "vae_name": "ae.safetensors" }
+    "inputs": { "vae_name": "{{vae}}" }
   },
   "10": {
     "class_type": "ZImageSelectiveLoRALoader",

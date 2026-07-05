@@ -1,16 +1,16 @@
 {
-  "_comment": "Z-Image De-Turbo txt2img. Carga por piezas: DiT (UNETLoader) + Qwen3-4B (CLIPLoader type lumina2, detección por pesos resuelve al TE de Z-Image) + VAE de Flux (latent_formats.Flux). Placeholders: model, prompt, negative, seed, steps, cfg, sampler, scheduler, width, height.",
+  "_comment": "Z-Image De-Turbo txt2img. Carga por piezas: DiT (UNETLoader) + Qwen3-4B (CLIPLoader type lumina2, detección por pesos resuelve al TE de Z-Image) + VAE de Flux (latent_formats.Flux). Placeholders: model, text_encoder, vae, prompt, negative, seed, steps, cfg, sampler, scheduler, width, height.",
   "1": {
     "class_type": "UNETLoader",
     "inputs": { "unet_name": "{{model}}", "weight_dtype": "default" }
   },
   "2": {
     "class_type": "CLIPLoader",
-    "inputs": { "clip_name": "qwen_3_4b.safetensors", "type": "lumina2" }
+    "inputs": { "clip_name": "{{text_encoder}}", "type": "lumina2" }
   },
   "3": {
     "class_type": "VAELoader",
-    "inputs": { "vae_name": "ae.safetensors" }
+    "inputs": { "vae_name": "{{vae}}" }
   },
   "4": {
     "class_type": "CLIPTextEncode",

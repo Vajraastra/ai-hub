@@ -38,37 +38,79 @@ async function api(path, opts = {}) {
 
 // ── Diagnóstico ─────────────────────────────────────────────────────────────
 
+const MF_LABELS = {
+  diffusion_model: 'Diffusion model (base oficial)',
+  text_encoder: 'Text encoder',
+  vae: 'VAE',
+};
+
 async function loadStatus() {
   try {
-    const s = await api('/status');
+    const [s, mf] = await Promise.all([api('/status'), api('/model-files')]);
     $('arch-label').textContent = s.arch;
     const pill = $('comfy-pill');
     pill.textContent = 'ComfyUI: ' + (s.comfyui ? 'online' : 'offline');
     pill.className = 'badge ' + (s.comfyui ? 'draft' : '');
     let html = `<div class="status-row"><span>ComfyUI (API :8188)</span>${mark(s.comfyui)}</div>`;
-    for (const [kind, m] of Object.entries(s.models))
-      html += `<div class="status-row"><span>${esc(kind)}<br><span class="path">${esc(m.path)}</span></span>${mark(m.present)}</div>`;
     for (const [node, ok] of Object.entries(s.nodes))
       html += `<div class="status-row"><span>nodo ${esc(node)}</span>${mark(ok)}</div>`;
     if (!Object.keys(s.nodes).length)
       html += `<div class="status-row"><span>nodos Realtime-Lora</span><span class="bad">sin comprobar (ComfyUI apagado)</span></div>`;
+
+    // ficheros de modelo: seleccionables sobre el almacén global del Hub
+    html += `<div class="cat-title" style="margin-top:14px">Ficheros de modelo — ${esc(s.arch)}</div>`;
+    for (const [k, m] of Object.entries(s.models)) {
+      const opts = (mf.options[k] || []).map(o =>
+        `<option value="${esc(o.path)}"${o.path === mf.files[k] ? ' selected' : ''}>${esc(o.path)}</option>`
+      ).join('');
+      const isDefault = mf.files[k] === mf.defaults[k];
+      html += `<div class="status-row"><span>${esc(MF_LABELS[k] || k)}` +
+        (isDefault ? '' : ' <span class="badge locked">override</span>') +
+        `<br><select class="mf-select" data-key="${esc(k)}">` +
+        (opts || `<option selected>${esc(m.path)}</option>`) +
+        `</select></span>${mark(m.present)}</div>`;
+    }
+    html += `<div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button class="btn btn-outline" id="btn-save-paths">Guardar paths</button>
+      <button class="back-btn" id="btn-default-paths">volver a defaults</button>
+      <span class="dim" style="font-size:11px">paths relativos al almacén global de modelos del Hub</span></div>`;
     $('status-content').innerHTML = html;
+    $('btn-save-paths').onclick = () => saveModelPaths(false);
+    $('btn-default-paths').onclick = () => saveModelPaths(true);
   } catch (e) {
     $('status-content').innerHTML = `<span class="bad">Error: ${esc(e.message)}</span>`;
   }
 }
 
+async function saveModelPaths(reset) {
+  const files = {};
+  document.querySelectorAll('.mf-select').forEach(sel => {
+    files[sel.dataset.key] = reset ? '' : sel.value;
+  });
+  try {
+    await api('/model-files', { method: 'PUT', body: { files } });
+    await loadStatus();
+    await refreshCheckpoints();   // la base oficial puede haber cambiado
+  } catch (e) { alert('Error guardando paths: ' + e.message); }
+}
+
 $('btn-status-toggle').onclick = () => {
-  const el = $('status-content');
-  const show = el.style.display === 'none';
-  el.style.display = show ? '' : 'none';
-  $('btn-status-toggle').textContent = show ? 'ocultar' : 'mostrar';
+  const el = $('status-card');
+  el.style.display = el.style.display === 'none' ? '' : 'none';
 };
 
 // ── Lista de sets ───────────────────────────────────────────────────────────
 
 async function refreshSets(keepSelection = true) {
   const data = await api('/sets');
+  setsCache = data.sets;
+  // selector de la pestaña Comparar
+  const cs = $('compare-set');
+  cs.innerHTML = '<option value="">— elige un set —</option>';
+  for (const s of data.sets.filter(s => !s.archived))
+    cs.add(new Option(`${s.name} (${s.n_runs} runs)`, s.name));
+  if (currentSet) cs.value = currentSet.name;
+  updateTabBadges();
   const el = $('sets-list');
   const visible = data.sets.filter(s => showArchived || !s.archived);
   const nArchived = data.sets.length - data.sets.filter(s => !s.archived).length;
@@ -124,6 +166,7 @@ async function selectSet(name, refetch = true) {
     r.classList.toggle('active', r.querySelector('.mono').textContent === name);
   });
   renderEditor();
+  $('compare-set').value = name;
   // ofrecer los prompts del set en el setup de exploración
   const fs = $('exp-from-set');
   fs.innerHTML = '<option value="">— libre —</option>';
@@ -349,19 +392,84 @@ async function refreshCheckpoints() {
   expSel.innerHTML = '';
   for (const c of checkpointsCache.filter(c => c.present))
     expSel.add(new Option(`${c.name}${c.kind === 'official' ? ' (oficial)' : ''}`, c.name));
+  updateTabBadges();
 }
+
+// ── Picker visual de LoRAs (thumbnails estilo Vault) ───────────────────────
+// Solo se listan LoRAs de la arquitectura activa (header del safetensors +
+// clasificación del Model Vault); sin preview → placeholder genérico.
+
+let lorasCache = [];        // solo arch_match
+let loraPickerTarget = null;
+
+const loraByFile = (f) => lorasCache.find(l => l.file === f);
+const loraThumb = (l, cls) => l.has_preview
+  ? `<img class="${cls}" loading="lazy" src="/api/forge/lora-preview?file=${encodeURIComponent(l.file)}">`
+  : (cls === 'lp-thumb' ? '<div class="lp-thumb-ph">🧬</div>' : '<span class="ph">🧬</span>');
 
 async function refreshLoras() {
   const data = await api('/loras');
+  lorasCache = data.loras.filter(l => l.arch_match);
   for (const id of ['merge-lora', 'exp-lora']) {
-    const sel = $(id);
-    sel.innerHTML = '';
-    for (const l of data.loras.filter(l => l.arch_match))
-      sel.add(new Option(`${l.name}${l.rank ? ` (r${l.rank})` : ''}`, l.file));
-    if (!sel.options.length)
-      sel.add(new Option('— no hay LoRAs Z-Image en el almacén —', ''));
+    if ($(id).value && !loraByFile($(id).value)) $(id).value = '';
+    renderLoraPickBtn(id);
   }
 }
+
+function renderLoraPickBtn(id) {
+  const btn = $('btn-pick-' + id);
+  const l = loraByFile($(id).value);
+  btn.innerHTML = l
+    ? loraThumb(l, '') + `<span class="nm" title="${esc(l.file)}">${esc(l.name)}</span>`
+    : '<span class="ph">🧬</span><span class="nm dim">— elegir LoRA —</span>';
+}
+
+function openLoraPicker(targetId) {
+  loraPickerTarget = targetId;
+  $('lp-search').value = '';
+  renderLoraGrid();
+  $('lora-picker-overlay').classList.add('open');
+  $('lp-search').focus();
+}
+
+function closeLoraPicker() { $('lora-picker-overlay').classList.remove('open'); }
+
+function renderLoraGrid() {
+  const q = $('lp-search').value.trim().toLowerCase();
+  const cur = loraPickerTarget ? $(loraPickerTarget).value : '';
+  const list = lorasCache.filter(l => !q ||
+    l.name.toLowerCase().includes(q) ||
+    (l.subfolder || '').toLowerCase().includes(q));
+  $('lp-count').textContent = `${list.length} compatibles`;
+  const grid = $('lp-grid');
+  grid.innerHTML = '';
+  if (!list.length) {
+    grid.innerHTML = `<span class="dim" style="font-size:12px">No hay LoRAs de esta arquitectura${q ? ' que casen con la búsqueda' : ' en el almacén'}.</span>`;
+    return;
+  }
+  for (const l of list) {
+    const card = document.createElement('div');
+    card.className = 'lp-card' + (l.file === cur ? ' selected' : '');
+    card.innerHTML = loraThumb(l, 'lp-thumb') +
+      `<div class="lp-body"><div class="lp-name">${esc(l.name)}</div>` +
+      `<div class="lp-meta">${esc(l.subfolder || '')}${l.rank ? (l.subfolder ? ' · ' : '') + 'r' + l.rank : ''}</div></div>`;
+    card.title = l.file;
+    card.onclick = () => {
+      $(loraPickerTarget).value = l.file;
+      renderLoraPickBtn(loraPickerTarget);
+      closeLoraPicker();
+    };
+    grid.appendChild(card);
+  }
+}
+
+$('lp-close').onclick = closeLoraPicker;
+$('lora-picker-overlay').onclick = (e) => {
+  if (e.target.id === 'lora-picker-overlay') closeLoraPicker();
+};
+$('lp-search').oninput = renderLoraGrid;
+$('btn-pick-merge-lora').onclick = () => openLoraPicker('merge-lora');
+$('btn-pick-exp-lora').onclick = () => openLoraPicker('exp-lora');
 
 $('btn-merge').onclick = async () => {
   const body = {
@@ -417,6 +525,7 @@ let selectedGen = null;
 async function refreshExplore() {
   const data = await api('/explore/session');
   exploreSession = data.session;
+  updateTabBadges();
   const active = !!exploreSession;
   $('explore-setup').style.display = active ? 'none' : '';
   $('explore-session').style.display = active ? '' : 'none';
@@ -698,6 +807,7 @@ async function refreshRuns() {
   if (!currentSet) return;
   const data = await api('/sets/' + encodeURIComponent(currentSet.name) + '/runs');
   runsCache = data.runs;
+  updateTabBadges();
   $('runs-card').style.display = '';
   const el = $('runs-list');
   if (!runsCache.length) {
@@ -782,8 +892,43 @@ function renderGrid() {
   wrap.innerHTML = html;
 }
 
+// ── Pestañas por fase ───────────────────────────────────────────────────────
+
+let setsCache = [];
+
+function switchTab(name) {
+  document.querySelectorAll('.tab-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.tab === name));
+  document.querySelectorAll('.tab-panel').forEach(p =>
+    p.classList.toggle('active', p.id === 'tab-' + name));
+  localStorage.setItem('forge-tab', name);
+}
+
+document.querySelectorAll('.tab-btn').forEach(b =>
+  b.onclick = () => switchTab(b.dataset.tab));
+
+function updateTabBadges() {
+  const active = setsCache.filter(s => !s.archived);
+  const baselineReady = active.some(s => s.locked && s.n_runs > 0);
+  $('tb-sets').textContent = baselineReady ? '✔' : (active.length ? '…' : '');
+  $('tb-sets').title = baselineReady
+    ? 'hay set bloqueado con baseline' : 'falta bloquear un set o generar su baseline';
+  $('tb-lab').textContent = exploreSession ? '●' : '';
+  $('tb-lab').title = exploreSession ? 'sesión de exploración activa' : '';
+  const nDeriv = checkpointsCache.filter(c => c.kind === 'derived' && c.present).length;
+  $('tb-merge').textContent = nDeriv ? String(nDeriv) : '';
+  $('tb-merge').title = nDeriv ? `${nDeriv} checkpoint(s) derivado(s)` : '';
+  $('tb-compare').textContent = runsCache.length ? String(runsCache.length) : '';
+  $('tb-compare').title = runsCache.length ? `${runsCache.length} run(s) del set seleccionado` : '';
+}
+
+$('compare-set').onchange = () => {
+  if ($('compare-set').value) selectSet($('compare-set').value);
+};
+
 // ── Init ────────────────────────────────────────────────────────────────────
 
+switchTab(localStorage.getItem('forge-tab') || 'sets');
 loadStatus();
 refreshSets(false);
 refreshCheckpoints();

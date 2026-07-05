@@ -141,8 +141,88 @@
     .hist-item.selected { border-color:var(--accent-purple); }
     .hist-item.is-ref { border-color:#d9a44a; }
 
+    /* picker visual de LoRAs (estilo Vault) */
+    #lora-picker-overlay { position:fixed; inset:0; background:rgba(0,0,0,.55);
+                           z-index:50; display:none; align-items:center;
+                           justify-content:center; }
+    #lora-picker-overlay.open { display:flex; }
+    #lora-picker { background:var(--bg-card); border:1px solid var(--border);
+                   border-radius:10px; width:min(880px,92vw); max-height:84vh;
+                   display:flex; flex-direction:column; }
+    .lp-head { display:flex; gap:10px; padding:12px 16px; align-items:center;
+               border-bottom:1px solid var(--border); }
+    .lp-head input { flex:1; background:var(--bg-input,#14141c);
+                     border:1px solid var(--border); color:var(--text-primary);
+                     border-radius:6px; padding:7px 10px; font-size:13px; }
+    #lp-grid { overflow-y:auto; padding:14px; display:grid; gap:10px;
+               grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); }
+    .lp-card { border:1px solid var(--border); border-radius:8px; overflow:hidden;
+               cursor:pointer; background:var(--bg-input,#14141c);
+               transition:border-color .15s; }
+    .lp-card:hover { border-color:var(--accent-purple); }
+    .lp-card.selected { border-color:var(--accent-purple);
+                        box-shadow:0 0 0 1px var(--accent-purple); }
+    .lp-thumb { width:100%; aspect-ratio:3/4; object-fit:cover; display:block;
+                background:#0d0d13; }
+    .lp-thumb-ph { width:100%; aspect-ratio:3/4; display:flex; align-items:center;
+                   justify-content:center; font-size:40px; background:#0d0d13;
+                   color:var(--text-dim); }
+    .lp-body { padding:7px 9px; }
+    .lp-name { font-size:11.5px; color:var(--text-primary); word-break:break-word;
+               line-height:1.3; }
+    .lp-meta { font-size:10px; color:var(--text-dim); margin-top:3px; }
+    /* tarjeta del LoRA seleccionado (mini-card estilo Vault: imagen + nombre) */
+    .lora-pick { display:flex; flex-direction:column; cursor:pointer; padding:0;
+                 background:var(--bg-input,#14141c); border:1px solid var(--border);
+                 color:var(--text-primary); border-radius:8px; width:128px;
+                 overflow:hidden; text-align:left; font-size:12px; }
+    .lora-pick:hover { border-color:var(--accent-purple); }
+    .lora-pick img, .lora-pick .ph { width:100%; aspect-ratio:3/4;
+                 object-fit:cover; display:block; }
+    .lora-pick .ph { display:flex; align-items:center; justify-content:center;
+                     background:#0d0d13; font-size:34px; }
+    .lora-pick .nm { display:block; padding:6px 8px; font-size:11.5px;
+                     line-height:1.3; word-break:break-word; }
+
+    /* selección de paths de modelo (diagnóstico) */
+    #status-content select.mf-select {
+      background:var(--bg-input,#14141c); border:1px solid var(--border);
+      color:var(--text-primary); border-radius:5px; padding:5px 8px;
+      font-size:12px; max-width:440px; margin-top:3px;
+      font-family:'JetBrains Mono',monospace;
+    }
+
+    /* pestañas por fase */
+    #tab-bar { display:flex; gap:6px; flex-wrap:wrap; }
+    .tab-btn {
+      display:flex; align-items:center; gap:8px;
+      background:var(--bg-card); border:1px solid var(--border); color:var(--text-secondary);
+      border-radius:8px; padding:9px 16px; font-size:13px; cursor:pointer;
+      transition:color .15s, border-color .15s, background .15s;
+    }
+    .tab-btn:hover { color:var(--text-primary); border-color:var(--accent-purple); }
+    .tab-btn.active {
+      color:var(--text-primary); border-color:var(--accent-purple);
+      background:rgba(140,100,255,.10); font-weight:600;
+    }
+    .tab-badge { font-size:10px; padding:1px 7px; border-radius:9px;
+                 border:1px solid var(--border); color:var(--text-dim); }
+    .tab-badge:empty { display:none; }
+    .tab-panel { display:none; flex-direction:column; gap:16px; }
+    .tab-panel.active { display:flex; }
+    .tab-intro {
+      font-size:12.5px; color:var(--text-secondary); line-height:1.55;
+      border:1px solid var(--border); border-left:3px solid var(--accent-purple);
+      border-radius:6px; padding:10px 14px; background:var(--bg-card);
+    }
+    .tab-intro b { color:var(--text-primary); font-weight:600; }
+    #compare-set { background:var(--bg-input,#14141c); border:1px solid var(--border);
+                   color:var(--text-primary); border-radius:5px; padding:6px 8px;
+                   font-size:12px; max-width:340px; }
+    #global-progress { display:contents; }
+
     /* progreso */
-    #run-progress { display:none; margin-top:12px; }
+    #run-progress { margin-top:0; }
     .pbar { height:8px; background:var(--bg-input,#14141c); border:1px solid var(--border);
             border-radius:5px; overflow:hidden; }
     .pbar > div { height:100%; width:0%; background:var(--accent-purple); transition:width .4s; }
@@ -173,31 +253,90 @@
       <span id="arch-label" style="font-size:12px;color:var(--text-dim)"></span>
       <div style="flex:1"></div>
       <span id="comfy-pill" class="badge">ComfyUI: …</span>
+      <button class="back-btn" id="btn-status-toggle">Diagnóstico</button>
     </div>
 
     <div id="forge-body">
 
-      <div class="card" id="status-card">
-        <h2>Diagnóstico <span class="spacer"></span>
-            <button class="back-btn" id="btn-status-toggle">mostrar</button></h2>
-        <div id="status-content" style="display:none">Cargando…</div>
+      <div class="card" id="status-card" style="display:none">
+        <h2>Diagnóstico del entorno</h2>
+        <div id="status-content">Cargando…</div>
       </div>
 
-      <div class="card">
-        <h2>Sets de validación <span class="spacer"></span>
-            <button class="back-btn" id="btn-show-archived">mostrar archivados</button>
-            <button class="back-btn" id="btn-new-set">＋ Nuevo set</button></h2>
-        <div id="sets-list" class="dim" style="font-size:13px">Cargando…</div>
+      <nav id="tab-bar">
+        <button class="tab-btn" data-tab="sets">① Sets &amp; baseline <span class="tab-badge" id="tb-sets"></span></button>
+        <button class="tab-btn" data-tab="lab">② Laboratorio <span class="tab-badge" id="tb-lab"></span></button>
+        <button class="tab-btn" data-tab="merge">③ Merge <span class="tab-badge" id="tb-merge"></span></button>
+        <button class="tab-btn" data-tab="compare">④ Comparar <span class="tab-badge" id="tb-compare"></span></button>
+      </nav>
+
+      <div id="global-progress">
+        <div id="run-progress" class="card" style="display:none">
+          <div class="plabel" id="run-progress-label"></div>
+          <div class="pbar"><div id="run-progress-fill"></div></div>
+        </div>
+        <div id="merge-progress" class="card" style="display:none">
+          <div class="plabel" id="merge-progress-label"></div>
+          <div class="pbar"><div id="merge-progress-fill"></div></div>
+        </div>
       </div>
 
-      <div class="card" id="ckpt-card">
+      <!-- ① SETS & BASELINE -->
+      <div class="tab-panel" id="tab-sets">
+        <div class="tab-intro">
+          <b>Paso 1 — La vara de medir.</b> Un set es una lista fija de prompts + seeds
+          que se <b>bloquea</b> y ya nunca cambia: toda comparación entre modelos consiste
+          en regenerar exactamente este set. Crea o selecciona un set, bloquéalo cuando
+          estés conforme y genera su <b>baseline</b> con «▶ Regenerar set» contra el
+          checkpoint oficial. Con el baseline hecho: explora una LoRA en
+          <b>② Laboratorio</b> o mira resultados en <b>④ Comparar</b>.
+        </div>
+
+        <div class="card">
+          <h2>Sets de validación <span class="spacer"></span>
+              <button class="back-btn" id="btn-show-archived">mostrar archivados</button>
+              <button class="back-btn" id="btn-new-set">＋ Nuevo set</button></h2>
+          <div id="sets-list" class="dim" style="font-size:13px">Cargando…</div>
+        </div>
+
+        <div class="card" id="editor-card" style="display:none">
+          <h2><span id="editor-title"></span> <span id="editor-badge"></span>
+              <span class="spacer"></span></h2>
+          <div class="sampling-grid" id="sampling-grid"></div>
+          <div id="prompts-editor"></div>
+          <div class="editor-actions">
+            <button class="btn btn-outline" id="btn-add-prompt">＋ Prompt</button>
+            <button class="btn btn-primary" id="btn-save-set">Guardar borrador</button>
+            <button class="btn btn-outline" id="btn-lock-set">🔒 Bloquear</button>
+            <button class="btn btn-outline" id="btn-clone-set">Clonar</button>
+            <button class="btn btn-outline" id="btn-archive-set">Archivar</button>
+            <button class="btn btn-outline danger" id="btn-delete-set">Eliminar</button>
+            <div style="flex:1"></div>
+            <select id="run-model" title="Checkpoint contra el que regenerar"></select>
+            <button class="btn btn-primary" id="btn-run-set">▶ Regenerar set</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ③ MERGE -->
+      <div class="tab-panel" id="tab-merge">
+        <div class="tab-intro">
+          <b>Paso 3 — Fijar el resultado.</b> El merge escribe un checkpoint real
+          (~12 GB, corre en CPU) matemáticamente equivalente a la LoRA en runtime.
+          Aquí están la base oficial y los derivados con su linaje. Después de mergear:
+          regenera el set contra el derivado (<b>① Sets</b>) y compáralo con el baseline
+          (<b>④ Comparar</b>).
+        </div>
+
+        <div class="card" id="ckpt-card">
         <h2>Checkpoints — base y derivados (merge)</h2>
         <div id="ckpt-list" class="dim" style="font-size:13px">Cargando…</div>
         <div class="merge-form">
           <label>Base
             <select id="merge-base"></select></label>
           <label>LoRA (Z-Image)
-            <select id="merge-lora"></select></label>
+            <input type="hidden" id="merge-lora">
+            <button type="button" class="lora-pick" id="btn-pick-merge-lora"></button></label>
           <label>Strength
             <input id="merge-strength" type="number" step="0.05" min="0.05"
                    max="2" value="1.0" style="width:72px"></label>
@@ -208,11 +347,19 @@
             <input id="merge-label" placeholder="opcional" style="width:180px"></label>
           <button class="btn btn-primary" id="btn-merge">⚒ Merge → checkpoint</button>
         </div>
-        <div id="merge-progress" style="display:none;margin-top:12px">
-          <div class="plabel" id="merge-progress-label"></div>
-          <div class="pbar"><div id="merge-progress-fill"></div></div>
-        </div>
       </div>
+      </div>
+
+      <!-- ② LABORATORIO -->
+      <div class="tab-panel" id="tab-lab">
+        <div class="tab-intro">
+          <b>Paso 2 — Descubrir qué hace cada bloque.</b> Monta checkpoint + LoRA con un
+          prompt y seed congelados, genera una <b>referencia</b> y luego apaga o dosifica
+          bloques (0–29 + refiners) para aislar dónde vive el estilo y dónde la anatomía.
+          Las imágenes de aquí son <b>temporales</b>: se borran al cerrar la sesión.
+          Cuando una config te convenza, «✔ Confirmar con set» genera la evidencia
+          completa y «⚒ Merge» la convierte en checkpoint (<b>③ Merge</b>).
+        </div>
 
       <div class="card" id="explore-card">
         <h2>Laboratorio de bloques — exploración runtime <span class="spacer"></span>
@@ -223,7 +370,8 @@
             <label>Checkpoint
               <select id="exp-checkpoint"></select></label>
             <label>LoRA (Z-Image)
-              <select id="exp-lora"></select></label>
+              <input type="hidden" id="exp-lora">
+              <button type="button" class="lora-pick" id="btn-pick-exp-lora"></button></label>
             <label>Strength global
               <input id="exp-strength" type="number" step="0.05" min="0.05" max="2"
                      value="1.0" style="width:68px"></label>
@@ -266,39 +414,46 @@
           </div>
         </div>
       </div>
-
-      <div class="card" id="editor-card" style="display:none">
-        <h2><span id="editor-title"></span> <span id="editor-badge"></span>
-            <span class="spacer"></span></h2>
-        <div class="sampling-grid" id="sampling-grid"></div>
-        <div id="prompts-editor"></div>
-        <div class="editor-actions">
-          <button class="btn btn-outline" id="btn-add-prompt">＋ Prompt</button>
-          <button class="btn btn-primary" id="btn-save-set">Guardar borrador</button>
-          <button class="btn btn-outline" id="btn-lock-set">🔒 Bloquear</button>
-          <button class="btn btn-outline" id="btn-clone-set">Clonar</button>
-          <button class="btn btn-outline" id="btn-archive-set">Archivar</button>
-          <button class="btn btn-outline danger" id="btn-delete-set">Eliminar</button>
-          <div style="flex:1"></div>
-          <select id="run-model" title="Checkpoint contra el que regenerar"></select>
-          <button class="btn btn-primary" id="btn-run-set">▶ Regenerar set</button>
-        </div>
-        <div id="run-progress">
-          <div class="plabel" id="run-progress-label"></div>
-          <div class="pbar"><div id="run-progress-fill"></div></div>
-        </div>
       </div>
 
-      <div class="card" id="runs-card" style="display:none">
-        <h2>Runs del set <span class="spacer"></span>
-            <span class="dim" style="font-size:11px;font-weight:400">
-              marca runs para compararlos en el grid</span></h2>
-        <div id="runs-list"></div>
-        <div id="grid-wrap" style="margin-top:14px"></div>
+      <!-- ④ COMPARAR -->
+      <div class="tab-panel" id="tab-compare">
+        <div class="tab-intro">
+          <b>Paso 4 — El veredicto.</b> Marca dos o más runs del set y se montan lado a
+          lado, una fila por prompt (misma seed). Lectura: <b>target-*</b> debe mostrar
+          el efecto buscado, <b>general-*</b> debe quedar casi intacto (si se estiliza,
+          la LoRA sangra fuera de su dominio) y <b>stress-*</b> no debe perder manos,
+          poses ni texto.
+        </div>
+
+        <div class="card">
+          <h2>Set a comparar</h2>
+          <select id="compare-set"></select>
+        </div>
+
+        <div class="card" id="runs-card" style="display:none">
+          <h2>Runs del set <span class="spacer"></span>
+              <span class="dim" style="font-size:11px;font-weight:400">
+                marca runs para compararlos en el grid</span></h2>
+          <div id="runs-list"></div>
+          <div id="grid-wrap" style="margin-top:14px"></div>
+        </div>
       </div>
 
     </div>
   </div>
+
+  <div id="lora-picker-overlay">
+    <div id="lora-picker">
+      <div class="lp-head">
+        <input id="lp-search" placeholder="buscar por nombre o carpeta…">
+        <span class="dim" id="lp-count" style="font-size:11px;white-space:nowrap"></span>
+        <button class="back-btn" id="lp-close">✕</button>
+      </div>
+      <div id="lp-grid"></div>
+    </div>
+  </div>
+
   <script src="/static/forge.js"></script>
 </body>
 </html>
