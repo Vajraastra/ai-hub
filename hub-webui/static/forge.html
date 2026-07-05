@@ -81,13 +81,73 @@
     input:disabled, textarea:disabled, select:disabled { opacity:.55; cursor:not-allowed; }
     .editor-actions { display:flex; gap:8px; margin-top:14px; flex-wrap:wrap; }
 
+    /* checkpoints / merge */
+    .ckpt-row { display:flex; align-items:center; gap:10px; padding:7px 10px;
+                border:1px solid var(--border); border-radius:6px; margin-bottom:6px;
+                font-size:13px; color:var(--text-primary); }
+    .ckpt-row .lineage { color:var(--text-dim); font-size:11px; }
+    .merge-form { display:flex; flex-wrap:wrap; gap:10px; align-items:flex-end;
+                  margin-top:12px; padding-top:12px; border-top:1px solid var(--border); }
+    .merge-form label { display:flex; flex-direction:column; gap:3px;
+                        font-size:11px; color:var(--text-secondary); }
+    .merge-form input, .merge-form select {
+      background:var(--bg-input,#14141c); border:1px solid var(--border);
+      color:var(--text-primary); border-radius:5px; padding:5px 8px; font-size:12px;
+    }
+    #run-model { background:var(--bg-input,#14141c); border:1px solid var(--border);
+                 color:var(--text-primary); border-radius:5px; padding:6px 8px;
+                 font-size:12px; max-width:340px; }
+
+    /* laboratorio de bloques */
+    .explore-form { display:flex; flex-wrap:wrap; gap:10px; align-items:flex-end; }
+    .explore-form label { display:flex; flex-direction:column; gap:3px;
+                          font-size:11px; color:var(--text-secondary); }
+    .explore-form input, .explore-form select, .explore-form textarea {
+      background:var(--bg-input,#14141c); border:1px solid var(--border);
+      color:var(--text-primary); border-radius:5px; padding:5px 8px; font-size:12px;
+      font-family:inherit;
+    }
+    .explore-form textarea { resize:vertical; min-height:44px; width:420px; }
+    #explore-info { font-size:12px; color:var(--text-secondary);
+                    display:flex; gap:14px; flex-wrap:wrap; align-items:center; }
+    .switch-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(96px,1fr));
+                   gap:6px; margin:12px 0; }
+    .switch-cell { display:flex; align-items:center; gap:4px; padding:4px 6px;
+                   border:1px solid var(--border); border-radius:5px; font-size:11px;
+                   color:var(--text-primary); }
+    .switch-cell.off { opacity:.45; }
+    .switch-cell .lbl { font-family:'JetBrains Mono',monospace; min-width:22px; }
+    .switch-cell input[type=number] {
+      width:46px; background:var(--bg-input,#14141c); border:1px solid var(--border);
+      color:var(--text-primary); border-radius:4px; padding:2px 4px; font-size:11px;
+    }
+    .preset-row { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:4px; }
+    .compare-wrap { display:flex; gap:14px; margin-top:14px; flex-wrap:wrap; }
+    .compare-pane { flex:1; min-width:320px; max-width:520px; }
+    .compare-pane h3 { font-size:11px; font-weight:600; letter-spacing:.5px;
+                       text-transform:uppercase; color:var(--text-dim); margin-bottom:6px; }
+    .compare-pane img { width:100%; border-radius:6px; cursor:zoom-in;
+                        border:1px solid var(--border); }
+    .compare-pane .cfg { font-size:11px; color:var(--text-secondary); margin-top:4px;
+                         font-family:'JetBrains Mono',monospace; }
+    .hist-strip { display:flex; gap:8px; overflow-x:auto; margin-top:12px;
+                  padding-bottom:6px; }
+    .hist-item { flex:0 0 auto; width:110px; cursor:pointer; border:2px solid transparent;
+                 border-radius:6px; padding:2px; }
+    .hist-item img { width:100%; border-radius:4px; display:block; }
+    .hist-item .tag { font-size:9px; color:var(--text-dim); text-align:center;
+                      font-family:'JetBrains Mono',monospace; white-space:nowrap;
+                      overflow:hidden; text-overflow:ellipsis; }
+    .hist-item.selected { border-color:var(--accent-purple); }
+    .hist-item.is-ref { border-color:#d9a44a; }
+
     /* progreso */
     #run-progress { display:none; margin-top:12px; }
     .pbar { height:8px; background:var(--bg-input,#14141c); border:1px solid var(--border);
             border-radius:5px; overflow:hidden; }
     .pbar > div { height:100%; width:0%; background:var(--accent-purple); transition:width .4s; }
-    #run-progress .plabel { font-size:12px; color:var(--text-secondary); margin-bottom:5px;
-                            font-family:'JetBrains Mono',monospace; }
+    .plabel { font-size:12px; color:var(--text-secondary); margin-bottom:5px;
+              font-family:'JetBrains Mono',monospace; }
 
     /* runs + grid */
     .run-row { display:flex; align-items:center; gap:10px; font-size:12px; padding:5px 8px;
@@ -130,6 +190,83 @@
         <div id="sets-list" class="dim" style="font-size:13px">Cargando…</div>
       </div>
 
+      <div class="card" id="ckpt-card">
+        <h2>Checkpoints — base y derivados (merge)</h2>
+        <div id="ckpt-list" class="dim" style="font-size:13px">Cargando…</div>
+        <div class="merge-form">
+          <label>Base
+            <select id="merge-base"></select></label>
+          <label>LoRA (Z-Image)
+            <select id="merge-lora"></select></label>
+          <label>Strength
+            <input id="merge-strength" type="number" step="0.05" min="0.05"
+                   max="2" value="1.0" style="width:72px"></label>
+          <label>Nombre del derivado
+            <input id="merge-name" placeholder="minúsculas-y-guiones"
+                   style="width:200px"></label>
+          <label>Etiqueta
+            <input id="merge-label" placeholder="opcional" style="width:180px"></label>
+          <button class="btn btn-primary" id="btn-merge">⚒ Merge → checkpoint</button>
+        </div>
+        <div id="merge-progress" style="display:none;margin-top:12px">
+          <div class="plabel" id="merge-progress-label"></div>
+          <div class="pbar"><div id="merge-progress-fill"></div></div>
+        </div>
+      </div>
+
+      <div class="card" id="explore-card">
+        <h2>Laboratorio de bloques — exploración runtime <span class="spacer"></span>
+            <button class="back-btn danger" id="btn-explore-close" style="display:none">Cerrar sesión (borra imágenes)</button></h2>
+
+        <div id="explore-setup">
+          <div class="explore-form">
+            <label>Checkpoint
+              <select id="exp-checkpoint"></select></label>
+            <label>LoRA (Z-Image)
+              <select id="exp-lora"></select></label>
+            <label>Strength global
+              <input id="exp-strength" type="number" step="0.05" min="0.05" max="2"
+                     value="1.0" style="width:68px"></label>
+            <label>Prompt del set (opcional)
+              <select id="exp-from-set"><option value="">— libre —</option></select></label>
+            <label>Seed
+              <input id="exp-seed" type="number" value="424242" style="width:110px"></label>
+            <label style="flex-basis:100%">Prompt
+              <textarea id="exp-prompt"></textarea></label>
+            <button class="btn btn-primary" id="btn-explore-start">🧪 Iniciar sesión</button>
+          </div>
+        </div>
+
+        <div id="explore-session" style="display:none">
+          <div id="explore-info"></div>
+          <div class="preset-row" style="margin-top:10px">
+            <button class="back-btn" data-preset="all-on">todo ON</button>
+            <button class="back-btn" data-preset="all-off">todo OFF</button>
+            <button class="back-btn" data-preset="early">solo 0–9</button>
+            <button class="back-btn" data-preset="mid">solo 10–19</button>
+            <button class="back-btn" data-preset="late">solo 20–29</button>
+            <button class="back-btn" data-preset="invert">invertir</button>
+          </div>
+          <div class="switch-grid" id="switch-grid"></div>
+          <div class="editor-actions">
+            <button class="btn btn-primary" id="btn-explore-gen">▶ Generar variante</button>
+            <span class="dim" style="font-size:11px;align-self:center">
+              la 1ª generación queda como referencia; dosis 1.0 = efecto completo (lineal)</span>
+          </div>
+          <div id="explore-progress" style="display:none;margin-top:10px">
+            <div class="plabel" id="explore-progress-label"></div>
+            <div class="pbar"><div id="explore-progress-fill"></div></div>
+          </div>
+          <div class="compare-wrap" id="compare-wrap"></div>
+          <div class="hist-strip" id="hist-strip"></div>
+          <div class="editor-actions" id="explore-actions" style="display:none">
+            <button class="btn btn-outline" id="btn-explore-ref">📌 Fijar como referencia</button>
+            <button class="btn btn-outline" id="btn-explore-confirm">✔ Confirmar con set</button>
+            <button class="btn btn-primary" id="btn-explore-merge">⚒ Merge con esta config</button>
+          </div>
+        </div>
+      </div>
+
       <div class="card" id="editor-card" style="display:none">
         <h2><span id="editor-title"></span> <span id="editor-badge"></span>
             <span class="spacer"></span></h2>
@@ -143,6 +280,7 @@
           <button class="btn btn-outline" id="btn-archive-set">Archivar</button>
           <button class="btn btn-outline danger" id="btn-delete-set">Eliminar</button>
           <div style="flex:1"></div>
+          <select id="run-model" title="Checkpoint contra el que regenerar"></select>
           <button class="btn btn-primary" id="btn-run-set">▶ Regenerar set</button>
         </div>
         <div id="run-progress">

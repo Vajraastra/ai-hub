@@ -78,6 +78,21 @@ class ArchAdapter(ABC):
         """Prefijos de tensor que NO se tocan por defecto (solo con override
         explícito del usuario). Ej.: la zona del adapter de texto."""
 
+    # ── Merge ─────────────────────────────────────────────────────────────
+
+    def lora_key_map(self) -> dict[str, tuple[str, tuple[int, int, int] | None]]:
+        """Mapa módulo-LoRA → tensor del checkpoint base.
+
+        Clave: ruta del módulo tal y como aparece en el fichero LoRA, sin
+        prefijo contenedor (`diffusion_model.` / `transformer.`) ni sufijo
+        `.lora_A.weight` / `.lora_B.weight`.
+        Valor: (clave `.weight` del checkpoint, franja `(dim, inicio, tamaño)`
+        o None si el delta cubre el tensor entero). La franja existe porque
+        algunos checkpoints fusionan proyecciones que los LoRAs entrenan por
+        separado (ej. qkv). Debe coincidir con el mapeo runtime de ComfyUI
+        para que mergear a fichero ≡ cargar el LoRA en memoria."""
+        raise NotImplementedError(f"{self.name}: sin soporte de merge LoRA")
+
     # ── Inferencia ────────────────────────────────────────────────────────
 
     @abstractmethod

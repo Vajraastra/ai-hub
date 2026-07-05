@@ -1,0 +1,26 @@
+{
+  "name": "myp1gc1pt-full",
+  "arch": "zimage",
+  "file": "forge_lab/myp1gc1pt-full.safetensors",
+  "label": "merge completo MYP1GC1PT @ 1.0",
+  "base": {
+    "name": "z_image_de_turbo_v1_bf16",
+    "kind": "official",
+    "file": "z_image_de_turbo_v1_bf16.safetensors"
+  },
+  "lora": {
+    "file": "Z-image/style/MYP1GC1PTJTVRX3DX4JQR144H0.safetensors",
+    "hash": "a5c8f7527896bd2f6032ab3b91cfb2a9c062301051a3101c01b10d3e3fb8bdca",
+    "strength": 1.0
+  },
+  "blocks": null,
+  "created_at": "2026-07-04T19:20:39-06:00",
+  "seconds": 39.4,
+  "sha256": "1ea0a5acced8e9bb47281eb5aaa69a843940414c5b3cf312f47aeefb1637cafa",
+  "size_bytes": 12309866824,
+  "worker": {
+    "merged_tensors": 180,
+    "lora_pairs": 240,
+    "skipped_blocks": 0
+  }
+}

@@ -1,0 +1,60 @@
+{
+  "_comment": "Z-Image De-Turbo txt2img + ZImageSelectiveLoRALoader (exploración por bloques, Fase 4). Placeholders: model, lora, lora_strength, prompt, negative, seed, steps, cfg, sampler, scheduler, width, height. Los toggles/dosis por capa (layer_N / layer_N_str / other_weights) los inyecta explore.py mutando inputs del nodo 10 — OJO: el nodo escala lora_A y lora_B, así que layer_N_str actúa al CUADRADO sobre el delta; explore.py pasa sqrt(dosis) para que la dosis sea lineal.",
+  "1": {
+    "class_type": "UNETLoader",
+    "inputs": { "unet_name": "{{model}}", "weight_dtype": "default" }
+  },
+  "2": {
+    "class_type": "CLIPLoader",
+    "inputs": { "clip_name": "qwen_3_4b.safetensors", "type": "lumina2" }
+  },
+  "3": {
+    "class_type": "VAELoader",
+    "inputs": { "vae_name": "ae.safetensors" }
+  },
+  "10": {
+    "class_type": "ZImageSelectiveLoRALoader",
+    "inputs": {
+      "model": ["1", 0],
+      "clip": ["2", 0],
+      "lora_name": "{{lora}}",
+      "strength": "{{lora_strength}}",
+      "preset": "Custom"
+    }
+  },
+  "4": {
+    "class_type": "CLIPTextEncode",
+    "inputs": { "text": "{{prompt}}", "clip": ["10", 1] }
+  },
+  "5": {
+    "class_type": "CLIPTextEncode",
+    "inputs": { "text": "{{negative}}", "clip": ["10", 1] }
+  },
+  "6": {
+    "class_type": "EmptySD3LatentImage",
+    "inputs": { "width": "{{width}}", "height": "{{height}}", "batch_size": 1 }
+  },
+  "7": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": ["10", 0],
+      "positive": ["4", 0],
+      "negative": ["5", 0],
+      "latent_image": ["6", 0],
+      "seed": "{{seed}}",
+      "steps": "{{steps}}",
+      "cfg": "{{cfg}}",
+      "sampler_name": "{{sampler}}",
+      "scheduler": "{{scheduler}}",
+      "denoise": 1.0
+    }
+  },
+  "8": {
+    "class_type": "VAEDecode",
+    "inputs": { "samples": ["7", 0], "vae": ["3", 0] }
+  },
+  "9": {
+    "class_type": "SaveImage",
+    "inputs": { "images": ["8", 0], "filename_prefix": "forge_lab_explore" }
+  }
+}

@@ -124,6 +124,11 @@ async function selectSet(name, refetch = true) {
     r.classList.toggle('active', r.querySelector('.mono').textContent === name);
   });
   renderEditor();
+  // ofrecer los prompts del set en el setup de exploración
+  const fs = $('exp-from-set');
+  fs.innerHTML = '<option value="">— libre —</option>';
+  for (const p of currentSet.prompts)
+    fs.add(new Option(`${currentSet.name} / ${p.id}`, p.id));
   await refreshRuns();
 }
 
@@ -289,17 +294,375 @@ $('btn-delete-set').onclick = async () => {
   } catch (e) { alert('Error eliminando: ' + e.message); }
 };
 
+// ── Checkpoints + merge (Fase 3) ────────────────────────────────────────────
+
+let checkpointsCache = [];
+
+const fmtGB = (b) => b == null ? '' : (b / 1024 ** 3).toFixed(2) + ' GB';
+
+async function refreshCheckpoints() {
+  const data = await api('/checkpoints');
+  checkpointsCache = data.checkpoints;
+  const el = $('ckpt-list');
+  el.innerHTML = '';
+  for (const c of checkpointsCache) {
+    const row = document.createElement('div');
+    row.className = 'ckpt-row';
+    const lineage = c.kind === 'derived'
+      ? `${esc(c.base.name)} ← ${esc(c.lora.file)} @ ${c.lora.strength}` +
+        (c.blocks ? ` · bloques: ${esc(c.blocks.join(', '))}` : '') +
+        ` · ${esc((c.created_at || '').slice(0, 16).replace('T', ' '))}`
+      : '';
+    row.innerHTML =
+      `<span class="mono">${esc(c.name)}</span>` +
+      `<span class="badge ${c.kind === 'official' ? 'locked' : 'draft'}">${c.kind === 'official' ? 'oficial' : 'derivado'}</span>` +
+      (c.present ? '' : '<span class="bad">✘ falta el fichero</span>') +
+      `<span>${esc(c.label || '')}</span>` +
+      (lineage ? `<span class="lineage">${lineage}</span>` : '') +
+      `<span style="flex:1"></span>` +
+      `<span class="dim">${fmtGB(c.size_bytes)}</span>`;
+    if (c.kind === 'derived') {
+      const del = document.createElement('button');
+      del.className = 'prompt-del'; del.textContent = '🗑';
+      del.title = 'Borrar checkpoint derivado (el fichero, ~12 GB, y su registro)';
+      del.onclick = async () => {
+        if (!confirm(`Borrar el checkpoint derivado "${c.name}" (${fmtGB(c.size_bytes)})?\nSus runs quedan como histórico; el merge es reproducible desde el registro.`)) return;
+        try {
+          await api('/checkpoints/' + encodeURIComponent(c.name), { method: 'DELETE' });
+          await refreshCheckpoints();
+        } catch (e) { alert('Error: ' + e.message); }
+      };
+      row.appendChild(del);
+    }
+    el.appendChild(row);
+  }
+  // selects: base del merge + modelo del run
+  const baseSel = $('merge-base');
+  baseSel.innerHTML = '';
+  for (const c of checkpointsCache.filter(c => c.present))
+    baseSel.add(new Option(`${c.name}${c.kind === 'official' ? ' (oficial)' : ''}`, c.name));
+  const runSel = $('run-model');
+  runSel.innerHTML = '';
+  for (const c of checkpointsCache.filter(c => c.present))
+    runSel.add(new Option(`contra: ${c.name}`, c.kind === 'official' ? '' : c.unet_name));
+  const expSel = $('exp-checkpoint');
+  expSel.innerHTML = '';
+  for (const c of checkpointsCache.filter(c => c.present))
+    expSel.add(new Option(`${c.name}${c.kind === 'official' ? ' (oficial)' : ''}`, c.name));
+}
+
+async function refreshLoras() {
+  const data = await api('/loras');
+  for (const id of ['merge-lora', 'exp-lora']) {
+    const sel = $(id);
+    sel.innerHTML = '';
+    for (const l of data.loras.filter(l => l.arch_match))
+      sel.add(new Option(`${l.name}${l.rank ? ` (r${l.rank})` : ''}`, l.file));
+    if (!sel.options.length)
+      sel.add(new Option('— no hay LoRAs Z-Image en el almacén —', ''));
+  }
+}
+
+$('btn-merge').onclick = async () => {
+  const body = {
+    base: $('merge-base').value,
+    lora: $('merge-lora').value,
+    strength: parseFloat($('merge-strength').value),
+    name: $('merge-name').value.trim(),
+    label: $('merge-label').value.trim(),
+  };
+  if (!body.lora) return alert('No hay LoRA seleccionado.');
+  if (!body.name) return alert('Pon nombre al checkpoint derivado (minúsculas, dígitos, guiones).');
+  if (!(body.strength > 0)) return alert('Strength inválido.');
+  if (!confirm(`Merge completo:\n\n  ${body.base}  ←  ${body.lora}  @ ${body.strength}\n  →  forge_lab/${body.name}.safetensors (~12 GB)\n\nCorre en CPU/RAM (unos minutos). ¿Adelante?`)) return;
+  try {
+    const { job_id } = await api('/merge', { method: 'POST', body });
+    $('btn-merge').disabled = true;
+    $('merge-progress').style.display = '';
+    pollMergeJob(job_id);
+  } catch (e) { alert('Error lanzando merge: ' + e.message); }
+};
+
+const MERGE_PHASES = { map: 'mapeando LoRA', merge: 'mergeando tensores',
+                       write: 'escribiendo checkpoint', hash: 'SHA256 de verificación' };
+
+function pollMergeJob(jobId) {
+  const timer = setInterval(async () => {
+    let j;
+    try { j = await api('/jobs/' + jobId); } catch (e) { return; }
+    const pct = j.total ? Math.round(100 * j.done / j.total) : 0;
+    $('merge-progress-fill').style.width = (j.phase === 'merge' ? pct : (j.status === 'running' ? 100 : pct)) + '%';
+    $('merge-progress-label').textContent =
+      `${MERGE_PHASES[j.phase] || j.phase || 'preparando'} — ${j.done}/${j.total}`;
+    if (j.status !== 'running') {
+      clearInterval(timer);
+      $('btn-merge').disabled = false;
+      $('merge-progress').style.display = 'none';
+      if (j.status === 'error') alert('Merge fallido: ' + j.error);
+      else {
+        $('merge-name').value = ''; $('merge-label').value = '';
+        alert(`Checkpoint "${j.checkpoint.name}" creado (${fmtGB(j.checkpoint.size_bytes)}).\nAhora regenera el set contra él para compararlo con el baseline.`);
+      }
+      await refreshCheckpoints();
+    }
+  }, 1500);
+}
+
+// ── Laboratorio de bloques (Fase 4) ─────────────────────────────────────────
+
+const N_LAYERS = 30;
+let exploreSession = null;
+let selectedGen = null;
+
+async function refreshExplore() {
+  const data = await api('/explore/session');
+  exploreSession = data.session;
+  const active = !!exploreSession;
+  $('explore-setup').style.display = active ? 'none' : '';
+  $('explore-session').style.display = active ? '' : 'none';
+  $('btn-explore-close').style.display = active ? '' : 'none';
+  if (!active) { selectedGen = null; return; }
+
+  const s = exploreSession;
+  $('explore-info').innerHTML =
+    `<span class="mono">${esc(s.checkpoint)}</span> + ` +
+    `<span class="mono">${esc(s.lora.split('/').pop())}</span> @ ${s.strength}` +
+    ` <span class="dim">seed ${s.prompt.seed} · ${s.sampling.steps} steps · cfg ${s.sampling.cfg}</span>` +
+    ` <span class="dim" title="${esc(s.prompt.text)}">"${esc(s.prompt.text.slice(0, 90))}${s.prompt.text.length > 90 ? '…' : ''}"</span>`;
+
+  if (!$('switch-grid').children.length) buildSwitchGrid();
+  if (selectedGen && !s.generations.find(g => g.id === selectedGen))
+    selectedGen = null;
+  if (!selectedGen && s.generations.length)
+    selectedGen = s.generations[s.generations.length - 1].id;
+  renderCompare();
+  renderHistory();
+}
+
+function switchCell(label, key) {
+  const cell = document.createElement('div');
+  cell.className = 'switch-cell';
+  cell.dataset.key = key;
+  const cb = document.createElement('input');
+  cb.type = 'checkbox'; cb.checked = true;
+  const lbl = document.createElement('span');
+  lbl.className = 'lbl'; lbl.textContent = label;
+  const dose = document.createElement('input');
+  dose.type = 'number'; dose.min = '0'; dose.max = '2'; dose.step = '0.05';
+  dose.value = '1';
+  cb.onchange = () => cell.classList.toggle('off', !cb.checked);
+  cell.append(cb, lbl, dose);
+  return cell;
+}
+
+function buildSwitchGrid() {
+  const grid = $('switch-grid');
+  grid.innerHTML = '';
+  for (let i = 0; i < N_LAYERS; i++) grid.appendChild(switchCell(String(i), String(i)));
+  grid.appendChild(switchCell('refiners', 'other'));
+}
+
+function collectConfig() {
+  const layers = {};
+  let other = 0;
+  for (const cell of $('switch-grid').children) {
+    const on = cell.querySelector('input[type=checkbox]').checked;
+    const d = on ? parseFloat(cell.querySelector('input[type=number]').value) || 0 : 0;
+    if (cell.dataset.key === 'other') other = d;
+    else layers[cell.dataset.key] = d;
+  }
+  return { layers, other };
+}
+
+function applyConfig(cfg) {
+  for (const cell of $('switch-grid').children) {
+    const d = cell.dataset.key === 'other' ? cfg.other : (cfg.layers[cell.dataset.key] ?? 0);
+    const cb = cell.querySelector('input[type=checkbox]');
+    cb.checked = d > 0;
+    cell.querySelector('input[type=number]').value = d > 0 ? d : 1;
+    cell.classList.toggle('off', !(d > 0));
+  }
+}
+
+document.querySelectorAll('#explore-session .preset-row button').forEach(btn => {
+  btn.onclick = () => {
+    for (const cell of $('switch-grid').children) {
+      const key = cell.dataset.key;
+      const i = key === 'other' ? -1 : parseInt(key, 10);
+      const cb = cell.querySelector('input[type=checkbox]');
+      let on;
+      switch (btn.dataset.preset) {
+        case 'all-on':  on = true; break;
+        case 'all-off': on = false; break;
+        case 'early':   on = i >= 0 && i <= 9; break;
+        case 'mid':     on = i >= 10 && i <= 19; break;
+        case 'late':    on = i >= 20 && i <= 29; break;
+        case 'invert':  on = !cb.checked; break;
+      }
+      cb.checked = on;
+      cell.classList.toggle('off', !on);
+    }
+  };
+});
+
+function genById(id) { return exploreSession.generations.find(g => g.id === id); }
+
+function comparePane(title, gen, extraClass = '') {
+  if (!gen) return '';
+  const url = '/api/forge/explore/image/' + encodeURIComponent(gen.id);
+  return `<div class="compare-pane ${extraClass}">
+    <h3>${title}</h3>
+    <img src="${url}" onclick="window.open('${url}','_blank')">
+    <div class="cfg">${esc(gen.summary)} · ${Math.round(gen.seconds)}s</div>
+  </div>`;
+}
+
+function renderCompare() {
+  const s = exploreSession;
+  const ref = s.reference ? genById(s.reference) : null;
+  const sel = selectedGen ? genById(selectedGen) : null;
+  let html = comparePane('Referencia 📌', ref);
+  if (sel && (!ref || sel.id !== ref.id)) html += comparePane('Seleccionada', sel);
+  $('compare-wrap').innerHTML = html ||
+    '<span class="dim" style="font-size:12px">Sin generaciones todavía. Configura los bloques y pulsa "Generar variante" — la primera será la referencia.</span>';
+  $('explore-actions').style.display = sel ? '' : 'none';
+}
+
+function renderHistory() {
+  const strip = $('hist-strip');
+  strip.innerHTML = '';
+  for (const g of exploreSession.generations) {
+    const item = document.createElement('div');
+    item.className = 'hist-item' +
+      (g.id === selectedGen ? ' selected' : '') +
+      (g.id === exploreSession.reference ? ' is-ref' : '');
+    item.innerHTML =
+      `<img src="/api/forge/explore/image/${encodeURIComponent(g.id)}" loading="lazy">` +
+      `<div class="tag" title="${esc(g.summary)}">${g.id === exploreSession.reference ? '📌 ' : ''}${esc(g.summary)}</div>`;
+    item.onclick = () => {
+      selectedGen = g.id;
+      applyConfig(g.config);   // cargar su config en los switches para iterar
+      renderCompare();
+      renderHistory();
+    };
+    strip.appendChild(item);
+  }
+}
+
+$('btn-explore-start').onclick = async () => {
+  const body = {
+    checkpoint: $('exp-checkpoint').value,
+    lora: $('exp-lora').value,
+    strength: parseFloat($('exp-strength').value),
+    prompt: $('exp-prompt').value,
+    negative: '',
+    seed: parseInt($('exp-seed').value, 10) || 424242,
+  };
+  if (!body.lora) return alert('No hay LoRA seleccionado.');
+  if (!body.prompt.trim()) return alert('Escribe un prompt (o elige uno del set).');
+  try {
+    await api('/explore/session', { method: 'POST', body });
+    $('switch-grid').innerHTML = '';   // reconstruir con todo ON
+    await refreshExplore();
+  } catch (e) { alert('Error: ' + e.message); }
+};
+
+$('btn-explore-close').onclick = async () => {
+  const n = exploreSession ? exploreSession.generations.length : 0;
+  if (!confirm(`Cerrar la sesión de exploración?\nSe borran sus ${n} imagen(es) temporales. La config ganadora solo sobrevive si hiciste merge o confirmación con set.`)) return;
+  try {
+    await api('/explore/session', { method: 'DELETE' });
+    await refreshExplore();
+  } catch (e) { alert('Error: ' + e.message); }
+};
+
+$('exp-from-set').onchange = () => {
+  const pid = $('exp-from-set').value;
+  if (!pid || !currentSet) return;
+  const p = currentSet.prompts.find(x => x.id === pid);
+  if (p) { $('exp-prompt').value = p.text; $('exp-seed').value = p.seed; }
+};
+
+$('btn-explore-gen').onclick = async () => {
+  try {
+    const { job_id } = await api('/explore/generate',
+                                 { method: 'POST', body: { config: collectConfig() } });
+    $('btn-explore-gen').disabled = true;
+    $('explore-progress').style.display = '';
+    const timer = setInterval(async () => {
+      let j;
+      try { j = await api('/jobs/' + job_id); } catch (e) { return; }
+      const pct = Math.round(100 * j.step / Math.max(j.steps_total, 1));
+      $('explore-progress-fill').style.width = pct + '%';
+      $('explore-progress-label').textContent = `paso ${j.step}/${j.steps_total} (${pct}%)`;
+      if (j.status !== 'running') {
+        clearInterval(timer);
+        $('btn-explore-gen').disabled = false;
+        $('explore-progress').style.display = 'none';
+        if (j.status === 'error') alert('Generación fallida: ' + j.error);
+        else selectedGen = j.gen.id;
+        await refreshExplore();
+      }
+    }, 1000);
+  } catch (e) { alert('Error: ' + e.message); }
+};
+
+$('btn-explore-ref').onclick = async () => {
+  if (!selectedGen) return;
+  try {
+    await api('/explore/reference', { method: 'POST', body: { gen_id: selectedGen } });
+    await refreshExplore();
+  } catch (e) { alert('Error: ' + e.message); }
+};
+
+$('btn-explore-confirm').onclick = async () => {
+  if (!selectedGen) return;
+  const setName = currentSet ? currentSet.name : 'zimage-base';
+  const g = genById(selectedGen);
+  const label = prompt(
+    `Doble confirmación: regenerar el set "${setName}" completo en runtime con la config\n[${g.summary}]\n\nEl run SÍ se guarda (evidencia). Etiqueta del run:`,
+    `explore ${g.summary.slice(0, 40)}`);
+  if (label === null) return;
+  try {
+    const { job_id } = await api('/explore/confirm',
+      { method: 'POST', body: { set_name: setName, gen_id: selectedGen, label } });
+    $('btn-run-set').disabled = true;
+    $('run-progress').style.display = '';
+    pollJob(job_id);
+  } catch (e) { alert('Error: ' + e.message); }
+};
+
+$('btn-explore-merge').onclick = async () => {
+  if (!selectedGen) return;
+  const g = genById(selectedGen);
+  const name = prompt(
+    `Merge final con la config [${g.summary}]\n(misma matemática que el preview — dosis lineal)\n\nNombre del checkpoint derivado (minúsculas, dígitos, guiones):`);
+  if (!name) return;
+  const label = prompt('Etiqueta:', g.summary) || '';
+  try {
+    const { job_id } = await api('/explore/merge',
+      { method: 'POST', body: { gen_id: selectedGen, name: name.trim(), label } });
+    $('btn-merge').disabled = true;
+    $('merge-progress').style.display = '';
+    pollMergeJob(job_id);
+  } catch (e) { alert('Error lanzando merge: ' + e.message); }
+};
+
 // ── Regeneración ────────────────────────────────────────────────────────────
 
 $('btn-run-set').onclick = async () => {
   const draft = !currentSet.locked_at;
+  const model = $('run-model').value || null;
+  const against = model ? model.split(/[\\/]/).pop().replace(/\.safetensors$/, '')
+                        : 'base oficial';
   const label = prompt(
     (draft ? 'AVISO: el set es un BORRADOR — el run se marcará como prueba de calibración, no sirve para comparar merges.\n\n' : '') +
-    'Etiqueta del run (ej. "baseline de-turbo"):', '');
+    `Regenerar contra: ${against}\n\nEtiqueta del run (ej. "baseline de-turbo"):`,
+    model ? against : '');
   if (label === null) return;
   try {
     const { job_id } = await api('/sets/' + encodeURIComponent(currentSet.name) + '/run',
-                                 { method: 'POST', body: { label } });
+                                 { method: 'POST', body: { label, model } });
     $('btn-run-set').disabled = true;
     $('run-progress').style.display = '';
     pollJob(job_id);
@@ -423,3 +786,6 @@ function renderGrid() {
 
 loadStatus();
 refreshSets(false);
+refreshCheckpoints();
+refreshLoras();
+refreshExplore();

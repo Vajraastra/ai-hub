@@ -3,3 +3,5 @@
 *.sqlite-journal
 # Imágenes y manifiestos de regeneraciones (pesados, reproducibles desde el set)
 validation_runs/
+# Imágenes temporales de exploración por bloques (efímeras por diseño)
+explore_tmp/

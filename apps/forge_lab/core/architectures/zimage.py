@@ -65,6 +65,27 @@ class ZImageAdapter(ArchAdapter):
         # entra al flujo de merge (fichero aparte, nunca se toca).
         return ["cap_embedder", "cap_pad_token"]
 
+    def lora_key_map(self) -> dict[str, tuple[str, tuple[int, int, int] | None]]:
+        # Réplica exacta (solo .weight) de comfy.utils.z_image_to_diffusers:
+        # los LoRAs de Z-Image (ai-toolkit y cía.) usan nomenclatura diffusers
+        # con q/k/v separados; el checkpoint fusiona qkv [3*H, H] → cada
+        # proyección aterriza en su franja de filas (dim 0).
+        H = 3840  # hidden size del S3-DiT 6B
+        m: dict[str, tuple[str, tuple[int, int, int] | None]] = {}
+        prefixes = ([f"layers.{i}" for i in range(_N_LAYERS)]
+                    + [f"context_refiner.{i}" for i in range(2)]
+                    + [f"noise_refiner.{i}" for i in range(2)])
+        for p in prefixes:
+            qkv = f"{p}.attention.qkv.weight"
+            m[f"{p}.attention.to_q"] = (qkv, (0, 0, H))
+            m[f"{p}.attention.to_k"] = (qkv, (0, H, H))
+            m[f"{p}.attention.to_v"] = (qkv, (0, 2 * H, H))
+            m[f"{p}.attention.to_out.0"] = (f"{p}.attention.out.weight", None)
+            for w in ("w1", "w2", "w3"):
+                m[f"{p}.feed_forward.{w}"] = (f"{p}.feed_forward.{w}.weight", None)
+            m[f"{p}.adaLN_modulation.0"] = (f"{p}.adaLN_modulation.0.weight", None)
+        return m
+
     def sampling_defaults(self) -> SamplingDefaults:
         return SamplingDefaults(
             cfg=2.5, steps=25,           # rango De-Turbo: CFG 2.0–3.0, 20–30

@@ -219,23 +219,33 @@ class ValidationSet:
     # ── Regeneración ───────────────────────────────────────────────────────
 
     async def run(self, comfy, model: str | None = None, label: str = "",
-                  on_progress: Callable[[dict], None] | None = None) -> dict:
+                  on_progress: Callable[[dict], None] | None = None,
+                  template: dict | None = None,
+                  extra_params: dict | None = None,
+                  model_desc: str | None = None,
+                  extra_manifest: dict | None = None) -> dict:
         """
         Regenera el set completo contra un modelo. Secuencial (una imagen a la
         vez: la 5060 Ti no da para más y el orden hace el progreso legible).
 
+        template/extra_params permiten regenerar con un workflow distinto al
+        txt2img básico (Fase 4: confirmación runtime con LoRA selectivo);
+        model_desc es el texto que aparece como "model" en el manifiesto y
+        extra_manifest añade campos (p. ej. la config de bloques usada).
+
         on_progress recibe {prompt_index, total, prompt_id, step, steps_total}.
         Devuelve el manifiesto del run (también escrito en run.json).
         """
-        from architectures import get_adapter
-        from comfy_client import load_workflow
+        from .architectures import get_adapter
+        from .comfy_client import load_workflow
 
         if not self.prompts:
             raise ValidationSetError(f"el set {self.name!r} no tiene prompts")
         adapter = get_adapter(self.arch)
         if model is None:
             model = Path(adapter.model_files().diffusion_model).name
-        template = load_workflow(adapter.workflow_name("txt2img"), self.arch)
+        if template is None:
+            template = load_workflow(adapter.workflow_name("txt2img"), self.arch)
 
         run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
         out_dir = RUNS_DIR / self.name / run_id
@@ -255,7 +265,7 @@ class ValidationSet:
             _cb(0, self.sampling["steps"])
             params = {"model": model, "prompt": p["text"],
                       "negative": p["negative"], "seed": p["seed"],
-                      **self.sampling}
+                      **self.sampling, **(extra_params or {})}
             t0 = time.time()
             png = await comfy.run_workflow(template, params, on_progress=_cb)
             fname = f"{p['id']}.png"
@@ -267,10 +277,12 @@ class ValidationSet:
         manifest = {
             "run_id": run_id, "set": self.name, "arch": self.arch,
             "fingerprint": self.fingerprint(), "draft": not self.locked,
-            "model": model, "label": label, "sampling": dict(self.sampling),
+            "model": model_desc or model, "label": label,
+            "sampling": dict(self.sampling),
             "started_at": started, "finished_at": _now(),
             "seconds": round(time.time() - t_run, 1),
             "results": results,
+            **(extra_manifest or {}),
         }
         (out_dir / "run.json").write_text(
             json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
