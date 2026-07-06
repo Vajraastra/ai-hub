@@ -190,6 +190,7 @@ function setCanvasAspect(){
 
 // ── Anti-bloqueo (experimental): mostrar opciones + campo según método ─────────
 $("bypassOn").addEventListener("change",()=>{ $("bypassOpts").style.display=$("bypassOn").checked?"block":"none"; });
+$("bypassSplit").addEventListener("change",()=>{ $("fldBypassSplit").style.display=$("bypassSplit").checked?"block":"none"; });
 $("bypassMethod").addEventListener("change",()=>{
   const sigma=$("bypassMethod").value==="sigma";
   $("fldBypassSigma").style.display=sigma?"":"none";
@@ -338,6 +339,8 @@ $("btnGenerate").onclick = async () => {
     bypass_method: $("bypassMethod").value,
     bypass_noise_scale: +$("bypassNoise").value,
     bypass_first_sigma: +$("bypassSigma").value,
+    bypass_split: $("bypassSplit").checked,
+    bypass_split_step: +$("bypassSplitStep").value,
   };
   if(!body.unet_cond||!body.unet_uncond){ banner($("genBanner"),"Selecciona modelo condicional e incondicional.","warn"); return; }
   banner($("genBanner"),"","");

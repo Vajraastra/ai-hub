@@ -63,6 +63,8 @@ class GenParams:
     bypass_method: str = "ruido"      # "ruido" | "sigma"
     bypass_noise_scale: float = 2.0
     bypass_first_sigma: float = 1.005     # natural ≈0.99988; +0.005 = empujón anti-bloqueo
+    bypass_split: bool = False            # split-sigmas: perturbar solo el arranque, reconstruir limpio
+    bypass_split_step: int = 2            # corte del schedule (pasos del tramo perturbado); útil 1–4
     # orquestación
     manage_vram: bool = True
 
@@ -81,32 +83,83 @@ def _apply_bypass(wf: dict, params: GenParams) -> dict:
       SamplerCustomAdvanced → fija el primer sigma (Method 1; es absoluto, no un
       +delta, porque ComfyUI nativo no tiene un nodo de suma sobre sigmas).
 
+    Con `bypass_split` (opcional, OFF por defecto) la perturbación se aplica SOLO
+    al tramo de arranque: SplitSigmas corta el schedule en el paso `bypass_split_step`,
+    un primer SamplerCustomAdvanced corre ese tramo perturbado (escapa el filtro) y
+    un segundo sampler corre el resto con el guider LIMPIO y los sigmas naturales
+    (reconstruye la anatomía que la perturbación rompía). Sin split se mantiene el
+    comportamiento clásico: la perturbación afecta a todo el sampleo.
+
     Devuelve la info aplicada (para el manifest). No-op si bypass_enabled=False.
     """
     if not params.bypass_enabled:
         return {}
 
     method = params.bypass_method
+    if method not in ("ruido", "sigma"):
+        raise PipelineError(f"método de anti-bloqueo desconocido: {method!r}")
+
+    split = bool(params.bypass_split)
+    info: dict = {"method": method, "split": split}
+
+    # Sigmas de arranque: todo el schedule ("7") o solo el tramo alto tras cortar.
+    if split:
+        step = max(1, int(params.bypass_split_step))
+        wf["22"] = {"class_type": "SplitSigmas",
+                    "inputs": {"sigmas": ["7", 0], "step": step}}
+        high_sigmas, low_sigmas = ["22", 0], ["22", 1]
+        info["split_step"] = step
+    else:
+        high_sigmas = ["7", 0]
+
+    # Construye guider y sigmas del tramo perturbado según el método.
     if method == "ruido":
         scale = float(params.bypass_noise_scale)
-        # UNET cond (nodo "1") y uncond (nodo "2") → cada uno pasa por su wrapper.
         wf["20"] = {"class_type": "ModelNoiseScale",
                     "inputs": {"model": ["1", 0], "noise_scale": scale}}
         wf["21"] = {"class_type": "ModelNoiseScale",
                     "inputs": {"model": ["2", 0], "noise_scale": scale}}
-        wf["6"]["inputs"]["model"] = ["20", 0]
-        wf["6"]["inputs"]["model_negative"] = ["21", 0]
-        return {"method": "ruido", "noise_scale": scale}
-
-    if method == "sigma":
+        info["noise_scale"] = scale
+        pert_sigmas = high_sigmas
+        if split:
+            # Guider perturbado aparte, para no contaminar el limpio "6" del 2º tramo.
+            wf["25"] = {"class_type": "DualModelGuider",
+                        "inputs": {"model": ["20", 0], "model_negative": ["21", 0],
+                                   "positive": ["4", 0], "negative": ["5", 0],
+                                   "cfg": wf["6"]["inputs"]["cfg"]}}
+            pert_guider = ["25", 0]
+        else:
+            wf["6"]["inputs"]["model"] = ["20", 0]
+            wf["6"]["inputs"]["model_negative"] = ["21", 0]
+            pert_guider = ["6", 0]
+    else:  # sigma
         val = float(params.bypass_first_sigma)
-        # Los sigmas salen del Ideogram4Scheduler (nodo "7") hacia el sampler ("11").
-        wf["22"] = {"class_type": "SetFirstSigma",
-                    "inputs": {"sigmas": ["7", 0], "sigma": val}}
-        wf["11"]["inputs"]["sigmas"] = ["22", 0]
-        return {"method": "sigma", "first_sigma": val}
+        wf["23"] = {"class_type": "SetFirstSigma",
+                    "inputs": {"sigmas": high_sigmas, "sigma": val}}
+        pert_sigmas, pert_guider = ["23", 0], ["6", 0]
+        info["first_sigma"] = val
 
-    raise PipelineError(f"método de anti-bloqueo desconocido: {method!r}")
+    if not split:
+        # Clásico: un solo sampler con la perturbación en todo el sampleo.
+        wf["11"]["inputs"]["guider"] = pert_guider
+        wf["11"]["inputs"]["sigmas"] = pert_sigmas
+        return info
+
+    # Split: dos samplers encadenados.
+    # Tramo 1 — arranque perturbado (escapa el filtro), añade el ruido inicial real.
+    wf["26"] = {"class_type": "SamplerCustomAdvanced",
+                "inputs": {"noise": ["9", 0], "guider": pert_guider,
+                           "sampler": ["8", 0], "sigmas": pert_sigmas,
+                           "latent_image": ["10", 0]}}
+    # Tramo 2 — reconstrucción LIMPIA: guider "6" sin perturbar, sigmas bajos, sin
+    # re-inyectar ruido (continúa desde el latente del tramo 1).
+    wf["27"] = {"class_type": "DisableNoise", "inputs": {}}
+    wf["28"] = {"class_type": "SamplerCustomAdvanced",
+                "inputs": {"noise": ["27", 0], "guider": ["6", 0],
+                           "sampler": ["8", 0], "sigmas": low_sigmas,
+                           "latent_image": ["26", 0]}}
+    wf["13"]["inputs"]["samples"] = ["28", 0]
+    return info
 
 
 async def build_caption(lm: LMStudio, params: GenParams,

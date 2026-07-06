@@ -251,6 +251,8 @@ class GenerateBody(BaseModel):
     bypass_method: str = "ruido"          # "ruido" (ModelNoiseScale) | "sigma" (SetFirstSigma)
     bypass_noise_scale: float = 2.0
     bypass_first_sigma: float = 1.005      # natural ≈0.99988; +0.005 = empujón anti-bloqueo
+    bypass_split: bool = False             # split-sigmas: perturbar solo el arranque, reconstruir limpio
+    bypass_split_step: int = 2             # corte del schedule (pasos del tramo perturbado); útil 1–4
 
 
 _jobs: dict[str, dict] = {}
