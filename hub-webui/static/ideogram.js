@@ -61,6 +61,7 @@ async function init(){
     pick($("vaeName"),    m.vae,           /flux2/i);
     if(m.lm_error) banner($("genBanner"), "LM Studio: "+m.lm_error+" (puedes pegar un JSON a mano).","warn");
   } catch(e){ banner($("genBanner"),"No se pudieron cargar los modelos: "+e.message,"err"); }
+  refreshLoras();
   setMode("auto");
   drawCanvas();
 }
@@ -341,8 +342,11 @@ $("btnGenerate").onclick = async () => {
     bypass_first_sigma: +$("bypassSigma").value,
     bypass_split: $("bypassSplit").checked,
     bypass_split_step: +$("bypassSplitStep").value,
+    loras: loraPayload(),
+    turbo: $("turboOn").checked,
   };
-  if(!body.unet_cond||!body.unet_uncond){ banner($("genBanner"),"Selecciona modelo condicional e incondicional.","warn"); return; }
+  if(!body.unet_cond){ banner($("genBanner"),"Selecciona el modelo condicional.","warn"); return; }
+  if(!body.turbo && !body.unet_uncond){ banner($("genBanner"),"Selecciona el modelo incondicional (o activa el modo turbo).","warn"); return; }
   banner($("genBanner"),"","");
   $("btnGenerate").disabled=true;
   try{
@@ -410,5 +414,134 @@ async function loadDiag(){
       `<div class="status-row"><span class="mono">${n}</span><span class="${ok?'ok':'bad'}">${ok?'✓':'✗'}</span></div>`).join("")||'<div class="dim">Arranca ComfyUI para sondear.</div>';
   }catch(e){ $("diagServices").innerHTML='<div class="bad">'+e.message+'</div>'; }
 }
+
+// ── LoRAs: picker visual + stack montado (máx. 4) ─────────────────────────────
+const escHtml = (s) => String(s).replace(/[&<>"]/g, c => (
+  {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+const MAX_LORAS = 4;
+let loraCatalog = [];            // catálogo del almacén (filtrado o show_all)
+let loraStack = [];              // montados: {file,name,subfolder,rank,has_preview,strength,target}
+let loraCollapsed = false;
+
+const loraThumb = (l, cls) => l.has_preview
+  ? `<img class="${cls}" loading="lazy" src="${API}/lora-preview?file=${encodeURIComponent(l.file)}">`
+  : `<div class="${cls==='lp-thumb'?'lp-thumb-ph':'ph'}">🧩</div>`;
+
+function loraPayload(){
+  if(!$("lorasOn").checked) return [];
+  return loraStack.map(l => ({name:l.file, strength:l.strength, target:l.target}));
+}
+
+async function refreshLoras(){
+  try{
+    const all = $("lp-all").checked;
+    const data = await jget("/loras" + (all ? "?show_all=true" : ""));
+    loraCatalog = data.loras || [];
+  }catch(e){ loraCatalog = []; }
+  renderLoraGrid();
+}
+
+function renderStack(){
+  const on = $("lorasOn").checked;
+  $("lorasBody").style.display = on ? "block" : "none";
+  const names = loraStack.map(l => `<span class="tag" title="${escHtml(l.file)}">${escHtml(l.name)}${l.target!=='both'?' · '+l.target:''}</span>`).join("");
+  $("lorasCollapse").textContent = loraCollapsed ? "▸" : "▾";
+  $("loraStack").style.display = loraCollapsed ? "none" : "flex";
+  if(loraCollapsed){
+    $("lorasSummary").innerHTML = loraStack.length ? names : '<span class="dim">sin LoRAs montados</span>';
+  }else{
+    $("lorasSummary").textContent = `${loraStack.length}/${MAX_LORAS} montados`;
+  }
+  const stack = $("loraStack");
+  stack.innerHTML = "";
+  loraStack.forEach((l, i) => {
+    const row = document.createElement("div");
+    row.className = "lora-row";
+    row.innerHTML =
+      loraThumb(l, l.has_preview ? "thumb" : "ph") +
+      `<div class="info"><div class="nm" title="${escHtml(l.file)}">${escHtml(l.name)}`
+      + (l.rank ? ` <span class="dim">· r${l.rank}</span>` : "") + `</div>`
+      + `<div class="ctl">peso <input type="number" data-i="${i}" data-k="strength" value="${l.strength}" step="0.05" min="-2" max="2">`
+      + ($("turboOn").checked
+          ? `<span class="dim">destino cond (turbo)</span>`
+          : `destino <select data-i="${i}" data-k="target">`
+            + ["both","cond","uncond"].map(t=>`<option value="${t}"${t===l.target?" selected":""}>${t==="uncond"?"incond":t}</option>`).join("")
+            + `</select>`)
+      + `</div></div>`
+      + `<button class="rm" data-i="${i}" title="Quitar">✕</button>`;
+    stack.appendChild(row);
+  });
+  stack.querySelectorAll("input,select").forEach(el => el.onchange = () => {
+    const l = loraStack[+el.dataset.i];
+    if(el.dataset.k==="strength") l.strength = +el.value; else l.target = el.value;
+  });
+  stack.querySelectorAll(".rm").forEach(b => b.onclick = () => {
+    loraStack.splice(+b.dataset.i, 1); renderStack();
+  });
+}
+
+// ── Picker overlay ────────────────────────────────────────────────────────────
+function openLoraPicker(){
+  if(loraStack.length >= MAX_LORAS){ banner($("genBanner"),`Máximo ${MAX_LORAS} LoRAs.`,"warn"); return; }
+  $("lp-search").value = "";
+  renderLoraGrid();
+  $("lora-picker-overlay").classList.add("open");
+  $("lp-search").focus();
+}
+function closeLoraPicker(){ $("lora-picker-overlay").classList.remove("open"); }
+
+function renderLoraGrid(){
+  const q = $("lp-search").value.trim().toLowerCase();
+  const mounted = new Set(loraStack.map(l => l.file));
+  const list = loraCatalog.filter(l => !q ||
+    l.name.toLowerCase().includes(q) || (l.subfolder||"").toLowerCase().includes(q));
+  $("lp-count").textContent = `${list.length} ${$("lp-all").checked ? "en total" : "compatibles"}`;
+  const grid = $("lp-grid");
+  grid.innerHTML = "";
+  if(!list.length){
+    grid.innerHTML = `<span class="dim" style="font-size:12px">No hay LoRAs${q?" que casen con la búsqueda":" de Ideogram 4 en el almacén"}.</span>`;
+    return;
+  }
+  for(const l of list){
+    const card = document.createElement("div");
+    card.className = "lp-card" + (mounted.has(l.file) ? " dis" : "");
+    card.innerHTML = loraThumb(l, "lp-thumb") +
+      `<div class="lp-body"><div class="lp-name">${escHtml(l.name)}</div>`
+      + `<div class="lp-meta">${escHtml(l.subfolder||"")}${l.rank?(l.subfolder?" · ":"")+"r"+l.rank:""}`
+      + (l.arch_match ? "" : ' <span class="nomatch">no-Ideogram</span>') + `</div></div>`;
+    card.title = l.file;
+    card.onclick = () => {
+      if(loraStack.length >= MAX_LORAS) return;
+      loraStack.push({file:l.file, name:l.name, subfolder:l.subfolder, rank:l.rank,
+                      has_preview:l.has_preview, strength:1.0, target:"both"});
+      closeLoraPicker(); renderStack();
+    };
+    grid.appendChild(card);
+  }
+}
+
+// Modo turbo: excluyente con el anti-bloqueo; bypasea el incondicional y el CFG.
+$("turboOn").addEventListener("change", () => {
+  const on = $("turboOn").checked;
+  if(on){
+    $("bypassOn").checked = false;
+    $("bypassOpts").style.display = "none";
+    if(+$("psteps").value > 8) $("psteps").value = 2;   // el turbo va en ~2 pasos
+  }
+  $("bypassOn").disabled = on;
+  $("unetUncond").disabled = on;      // se bypasea (BasicGuider, sin negative)
+  $("pcfg").disabled = on;            // BasicGuider no usa CFG
+  renderStack();                      // los LoRAs pasan a mostrarse como "cond"
+});
+
+$("lorasOn").addEventListener("change", renderStack);
+$("lorasCollapse").onclick = () => { loraCollapsed = !loraCollapsed; renderStack(); };
+$("btnAddLora").onclick = openLoraPicker;
+$("lp-close").onclick = closeLoraPicker;
+$("lora-picker-overlay").onclick = (e) => { if(e.target.id==="lora-picker-overlay") closeLoraPicker(); };
+$("lp-search").oninput = renderLoraGrid;
+$("lp-all").addEventListener("change", refreshLoras);
+renderStack();
 
 init();

@@ -7,6 +7,7 @@ BlockGuard. Vía principal: JSON + bounding boxes (evita el filtro y usa el
 modelo como fue diseñado). Los nodos son nativos de ComfyUI 0.27+ (sin customs).
 """
 import sys
+import json
 import uuid
 import asyncio
 from pathlib import Path
@@ -29,6 +30,7 @@ from ideogram.core.comfy_client import ComfyClient
 from ideogram.core.lmstudio import LMStudio, LMStudioError
 from ideogram.core import caption as cap
 from ideogram.core import pipeline
+from ideogram.core import loras as lora_cat
 from ideogram.core.pipeline import GenParams, PipelineError
 
 ideogram_router = APIRouter(prefix="/api/ideogram", tags=["ideogram"])
@@ -36,11 +38,18 @@ ideogram_router = APIRouter(prefix="/api/ideogram", tags=["ideogram"])
 _comfy = ComfyClient(port=8188)
 _lm = LMStudio()
 
+
+def _models_root() -> Path:
+    """Almacén global de modelos (hub_config paths.models). Los LoRAs viven
+    bajo <models>/loras (mismo contrato que forge_lab/painter)."""
+    cfg = json.loads((_ROOT / "hub" / "hub_config.json").read_text(encoding="utf-8"))
+    return Path(cfg["paths"]["models"])
+
 # Nodos nativos que el workflow necesita (diagnóstico de compatibilidad).
 _REQUIRED_NODES = [
     "DualModelGuider", "Ideogram4Scheduler", "CLIPLoader", "CLIPTextEncode",
     "UNETLoader", "ConditioningZeroOut", "EmptyFlux2LatentImage",
-    "SamplerCustomAdvanced", "VAELoader",
+    "SamplerCustomAdvanced", "VAELoader", "LoraLoaderModelOnly", "BasicGuider",
 ]
 
 _SAMPLERS = ["euler", "euler_ancestral", "dpmpp_2m", "dpmpp_2m_sde", "dpmpp_sde",
@@ -131,6 +140,26 @@ async def models():
         "llms": llms,
         "lm_error": lm_error,
     }
+
+
+@ideogram_router.get("/loras")
+async def loras(show_all: bool = False):
+    """Catálogo de LoRAs del almacén global con detección de arquitectura
+    Ideogram 4 (header del safetensors). Por defecto solo compatibles;
+    show_all=true muestra todos (escape si la detección no reconoce alguno)."""
+    try:
+        return {"loras": lora_cat.list_loras(_models_root(), show_all=show_all)}
+    except Exception as e:
+        raise HTTPException(500, f"no se pudo leer el almacén de LoRAs: {e}")
+
+
+@ideogram_router.get("/lora-preview")
+async def lora_preview(file: str):
+    """Imagen .preview.* junto al safetensors (convención del Model Vault)."""
+    try:
+        return FileResponse(lora_cat.preview_path(_models_root(), file))
+    except FileNotFoundError:
+        raise HTTPException(404, "sin preview")
 
 
 @ideogram_router.post("/unload")
@@ -227,6 +256,12 @@ async def refine_caption(body: RefineBody):
 # Generación (pipeline completo como job en background)
 # ═══════════════════════════════════════════════════════════════════════════
 
+class LoraItem(BaseModel):
+    name: str
+    strength: float = 1.0
+    target: str = "both"      # "both" | "cond" | "uncond"
+
+
 class GenerateBody(BaseModel):
     description: str = ""
     json_prompt: str = ""
@@ -253,6 +288,8 @@ class GenerateBody(BaseModel):
     bypass_first_sigma: float = 1.005      # natural ≈0.99988; +0.005 = empujón anti-bloqueo
     bypass_split: bool = False             # split-sigmas: perturbar solo el arranque, reconstruir limpio
     bypass_split_step: int = 2             # corte del schedule (pasos del tramo perturbado); útil 1–4
+    loras: list[LoraItem] = []             # LoRAs a montar sobre los UNET (orden = orden de aplicación)
+    turbo: bool = False                    # modo turbo: ~2 pasos, sin CFG, sin modelo incondicional
 
 
 _jobs: dict[str, dict] = {}
@@ -285,7 +322,8 @@ async def generate(body: GenerateBody):
         raise HTTPException(409, "ya hay una generación en curso")
     if not body.description.strip() and not body.json_prompt.strip():
         raise HTTPException(400, "hace falta una descripción o un JSON de prompt")
-    if not body.unet_uncond:
+    # El modo turbo bypasea el modelo incondicional; en el resto es obligatorio.
+    if not body.turbo and not body.unet_uncond:
         raise HTTPException(400, "falta el modelo incondicional (unet_uncond)")
     # Guard de compatibilidad: rechazar encoder/VAE incompatibles con un mensaje
     # claro en vez de dejar que un nodo de ComfyUI reviente a mitad de render.

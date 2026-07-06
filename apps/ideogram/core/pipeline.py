@@ -13,6 +13,7 @@ Fases (se reportan por callback para el seguimiento del job):
 El LLM se recarga solo (JIT) en la siguiente generación con descripción.
 """
 import io
+import os
 import json
 import time
 import random
@@ -65,6 +66,10 @@ class GenParams:
     bypass_first_sigma: float = 1.005     # natural ≈0.99988; +0.005 = empujón anti-bloqueo
     bypass_split: bool = False            # split-sigmas: perturbar solo el arranque, reconstruir limpio
     bypass_split_step: int = 2            # corte del schedule (pasos del tramo perturbado); útil 1–4
+    # LoRAs: cada dict {name, strength, target} — target: "both" | "cond" | "uncond"
+    loras: list = field(default_factory=list)
+    # modo turbo: LoRA de destilación → ~2 pasos, sin CFG, sin modelo incondicional
+    turbo: bool = False
     # orquestación
     manage_vram: bool = True
 
@@ -73,9 +78,72 @@ def _resolve_seed(seed: int) -> int:
     return random.randint(0, MAX_SEED) if seed is None or seed < 0 else int(seed)
 
 
-def _apply_bypass(wf: dict, params: GenParams) -> dict:
+def _apply_loras(wf: dict, params: GenParams, uncond: bool = True) -> tuple[list, list]:
+    """Encadena LoraLoaderModelOnly (nodo NATIVO) sobre los UNET y devuelve las
+    refs finales (cond, uncond) para que las use el resto del grafo.
+
+    Cada LoRA es {name, strength, target}: target "both" aplica a los dos modelos,
+    "cond"/"uncond" solo a uno. El delta del LoRA va en fp16 en el forward, así que
+    funciona sobre los UNET cuantizados (int8/nvfp4). Reconecta el DualModelGuider
+    "6" a las refs finales; No-op (refs = loaders crudos) si no hay LoRAs.
+
+    En modo turbo (`uncond=False`) NO hay modelo incondicional: todos los LoRAs se
+    montan sobre cond y no se toca `model_negative` (el guider se reemplaza luego).
+
+    IDs 30+ para no chocar con el template (1–14) ni con los del anti-bloqueo (20–28).
+    """
+    cond_ref, uncond_ref = ["1", 0], ["2", 0]
+    nid = 30
+    for lora in (params.loras or []):
+        name = str(lora.get("name") or "").strip()
+        if not name:
+            continue
+        strength = float(lora.get("strength", 1.0))
+        target = str(lora.get("target") or "both").lower()
+        if target not in ("both", "cond", "uncond"):
+            raise PipelineError(f"target de LoRA desconocido: {target!r}")
+        # ComfyUI lista los LoRAs con el separador del SO (backslash en Windows);
+        # el catálogo los expone en posix, así que se normaliza aquí.
+        lora_name = name.replace("/", os.sep)
+        # Sin incondicional (turbo) todo va a cond, ignorando el target.
+        to_cond = (not uncond) or target in ("both", "cond")
+        to_uncond = uncond and target in ("both", "uncond")
+        if to_cond:
+            wf[str(nid)] = {"class_type": "LoraLoaderModelOnly",
+                            "inputs": {"model": cond_ref, "lora_name": lora_name,
+                                       "strength_model": strength}}
+            cond_ref = [str(nid), 0]; nid += 1
+        if to_uncond:
+            wf[str(nid)] = {"class_type": "LoraLoaderModelOnly",
+                            "inputs": {"model": uncond_ref, "lora_name": lora_name,
+                                       "strength_model": strength}}
+            uncond_ref = [str(nid), 0]; nid += 1
+    wf["6"]["inputs"]["model"] = cond_ref
+    if uncond:
+        wf["6"]["inputs"]["model_negative"] = uncond_ref
+    return cond_ref, uncond_ref
+
+
+def _apply_turbo(wf: dict, cond_ref: list) -> dict:
+    """Modo turbo (LoRA de destilación, p.ej. Ideogram 4 TurboTime): el LoRA
+    internaliza el guidance, así que se genera en ~2 pasos SIN CFG y SIN modelo
+    incondicional (confirmado por el autor). Reemplaza el DualModelGuider por
+    BasicGuider (solo cond, sin negative) y descarta el UNET incondicional ("2")
+    y su ConditioningZeroOut ("5"). El turbo LoRA se monta como cualquier otro,
+    sobre cond, vía _apply_loras(uncond=False)."""
+    wf["6"] = {"class_type": "BasicGuider",
+               "inputs": {"model": cond_ref, "conditioning": ["4", 0]}}
+    wf.pop("2", None)   # UNETLoader incondicional (gemelo) — ya no se necesita
+    wf.pop("5", None)   # ConditioningZeroOut (negative del guidance)
+    return {"turbo": True}
+
+
+def _apply_bypass(wf: dict, params: GenParams,
+                  cond_ref: list, uncond_ref: list) -> dict:
     """Parchea el workflow (nodos NATIVOS, sin customs) para perturbar el arranque
-    del sampleo y escapar del cuadro gris del filtro. Dos técnicas seleccionables:
+    del sampleo y escapar del cuadro gris del filtro. `cond_ref`/`uncond_ref` son
+    las refs de modelo que salen de `_apply_loras` (loaders crudos si no hay LoRAs),
+    para que la perturbación se aplique DESPUÉS del LoRA sin pisarlo. Dos técnicas:
 
     - "ruido": envuelve ambos UNET con ModelNoiseScale(noise_scale) antes del
       DualModelGuider → amplifica el ruido (Method 2 del research, ×2 por defecto).
@@ -116,9 +184,9 @@ def _apply_bypass(wf: dict, params: GenParams) -> dict:
     if method == "ruido":
         scale = float(params.bypass_noise_scale)
         wf["20"] = {"class_type": "ModelNoiseScale",
-                    "inputs": {"model": ["1", 0], "noise_scale": scale}}
+                    "inputs": {"model": cond_ref, "noise_scale": scale}}
         wf["21"] = {"class_type": "ModelNoiseScale",
-                    "inputs": {"model": ["2", 0], "noise_scale": scale}}
+                    "inputs": {"model": uncond_ref, "noise_scale": scale}}
         info["noise_scale"] = scale
         pert_sigmas = high_sigmas
         if split:
@@ -221,7 +289,13 @@ async def generate(comfy: ComfyClient, lm: LMStudio, params: GenParams,
         raise PipelineError("ComfyUI no responde en :8188 — arráncalo desde el Hub")
 
     wf = load_workflow(_WORKFLOW)
-    bypass_info = _apply_bypass(wf, params)
+    if params.turbo:
+        # Turbo y anti-bloqueo son excluyentes (el turbo destila el guidance).
+        cond_ref, _ = _apply_loras(wf, params, uncond=False)
+        bypass_info = _apply_turbo(wf, cond_ref)
+    else:
+        cond_ref, uncond_ref = _apply_loras(wf, params)
+        bypass_info = _apply_bypass(wf, params, cond_ref, uncond_ref)
     render_params = {
         "unet_cond": params.unet_cond,
         "unet_uncond": params.unet_uncond,
@@ -238,8 +312,12 @@ async def generate(comfy: ComfyClient, lm: LMStudio, params: GenParams,
         "seed": seed,
     }
     png = await comfy.run_workflow(wf, render_params, on_progress=on_step)
-    if bypass_info:
-        render_params["bypass"] = bypass_info   # solo para el manifest
+    if params.turbo:
+        render_params["turbo"] = True            # solo para el manifest
+    elif bypass_info:
+        render_params["bypass"] = bypass_info    # solo para el manifest
+    if params.loras:
+        render_params["loras"] = params.loras    # solo para el manifest
 
     # 4. blockguard
     phase("check")
