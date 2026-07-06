@@ -10,6 +10,7 @@ import sys
 import json
 import uuid
 import asyncio
+import subprocess
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -285,6 +286,61 @@ async def translate_caption(body: TranslateBody):
     return {"caption": merged, "prompt": cap.to_prompt_string(merged)}
 
 
+class AutopromptBody(BaseModel):
+    image: str               # data URI (data:image/...;base64,...) o base64 puro
+    llm_model: str           # debe ser un modelo multimodal (type=vlm)
+    general: str = ""        # nota/instrucción opcional del usuario (trigger, ajuste)
+    width: int = 2048
+    height: int = 2048
+    temperature: float = 0.4   # baja: fiel a la imagen, poco creativo
+
+
+@ideogram_router.post("/autoprompt")
+async def autoprompt(body: AutopromptBody):
+    """Imagen de referencia → caption JSON+bboxes con un VLM. El modelo VE la
+    imagen y descompone la escena; el usuario retoca las cajas sobre el canvas
+    (la referencia queda de fondo). Reusa el schema y la validación del caption."""
+    img = body.image.strip()
+    if not img:
+        raise HTTPException(400, "falta la imagen de referencia")
+    # Normaliza a data URI OpenAI-style (si viene base64 puro, asume PNG).
+    if not img.startswith("data:"):
+        img = "data:image/png;base64," + img
+    if not await _lm.health_check():
+        raise HTTPException(503, "LM Studio no responde en :1234")
+    # El autoprompt exige un modelo multimodal; un LLM de solo texto ignora la
+    # imagen y alucina. Verificamos el type antes de gastar la inferencia.
+    try:
+        models = await _lm.list_models()
+    except LMStudioError as e:
+        raise HTTPException(503, f"no se pudo consultar LM Studio: {e}")
+    chosen = next((m for m in models if m.get("id") == body.llm_model), None)
+    if chosen is None:
+        raise HTTPException(400, f"modelo '{body.llm_model}' no está en LM Studio")
+    if chosen.get("type") != "vlm":
+        raise HTTPException(400, f"'{body.llm_model}' no es un modelo multimodal (VLM); "
+                                 f"carga un VLM en LM Studio para el autoprompt")
+    try:
+        messages = cap.build_vision_messages(img, body.width, body.height, body.general)
+        # Texto libre SIN gramática (los VLM de llama.cpp crashean bajo cualquier
+        # gramática JSON tras encodear la imagen: "Channel Error"). El VLM devuelve
+        # un bloque etiquetado y nuestro código ensambla el JSON + las bboxes
+        # (patrón panopticon). max_tokens acotado evita que divague.
+        text = await _lm.chat_text(body.llm_model, messages,
+                                   temperature=body.temperature, max_tokens=1200,
+                                   timeout=300.0)
+        raw = cap.parse_vision_freetext(text, body.width, body.height, body.general)
+        caption = cap.validate_and_clean(raw)
+    except cap.CaptionError as e:
+        # Adjunta un extracto del bloque crudo del VLM para diagnosticar formatos
+        # inesperados (lista numerada, prosa, separador distinto…).
+        snippet = (text or "").strip()[:600]
+        raise HTTPException(502, f"fallo analizando la imagen: {e}\n\n---VLM---\n{snippet}")
+    except LMStudioError as e:
+        raise HTTPException(502, f"fallo analizando la imagen: {e}")
+    return {"caption": caption, "prompt": cap.to_prompt_string(caption)}
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Generación (pipeline completo como job en background)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -411,6 +467,26 @@ async def history_image(run_id: str):
         return FileResponse(pipeline.history_image(run_id))
     except PipelineError as e:
         raise HTTPException(404, str(e))
+
+
+@ideogram_router.post("/history/{run_id}/reveal")
+async def history_reveal(run_id: str):
+    """Abre la carpeta contenedora del run en el explorador (hub local).
+    Windows: explorer /select, resalta la imagen dentro de la carpeta."""
+    try:
+        d, img = pipeline.history_dir(run_id)
+    except PipelineError as e:
+        raise HTTPException(404, str(e))
+    try:
+        if sys.platform == "win32":
+            subprocess.Popen(["explorer", "/select,", str(img)])   # resalta el PNG
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", "-R", str(img)])
+        else:
+            subprocess.Popen(["xdg-open", str(d)])
+    except Exception as e:
+        raise HTTPException(500, f"no se pudo abrir la carpeta: {e}")
+    return {"opened": str(d)}
 
 
 @ideogram_router.delete("/history/{run_id}")

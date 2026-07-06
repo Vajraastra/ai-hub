@@ -16,9 +16,13 @@ import shutil
 import asyncio
 from pathlib import Path
 
+import re
 import aiohttp
 
 LMSTUDIO_BASE = os.environ.get("LMSTUDIO_BASE", "http://localhost:1234")
+
+# Tokens especiales que los VLM rotos vomitan en bucle (<unused24>, <pad>, <eos>…).
+_SPECIAL_TOK = re.compile(r"<(?:unused\d+|pad|eos|bos|end_of_turn|start_of_turn)>", re.I)
 
 
 class LMStudioError(Exception):
@@ -78,6 +82,48 @@ class LMStudio:
                 if m.get("state") == "loaded" and m.get("type") in ("llm", "vlm")]
 
     # ── Chat con structured output ───────────────────────────────────────────
+
+    async def chat_text(self, model: str, messages: list[dict],
+                        temperature: float = 0.2, max_tokens: int = 900,
+                        timeout: float = 180.0) -> str:
+        """Chat de TEXTO LIBRE (sin response_format ni gramática). Para VLM
+        multimodales de llama.cpp —p.ej. Gemma— que CRASHEAN al decodificar bajo
+        cualquier gramática tras encodear la imagen ("Channel Error"): pedimos
+        texto plano y lo parseamos en código (como hace panopticon). max_tokens
+        acotado + temperatura baja evitan que divague. Devuelve el content crudo."""
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": False,
+        }
+        try:
+            async with aiohttp.ClientSession() as s:
+                async with s.post(f"{self.base}/v1/chat/completions", json=payload,
+                                  timeout=aiohttp.ClientTimeout(total=timeout)) as r:
+                    if r.status != 200:
+                        body = await r.text()
+                        raise LMStudioError(f"chat/completions {r.status}: {body[:400]}")
+                    data = await r.json()
+        except asyncio.TimeoutError:
+            raise LMStudioError("timeout esperando al VLM de LM Studio")
+        except aiohttp.ClientError as e:
+            raise LMStudioError(f"error de red con LM Studio: {e}")
+        try:
+            content = data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError):
+            raise LMStudioError(f"respuesta inesperada de LM Studio: {str(data)[:400]}")
+        # Guard de degeneración: los VLM abliterated/uncensored de Gemma colapsan
+        # al procesar imágenes repitiendo tokens especiales (<unused24>, <pad>…)
+        # hasta agotar max_tokens. Los limpiamos; si no queda texto real, el modelo
+        # está roto para visión y avisamos en vez de fallar como "elements vacío".
+        clean = _SPECIAL_TOK.sub("", content or "")
+        if not clean.strip():
+            raise LMStudioError(
+                f"el VLM '{model}' degeneró en tokens basura (probablemente un modelo "
+                "abliterated roto para visión); prueba un VLM distinto, p.ej. un Qwen-VL")
+        return clean
 
     async def chat_json(self, model: str, messages: list[dict], schema: dict,
                         temperature: float = 0.6, max_tokens: int = 4096,

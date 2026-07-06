@@ -184,6 +184,20 @@
             <button class="ghost" id="btnDelBox">Borrar caja</button>
           </div>
           <input type="text" id="selBoxDesc" placeholder="descripción de la caja seleccionada" style="margin-top:8px">
+          <div class="ref-tools" style="margin-top:10px; border-top:1px solid var(--border); padding-top:10px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            <input type="file" id="refFile" accept="image/*" style="display:none">
+            <button class="ghost" id="btnRefLoad" title="Carga una imagen como guía visual (no se envía a la generación) para acomodar las cajas encima.">Imagen de referencia</button>
+            <button class="ghost" id="btnRefFit" style="display:none" title="Fija el lado más largo a la base elegida y calcula el corto según el aspect ratio de la referencia → lo inyecta en Ancho/Alto.">Ajustar a referencia</button>
+            <select id="refBase" style="width:auto; display:none" title="Medida del lado más largo al ajustar. 2048 = máxima nitidez pero puede forzar la anatomía; 1024 = más seguro para el modelo.">
+              <option value="2048">base 2048</option>
+              <option value="1024">base 1024</option>
+            </select>
+            <button class="ghost" id="btnAutoprompt" style="display:none" title="Un VLM (modelo multimodal de LM Studio) analiza la referencia y genera el prompt + las cajas + el JSON. Luego retocas lo que quieras.">✨ Autoprompt</button>
+            <button class="ghost" id="btnRefClear" style="display:none">Quitar</button>
+            <label class="dim" id="refOpacityWrap" style="display:none; align-items:center; gap:6px; font-size:11px; flex:1; min-width:150px">
+              opacidad <input type="range" id="refOpacity" min="0" max="100" value="45" style="flex:1">
+            </label>
+          </div>
         </div>
 
         <div class="card">

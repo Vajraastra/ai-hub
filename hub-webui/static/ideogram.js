@@ -10,6 +10,9 @@ const state = {
   jobTimer: null,
   models: null,
   mode: "auto",           // "auto" (LLM arma todo) | "manual" (usuario dibuja, LLM completa)
+  refImg: null,           // Image de referencia (guía visual bajo las cajas; NO se envía a generar)
+  refDataUri: null,       // data URI de la referencia (para el autoprompt del VLM)
+  refOpacity: 0.45,       // opacidad de la referencia en el canvas
 };
 
 // ── Tabs ─────────────────────────────────────────────────────────────────────
@@ -245,6 +248,20 @@ function drawCanvas(){
   setCanvasAspect();
   ctx.clearRect(0,0,G,G);
   ctx.fillStyle="#101014"; ctx.fillRect(0,0,G,G);
+  // imagen de referencia (fondo, bajo la rejilla y las cajas). El buffer es
+  // cuadrado (G×G) pero el canvas se estira por CSS al aspect pw/ph; para que la
+  // referencia conserve SU aspect ratio en pantalla se dibuja con letterbox
+  // corrigiendo por el aspect del canvas: aspect_buffer = (iw/ih)/(pw/ph).
+  if(state.refImg){
+    const iw=state.refImg.naturalWidth||1, ih=state.refImg.naturalHeight||1;
+    const Rc=(+$("pw").value||1)/(+$("ph").value||1);
+    const ar=(iw/ih)/Rc;                         // aspect a usar dentro del buffer
+    let bw,bh; if(ar>=1){ bw=G; bh=G/ar; } else { bh=G; bw=G*ar; }
+    const bx=(G-bw)/2, by=(G-bh)/2;
+    ctx.globalAlpha=state.refOpacity;
+    ctx.drawImage(state.refImg,bx,by,bw,bh);
+    ctx.globalAlpha=1;
+  }
   // rejilla
   ctx.strokeStyle="rgba(255,255,255,.05)"; ctx.lineWidth=1;
   for(let i=1;i<10;i++){ ctx.beginPath(); ctx.moveTo(i*100,0); ctx.lineTo(i*100,G); ctx.moveTo(0,i*100); ctx.lineTo(G,i*100); ctx.stroke(); }
@@ -282,6 +299,57 @@ function addBox(cy=500, cx=500, s=140){
 }
 cv.addEventListener("dblclick",(ev)=>{ const p=toLogic(ev); addBox(p.y,p.x,120); });
 $("btnAddBox").onclick = () => addBox();
+
+// ── Imagen de referencia (guía visual bajo las cajas; NO se envía a generar) ───
+function refButtons(has){
+  $("btnRefFit").style.display   = has ? "" : "none";
+  $("refBase").style.display     = has ? "" : "none";
+  $("btnAutoprompt").style.display = has ? "" : "none";
+  $("btnRefClear").style.display = has ? "" : "none";
+  $("refOpacityWrap").style.display = has ? "flex" : "none";
+}
+$("btnRefLoad").onclick = () => $("refFile").click();
+$("refFile").onchange = (e) => {
+  const f=e.target.files[0]; if(!f) return;
+  const rd=new FileReader();
+  rd.onload = () => { const img=new Image();
+    img.onload = () => { state.refImg=img; state.refDataUri=rd.result; refButtons(true); drawCanvas(); };
+    img.src=rd.result; };
+  rd.readAsDataURL(f);
+  e.target.value="";   // permite recargar el mismo archivo
+};
+$("btnRefClear").onclick = () => { state.refImg=null; state.refDataUri=null; refButtons(false); drawCanvas(); };
+
+// ── Autoprompt: la referencia → prompt + cajas + JSON vía un VLM multimodal ────
+$("btnAutoprompt").onclick = async () => {
+  if(!state.refDataUri){ banner($("genBanner"),"Carga una imagen de referencia primero.","warn"); return; }
+  const llm=$("llmModel").value;
+  if(!llm){ banner($("genBanner"),"No hay modelo en LM Studio. Carga un VLM multimodal.","warn"); return; }
+  const general=$("desc").value.trim();   // nota opcional (trigger, ajuste de estilo)
+  $("btnAutoprompt").disabled=true; $("btnAutoprompt").textContent="Analizando…"; banner($("genBanner"),"","");
+  try{
+    const r=await jpost("/autoprompt",{image:state.refDataUri, llm_model:llm, general,
+      width:+$("pw").value, height:+$("ph").value});
+    applyCaption(r.caption);
+    setMode("manual");   // el usuario retoca las cajas sobre la referencia de fondo
+    banner($("genBanner"),"Autoprompt listo: revisa y ajusta las cajas (la referencia queda de fondo como guía) antes de renderizar.","warn");
+  }catch(e){ banner($("genBanner"),"Fallo del autoprompt: "+e.message,"err"); }
+  $("btnAutoprompt").disabled=false; $("btnAutoprompt").textContent="✨ Autoprompt";
+};
+$("refOpacity").oninput = () => { state.refOpacity=(+$("refOpacity").value)/100; drawCanvas(); };
+// Ajustar la resolución de salida al aspect ratio de la referencia: el lado más
+// largo → 2048, el corto proporcional redondeado a múltiplo de 16 (latente Flux2).
+$("btnRefFit").onclick = () => {
+  if(!state.refImg){ banner($("genBanner"),"Carga una imagen de referencia primero.","warn"); return; }
+  const nw=state.refImg.naturalWidth, nh=state.refImg.naturalHeight;
+  if(!nw||!nh) return;
+  const LONG=+$("refBase").value||2048, long=Math.max(nw,nh);
+  const short=Math.max(16, Math.round(LONG*Math.min(nw,nh)/long/16)*16);
+  if(nw>=nh){ $("pw").value=LONG; $("ph").value=short; }
+  else      { $("ph").value=LONG; $("pw").value=short; }
+  setCanvasAspect(); drawCanvas();
+  banner($("genBanner"),`Resolución ajustada a la referencia: ${$("pw").value}×${$("ph").value}.`,"warn");
+};
 
 cv.addEventListener("pointerdown",(ev)=>{
   const p=toLogic(ev);
@@ -414,12 +482,17 @@ async function loadHistory(){
           <div class="mono">${r.id}</div>
           <div>${(r.description||"—").slice(0,50)}</div>
           ${r.blocked?'<div class="blocked">⚠ posible bloqueo</div>':''}
-          <button class="ghost" style="margin-top:6px;padding:3px 8px" onclick="delRun('${r.id}')">Borrar</button>
+          <div style="display:flex; gap:6px; margin-top:6px">
+            <button class="ghost" style="padding:3px 8px" onclick="revealRun('${r.id}')" title="Abrir la carpeta contenedora en el explorador">Abrir carpeta</button>
+            <button class="ghost" style="padding:3px 8px" onclick="delRun('${r.id}')">Borrar</button>
+          </div>
         </div>
       </div>`).join("") : '<div class="dim">Sin generaciones todavía.</div>';
   }catch(e){ $("gallery").innerHTML='<div class="bad">'+e.message+'</div>'; }
 }
 window.delRun = async (id)=>{ if(!confirm("¿Borrar "+id+"?")) return; await jdel("/history/"+id); loadHistory(); };
+window.revealRun = async (id)=>{ try{ await jpost("/history/"+id+"/reveal"); }
+  catch(e){ alert("No se pudo abrir la carpeta: "+e.message); } };
 
 // ── Diagnóstico ───────────────────────────────────────────────────────────────
 $("btnReloadDiag").onclick=loadDiag;

@@ -335,9 +335,10 @@ def _save(png: bytes, params: GenParams, caption: dict, prompt_str: str,
           seed: int, blocked: bool, metrics: dict, unload_info: dict,
           render_params: dict) -> dict:
     run_id = time.strftime("%Y%m%d-%H%M%S") + f"-{seed & 0xFFFF:04x}"
-    out = HISTORY_DIR / run_id
-    out.mkdir(parents=True, exist_ok=True)
-    (out / "image.png").write_bytes(png)
+    HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    # Layout plano: <run_id>.png + <run_id>.json (el run_id es único: fecha/hora al
+    # segundo + seed) — evita una subcarpeta por generación.
+    (HISTORY_DIR / f"{run_id}.png").write_bytes(png)
     manifest = {
         "id": run_id,
         "created": time.time(),
@@ -350,48 +351,85 @@ def _save(png: bytes, params: GenParams, caption: dict, prompt_str: str,
         "unload": unload_info,
         "render": {k: v for k, v in render_params.items() if k != "json_prompt"},
     }
-    (out / "meta.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2),
-                                   encoding="utf-8")
+    (HISTORY_DIR / f"{run_id}.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     return manifest
 
 
+def _migrate_flat():
+    """Migra el layout viejo (una subcarpeta por run: <id>/image.png + meta.json)
+    al plano (<id>.png + <id>.json). Idempotente y barato: sin subcarpetas, sale
+    enseguida. Se invoca al listar el historial."""
+    if not HISTORY_DIR.exists():
+        return
+    for d in HISTORY_DIR.iterdir():
+        if not d.is_dir():
+            continue
+        img, meta = d / "image.png", d / "meta.json"
+        try:
+            if meta.is_file():
+                meta.replace(HISTORY_DIR / f"{d.name}.json")
+            if img.is_file():
+                img.replace(HISTORY_DIR / f"{d.name}.png")
+            if not any(d.iterdir()):
+                d.rmdir()
+        except OSError:
+            continue
+
+
+def _run_file(run_id: str, ext: str) -> Path:
+    """Ruta validada de <run_id>.<ext> dentro de HISTORY_DIR (anti path traversal)."""
+    p = (HISTORY_DIR / f"{run_id}.{ext}").resolve()
+    if not p.is_relative_to(HISTORY_DIR.resolve()):
+        raise PipelineError("run inválido")
+    return p
+
+
 def list_history(limit: int = 60) -> list[dict]:
+    _migrate_flat()
     if not HISTORY_DIR.exists():
         return []
     runs = []
-    for d in sorted(HISTORY_DIR.iterdir(), reverse=True):
-        meta = d / "meta.json"
-        if meta.is_file():
-            try:
-                m = json.loads(meta.read_text(encoding="utf-8"))
-                runs.append({"id": m["id"], "created": m.get("created"),
-                             "description": m.get("description", ""),
-                             "seed": m.get("seed"), "blocked": m.get("blocked", False),
-                             "render": m.get("render", {})})
-            except Exception:
-                continue
+    for f in sorted(HISTORY_DIR.glob("*.json"), reverse=True):
+        try:
+            m = json.loads(f.read_text(encoding="utf-8"))
+            runs.append({"id": m["id"], "created": m.get("created"),
+                         "description": m.get("description", ""),
+                         "seed": m.get("seed"), "blocked": m.get("blocked", False),
+                         "render": m.get("render", {})})
+        except Exception:
+            continue
         if len(runs) >= limit:
             break
     return runs
 
 
 def history_image(run_id: str) -> Path:
-    p = (HISTORY_DIR / run_id / "image.png").resolve()
-    if not p.is_relative_to(HISTORY_DIR.resolve()) or not p.is_file():
+    p = _run_file(run_id, "png")
+    if not p.is_file():
         raise PipelineError("imagen no encontrada")
     return p
 
 
+def history_dir(run_id: str) -> tuple[Path, Path]:
+    """(carpeta del historial, ruta del PNG del run) para revelarlo en el
+    explorador. En layout plano la carpeta es HISTORY_DIR y el archivo, el PNG."""
+    img = _run_file(run_id, "png")
+    if not img.is_file():
+        raise PipelineError("run no encontrado")
+    return HISTORY_DIR.resolve(), img
+
+
 def history_meta(run_id: str) -> dict:
-    p = (HISTORY_DIR / run_id / "meta.json").resolve()
-    if not p.is_relative_to(HISTORY_DIR.resolve()) or not p.is_file():
+    p = _run_file(run_id, "json")
+    if not p.is_file():
         raise PipelineError("run no encontrado")
     return json.loads(p.read_text(encoding="utf-8"))
 
 
 def delete_run(run_id: str):
-    import shutil
-    p = (HISTORY_DIR / run_id).resolve()
-    if not p.is_relative_to(HISTORY_DIR.resolve()) or not p.is_dir():
+    png, meta = _run_file(run_id, "png"), _run_file(run_id, "json")
+    if not png.is_file() and not meta.is_file():
         raise PipelineError("run no encontrado")
-    shutil.rmtree(p)
+    png.unlink(missing_ok=True)
+    meta.unlink(missing_ok=True)

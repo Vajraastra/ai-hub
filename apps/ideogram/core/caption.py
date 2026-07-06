@@ -184,6 +184,144 @@ Devuelve EXCLUSIVAMENTE el objeto JSON completo, sin explicaciones ni ```.\
 """
 
 
+# Prompt para AUTOPROMPT: el usuario carga una imagen de referencia y un VLM la
+# analiza. A diferencia de los otros pases, aquí el modelo VE la imagen. Como los
+# VLM multimodales de llama.cpp (p.ej. Gemma) CRASHEAN al decodificar bajo
+# cualquier gramática JSON tras encodear la imagen, seguimos el patrón de
+# panopticon: el VLM devuelve TEXTO LIBRE etiquetado (sin gramática) y el JSON +
+# las bboxes los ENSAMBLA nuestro código (parse_vision_freetext). Las cajas salen
+# gruesas (por región 3x3); el usuario las retoca sobre la referencia de fondo.
+VISION_FREETEXT_PROMPT = """\
+Eres un analista visual experto. Miras una IMAGEN de referencia y la describes en
+un bloque de TEXTO PLANO etiquetado (NO JSON) que servirá para regenerar una
+imagen equivalente con Ideogram 4. TODO el texto que produces va en inglés natural.
+
+Describe SOLO lo que realmente ves; no inventes objetos ni texto, y no infles con
+florituras. Devuelve EXACTAMENTE este formato, una etiqueta por línea:
+
+HLD: <una frase que resume la imagen completa>
+BACKGROUND: <solo el fondo/entorno global, ignorando los sujetos>
+MEDIUM: <photograph | illustration | 3d render | painting | ...>
+PHOTO: <cámara/lente aparente — SOLO si es photograph; si no, escribe ->>
+ART_STYLE: <estilo artístico — SOLO si NO es photograph; si no, escribe ->>
+AESTHETICS: <estética general en pocas palabras>
+LIGHTING: <iluminación>
+PALETTE: <3-6 colores dominantes en hex, p.ej. #223344, #aabbcc>
+OBJECTS:
+- <descripción breve del elemento> :: <región>
+- <descripción breve del elemento> :: <región>
+TEXT:
+- "<texto LITERAL escrito en la imagen>" :: <región> :: <estilo tipográfico>
+
+Reglas:
+- Descompón la escena en VARIOS objetos: el/los sujeto(s) MÁS elementos del
+  entorno (suelo, pared, cielo, mobiliario, objetos de apoyo). Nunca uno solo.
+- <región> es UNA de: top-left, top, top-right, left, center, right,
+  bottom-left, bottom, bottom-right, full. Elige dónde está de verdad el elemento.
+- La sección TEXT es SOLO para texto realmente ESCRITO en la imagen (rótulos,
+  carteles). Si no hay texto legible, escribe exactamente "TEXT:" y nada debajo.
+- No añadas explicaciones ni ``` fuera del bloque etiquetado.\
+"""
+
+
+# Regiones nombradas → bbox [ymin, xmin, ymax, xmax] en rejilla 0-1000. Cajas
+# gruesas sobre una malla 3x3 (el usuario las afina luego). "full" cubre casi todo.
+def _region_to_bbox(region: str) -> list[int]:
+    r = (region or "").lower()
+    if any(k in r for k in ("full", "whole", "entire", "cover", "all", "fills")):
+        return [40, 40, 960, 960]
+    if any(k in r for k in ("top", "upper", "above", "sky")):
+        ys = (60, 430)
+    elif any(k in r for k in ("bottom", "lower", "below", "ground", "floor", "foreground")):
+        ys = (570, 940)
+    else:
+        ys = (330, 700)
+    if "left" in r:
+        xs = (60, 440)
+    elif "right" in r:
+        xs = (560, 940)
+    else:
+        xs = (330, 670)
+    return [ys[0], xs[0], ys[1], xs[1]]
+
+
+def parse_vision_freetext(text: str, width: int = 2048, height: int = 2048,
+                          general: str = "") -> dict:
+    """Convierte el bloque etiquetado del VLM (texto libre) en el dict de caption
+    de Ideogram, listo para validate_and_clean. Tolera líneas extra/ausentes: solo
+    lee las etiquetas conocidas y las secciones OBJECTS/TEXT. Las bboxes salen de
+    la región nombrada de cada línea (malla 3x3)."""
+    fields: dict = {}
+    objs: list[tuple[str, str]] = []       # (desc, region)
+    texts: list[tuple[str, str, str]] = []  # (literal, region, style)
+    section = None
+    KEYS = ("HLD", "BACKGROUND", "MEDIUM", "PHOTO", "ART_STYLE", "AESTHETICS",
+            "LIGHTING", "PALETTE")
+    for line in text.splitlines():
+        ln = line.strip()
+        if not ln or ln.startswith("```"):
+            continue
+        up = ln.upper()
+        if up.startswith("OBJECTS"):
+            section = "obj"; continue
+        if up.startswith("TEXT"):
+            section = "text"; continue
+        m = re.match(r"^([A-Z_]+)\s*:\s*(.*)$", ln)
+        if m and m.group(1) in KEYS:
+            section = None
+            fields[m.group(1)] = m.group(2).strip()
+            continue
+        # Dentro de una sección, cualquier línea es un ítem: tolera bullets
+        # (- * •), listas numeradas (1. / 1)) o texto pelado. Separador :: o |.
+        if section:
+            item = re.sub(r"^[-*•\d.)\s]+", "", ln).strip()
+            if not item:
+                continue
+            parts = [p.strip() for p in re.split(r"\s*(?:::|\|)\s*", item)]
+            if section == "obj" and parts and parts[0]:
+                objs.append((parts[0], parts[1] if len(parts) > 1 else "center"))
+            elif section == "text" and parts and parts[0]:
+                lit = parts[0].strip().strip('"').strip("'").strip()
+                if lit:
+                    texts.append((lit, parts[1] if len(parts) > 1 else "center",
+                                  parts[2] if len(parts) > 2 else ""))
+
+    def _blank(v: str) -> bool:
+        return not v or v.strip() in ("-", "->", "n/a", "none", "")
+
+    medium = fields.get("MEDIUM", "").strip()
+    style: dict = {
+        "aesthetics": fields.get("AESTHETICS", ""),
+        "lighting": fields.get("LIGHTING", ""),
+        "medium": medium or "photograph",
+    }
+    is_photo = "photo" in medium.lower() or not _blank(fields.get("PHOTO", ""))
+    if is_photo and not _blank(fields.get("PHOTO", "")):
+        style["photo"] = fields["PHOTO"].strip()
+    if not is_photo and not _blank(fields.get("ART_STYLE", "")):
+        style["art_style"] = fields["ART_STYLE"].strip()
+    pal = re.findall(r"#[0-9A-Fa-f]{6}", fields.get("PALETTE", ""))
+    if pal:
+        style["color_palette"] = pal[:16]
+
+    elements: list[dict] = []
+    for desc, region in objs:
+        elements.append({"type": "obj", "bbox": _region_to_bbox(region), "desc": desc})
+    for lit, region, tstyle in texts:
+        elements.append({"type": "text", "bbox": _region_to_bbox(region),
+                         "desc": tstyle or f'text reading "{lit}"', "text": lit})
+
+    hld = fields.get("HLD", "").strip() or general.strip()
+    return {
+        "high_level_description": hld,
+        "style_description": style,
+        "compositional_deconstruction": {
+            "background": fields.get("BACKGROUND", ""),
+            "elements": elements,
+        },
+    }
+
+
 def build_messages(description: str, width: int = 1024, height: int = 1024) -> list[dict]:
     """Mensajes para el chat del LLM. La descripción del usuario + el aspecto
     del lienzo (ayuda al LLM a ubicar las cajas)."""
@@ -233,6 +371,28 @@ def build_translate_messages(manual: dict, general: str = "",
     )
     return [
         {"role": "system", "content": TRANSLATE_SYSTEM_PROMPT},
+        {"role": "user", "content": user},
+    ]
+
+
+def build_vision_messages(image_data_uri: str, width: int = 2048, height: int = 2048,
+                          general: str = "") -> list[dict]:
+    """Mensajes multimodales para el AUTOPROMPT: el VLM ve la imagen de referencia
+    y devuelve el BLOQUE ETIQUETADO de texto libre (sin gramática — la parsea
+    parse_vision_freetext). `image_data_uri` es un data URI OpenAI-style
+    (data:image/...;base64,...). `general` es una nota/instrucción opcional del
+    usuario (p.ej. un trigger o un ajuste de estilo)."""
+    aspect = _aspect_hint(width, height)
+    note = f"\nNota del usuario (tenla en cuenta sin contradecir la imagen): {general.strip()}" if general.strip() else ""
+    user = [
+        {"type": "text", "text": (
+            f"Imagen objetivo: {aspect}.{note}\n"
+            "Analiza la imagen y descríbela en el bloque etiquetado siguiendo el formato exacto."
+        )},
+        {"type": "image_url", "image_url": {"url": image_data_uri}},
+    ]
+    return [
+        {"role": "system", "content": VISION_FREETEXT_PROMPT},
         {"role": "user", "content": user},
     ]
 
