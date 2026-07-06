@@ -252,6 +252,39 @@ async def refine_caption(body: RefineBody):
     return {"caption": merged, "prompt": cap.to_prompt_string(merged)}
 
 
+class TranslateBody(BaseModel):
+    caption: dict            # borrador manual (cajas ya colocadas por el usuario)
+    llm_model: str
+    general: str = ""        # prompt general opcional (se traduce hacia high_level)
+    width: int = 2048
+    height: int = 2048
+    temperature: float = 0.3   # baja: traducción fiel, no creativa
+
+
+@ideogram_router.post("/translate")
+async def translate_caption(body: TranslateBody):
+    """MODO MANUAL: traduce a inglés y corrige el texto del borrador (desc de cada
+    caja, estilo, fondo, resumen y rótulos) SIN tocar la composición ni inflar. El
+    resultado cae en el editor y el usuario puede ajustarlo antes de generar."""
+    try:
+        manual = cap.validate_and_clean(body.caption)   # limpia/valida la geometría del usuario
+    except cap.CaptionError as e:
+        raise HTTPException(400, f"borrador manual inválido (¿dibujaste alguna caja?): {e}")
+    if not await _lm.health_check():
+        raise HTTPException(503, "LM Studio no responde en :1234")
+    try:
+        messages = cap.build_translate_messages(manual, body.general, body.width, body.height)
+        raw = await _lm.chat_json(body.llm_model, messages, cap.IDEOGRAM_JSON_SCHEMA,
+                                  temperature=body.temperature)
+        if "__raw__" in raw:
+            raw = cap.parse_llm_output(raw["__raw__"])
+        translated = cap.validate_and_clean(raw)
+        merged = cap.preserve_geometry(manual, translated, body.general, translate_text=True)
+    except (LMStudioError, cap.CaptionError) as e:
+        raise HTTPException(502, f"fallo traduciendo el caption: {e}")
+    return {"caption": merged, "prompt": cap.to_prompt_string(merged)}
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Generación (pipeline completo como job en background)
 # ═══════════════════════════════════════════════════════════════════════════

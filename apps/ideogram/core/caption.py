@@ -84,7 +84,9 @@ IDEOGRAM_JSON_SCHEMA = {
 SYSTEM_PROMPT = """\
 Eres un compositor experto de captions JSON para el modelo de imagen Ideogram 4.
 Conviertes la descripción libre del usuario en un caption JSON estructurado que
-Ideogram entiende de forma nativa.
+Ideogram entiende de forma nativa. El usuario puede escribir en CUALQUIER idioma;
+TODO el texto del caption que produces va SIEMPRE en inglés natural (traducido y
+adaptado con fluidez, no palabra por palabra).
 
 REGLAS CLAVE (afectan directamente a la calidad y a que la imagen NO se bloquee):
 
@@ -150,6 +152,38 @@ Devuelve EXCLUSIVAMENTE el objeto JSON completo, sin explicaciones ni ```.\
 """
 
 
+# Prompt para el pase de TRADUCCIÓN/CORRECCIÓN del modo manual. A diferencia de
+# REFINE, NO completa ni rellena nada: solo lleva el texto del usuario a inglés
+# correcto y literal (traduce + corrige ortografía/gramática) sin embellecer ni
+# inventar. La geometría se blinda igual en el backend (preserve_geometry).
+TRANSLATE_SYSTEM_PROMPT = """\
+Eres un traductor y corrector de captions JSON para el modelo de imagen Ideogram 4.
+El usuario YA ha compuesto un borrador (cajas, descripciones, estilo, textos). Tu
+ÚNICA tarea es traducir todo su texto a INGLÉS correcto y corregir errores de
+ortografía y gramática MANTENIENDO EL SIGNIFICADO LITERAL. No eres un redactor
+creativo: no reescribes, no embelleces, no inventas.
+
+REGLAS ABSOLUTAS:
+
+1. NO añadas, elimines, muevas ni redimensiones ninguna caja. Respeta EXACTAMENTE
+   el número, el orden, las coordenadas "bbox" y el "type" que llegan.
+
+2. Traduce a inglés y corrige, SIN reescribir ni embellecer, cada campo de texto:
+   "high_level_description", "background", el "desc" de CADA caja, los strings de
+   "style_description" (aesthetics, lighting, medium, photo, art_style) y el "text"
+   de las cajas de tipo texto (el rótulo que se dibuja en la imagen). Mismo
+   contenido, solo en inglés correcto.
+
+3. Si un campo ya está en inglés, corrige solo los errores. Si un campo está
+   vacío, DÉJALO VACÍO: no inventes contenido ni añadas detalles (el upsampling
+   agresivo dispara el filtro de seguridad).
+
+4. NO cambies los códigos de color (color_palette) ni añadas paletas nuevas.
+
+Devuelve EXCLUSIVAMENTE el objeto JSON completo, sin explicaciones ni ```.\
+"""
+
+
 def build_messages(description: str, width: int = 1024, height: int = 1024) -> list[dict]:
     """Mensajes para el chat del LLM. La descripción del usuario + el aspecto
     del lienzo (ayuda al LLM a ubicar las cajas)."""
@@ -179,6 +213,26 @@ def build_refine_messages(manual: dict, general: str = "",
     )
     return [
         {"role": "system", "content": REFINE_SYSTEM_PROMPT},
+        {"role": "user", "content": user},
+    ]
+
+
+def build_translate_messages(manual: dict, general: str = "",
+                             width: int = 2048, height: int = 2048) -> list[dict]:
+    """Mensajes para el pase de TRADUCCIÓN/CORRECCIÓN del modo manual: lleva el
+    texto del borrador a inglés literal y correcto sin alterar la composición ni
+    inflar el prompt."""
+    aspect = _aspect_hint(width, height)
+    payload = json.dumps(manual, ensure_ascii=False, indent=2)
+    gp = f"\nPrompt general del usuario:\n{general.strip()}\n" if general.strip() else ""
+    user = (
+        f"Lienzo: {width}x{height} px ({aspect}).\n{gp}\n"
+        f"Borrador manual del usuario:\n{payload}\n\n"
+        "Traduce a inglés correcto y corrige TODO su texto siguiendo las reglas. "
+        "Conserva las cajas y su geometría intactas."
+    )
+    return [
+        {"role": "system", "content": TRANSLATE_SYSTEM_PROMPT},
         {"role": "user", "content": user},
     ]
 
@@ -297,27 +351,34 @@ def validate_and_clean(obj: dict) -> dict:
     return out
 
 
-def preserve_geometry(manual: dict, refined: dict, general: str = "") -> dict:
+def preserve_geometry(manual: dict, refined: dict, general: str = "",
+                      translate_text: bool = False) -> dict:
     """Fusiona el refinado del LLM sobre el borrador manual GARANTIZANDO que la
-    geometría del usuario manda: fuerza bbox/type/text de cada caja manual y solo
-    toma del LLM la redacción de "desc", las paletas y los campos globales
-    (estilo, fondo, resumen). Blindaje: aunque el LLM mueva/añada/borre cajas, la
-    composición del usuario se conserva intacta."""
+    geometría del usuario manda: fuerza bbox/type de cada caja manual y solo toma
+    del LLM la redacción de "desc", las paletas y los campos globales (estilo,
+    fondo, resumen). Blindaje: aunque el LLM mueva/añada/borre cajas, la
+    composición del usuario se conserva intacta.
+
+    translate_text=True (pase de traducción): también adopta el "text" (rótulo)
+    traducido por el LLM en las cajas de tipo texto; por defecto (refine) el
+    rótulo del usuario se conserva literal."""
     man_els = manual.get("compositional_deconstruction", {}).get("elements", [])
     comp = refined.setdefault("compositional_deconstruction", {})
     ref_els = comp.get("elements") if isinstance(comp.get("elements"), list) else []
     merged = []
     for i, m in enumerate(man_els):
-        e = {"type": m["type"], "bbox": m["bbox"], "desc": m.get("desc", "")}
-        if m["type"] == "text":
-            e["text"] = m.get("text", "")
         r = ref_els[i] if i < len(ref_els) else {}
-        if isinstance(r, dict):
-            if r.get("desc"):
-                e["desc"] = str(r["desc"])
-            pal = _clean_palette(r.get("color_palette"), 5)
-            if pal:
-                e["color_palette"] = pal
+        if not isinstance(r, dict):
+            r = {}
+        e = {"type": m["type"], "bbox": m["bbox"], "desc": m.get("desc", "")}
+        if r.get("desc"):
+            e["desc"] = str(r["desc"])
+        if m["type"] == "text":
+            rt = str(r.get("text", "")).strip()
+            e["text"] = rt if (translate_text and rt) else m.get("text", "")
+        pal = _clean_palette(r.get("color_palette"), 5)
+        if pal:
+            e["color_palette"] = pal
         merged.append(e)
     comp["elements"] = merged
     if general.strip() and not str(refined.get("high_level_description", "")).strip():

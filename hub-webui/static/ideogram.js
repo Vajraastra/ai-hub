@@ -92,12 +92,13 @@ function setMode(m){
   $("desc").placeholder     = manual
     ? "Idea global de la escena (tema, estilo, ambiente). Tú dibujas las cajas abajo; el LLM solo completa el resto."
     : "Describe la imagen en lenguaje natural. Ej: un gato naranja dormido en un sofá de terciopelo azul junto a una ventana al atardecer.";
-  $("btnCaption").style.display  = manual ? "none" : "";
-  $("btnAssemble").style.display = manual ? "" : "none";
-  $("btnRefine").style.display   = manual ? "" : "none";
+  $("btnCaption").style.display   = manual ? "none" : "";
+  $("btnAssemble").style.display  = manual ? "" : "none";
+  $("btnTranslate").style.display = manual ? "" : "none";
+  $("btnRefine").style.display    = manual ? "" : "none";
   $("descHint").textContent = manual
-    ? "Manual: dibuja las cajas (doble-clic / «+ Caja»), muévelas y escribe el desc de cada una + el prompt general. «Organizar JSON» arma el JSON sin LLM (respeta tus textos); «Configurar con LLM» además completa estilo y fondo."
-    : "El LLM descompone la escena en sujeto + entorno (varias cajas = evita el filtro).";
+    ? "Manual: dibuja las cajas (doble-clic / «+ Caja»), muévelas y escribe el desc de cada una + el prompt general. «Organizar JSON» arma el JSON sin LLM (respeta tus textos); «Traducir / corregir» pasa tus textos a inglés literal y corregido (sin inflar); «Configurar con LLM» además completa estilo y fondo."
+    : "El LLM descompone la escena en sujeto + entorno (varias cajas = evita el filtro). Escribe en tu idioma: el JSON sale en inglés.";
 }
 $("modeAuto").onclick   = () => setMode("auto");
 $("modeManual").onclick = () => setMode("manual");
@@ -113,6 +114,24 @@ $("btnAssemble").onclick = async () => {
     applyCaption(r.caption);
     banner($("genBanner"),"JSON organizado sin LLM: tus textos intactos, estructura validada.","warn");
   }catch(e){ banner($("genBanner"),"No se pudo organizar: "+e.message,"err"); }
+};
+
+// ── Traducir / corregir (modo manual): lleva tus textos a inglés literal ──────
+$("btnTranslate").onclick = async () => {
+  if(!state.caption || !state.boxes.length){ banner($("genBanner"),"Dibuja al menos una caja primero.","warn"); return; }
+  const llm=$("llmModel").value;
+  if(!llm){ banner($("genBanner"),"No hay LLM en LM Studio. Escribe el JSON en inglés a mano.","warn"); return; }
+  const general=$("desc").value.trim();
+  if(general && !(state.caption.high_level_description||"").trim()) state.caption.high_level_description=general;
+  syncJsonFromState();
+  $("btnTranslate").disabled=true; $("btnTranslate").textContent="Traduciendo…"; banner($("genBanner"),"","");
+  try{
+    const r=await jpost("/translate",{caption:state.caption, llm_model:llm, general,
+      width:+$("pw").value, height:+$("ph").value});
+    applyCaption(r.caption);
+    banner($("genBanner"),"Textos traducidos a inglés y corregidos (tus cajas se conservan). Revisa y edita si hace falta antes de renderizar.","warn");
+  }catch(e){ banner($("genBanner"),"Fallo traduciendo: "+e.message,"err"); }
+  $("btnTranslate").disabled=false; $("btnTranslate").textContent="Traducir / corregir";
 };
 
 // ── Configurar con LLM (modo manual): completa el borrador sin tocar las cajas ─
