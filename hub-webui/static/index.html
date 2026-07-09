@@ -154,10 +154,14 @@
         <div class="field">
           <label data-i18n="settings.purge_label">Purga del cache de paquetes (uv)</label>
           <div style="display:flex;gap:8px;align-items:center;">
-            <input type="text" id="set-purge-package" data-i18n-placeholder="settings.purge_placeholder" placeholder="paquete concreto, ej. torch (vacío = cache completo)" style="flex:1">
-            <button class="btn btn-outline danger" id="btn-purge-uv-cache" style="white-space:nowrap" data-i18n="settings.purge_btn">🗑 Purgar</button>
+            <input type="text" id="set-purge-package" data-i18n-placeholder="settings.purge_placeholder" placeholder="paquete concreto, ej. torch" style="flex:1">
+            <button class="btn btn-outline danger" id="btn-purge-uv-cache" style="white-space:nowrap" data-i18n="settings.purge_btn">🗑 Purgar paquete</button>
           </div>
           <span class="field-hint" data-i18n="settings.purge_hint">Si un paquete instalado se corrompe: purga aquí y reinstala/actualiza la app para descargar copias frescas. No afecta a los venvs ya instalados.</span>
+          <div style="margin-top:10px;display:flex;gap:8px;align-items:center;">
+            <button class="btn btn-outline danger" id="btn-purge-uv-cache-all" style="white-space:nowrap" data-i18n="settings.purge_all_btn">🗑 Purgar TODO el cache</button>
+            <span class="field-hint" data-i18n="settings.purge_all_hint">Borra toda la cache compartida entre apps. La próxima instalación/actualización de cada app descargará todo de nuevo.</span>
+          </div>
         </div>
       </div>
 

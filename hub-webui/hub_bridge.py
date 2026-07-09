@@ -719,7 +719,13 @@ class HubBridge:
             cuda_config = get_optimal_cuda(sys_info.get("max_cuda", "12.1"))
             cuda_env    = build_env_overrides(hub_config.get("cuda", cuda_config))
 
-            emit = self._emit_log
+            _emit_ui = self._emit_log
+
+            def emit(aid, line):
+                # Tee: UI (websocket) + consola del servidor, para que el
+                # detalle del instalador quede en ambos lados.
+                print(line, flush=True)
+                _emit_ui(aid, line)
 
             class _UILogger:
                 def info(_, tag, msg):    emit(app_id, f"[{tag}] {msg}")
@@ -792,13 +798,35 @@ class HubBridge:
             self._emit_state(app_id)
 
     def _uninstall_thread(self, app_id: str):
-        import shutil
+        from modules.app_installer import robust_rmtree
         self._state.set_busy(app_id, "uninstalling")
         self._emit_state(app_id)
         try:
+            # Parar el proceso si sigue vivo — Windows no permite borrar DLLs
+            # (p. ej. query_engine-windows.dll.node de Prisma, o cualquier .node
+            # nativo) mientras un proceso las tiene cargadas en memoria.
+            proc = self._state.running_apps.get(app_id)
+            if proc:
+                self._emit_log(app_id, "Deteniendo proceso en ejecución...")
+                _kill_tree(proc)
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    pass
+                self._state.clear_running(app_id)
+
+            # Red de seguridad: si el hub se reinició y perdió la referencia
+            # al Popen, puede quedar un proceso huérfano atado al puerto.
+            app_cfg = self._state.registry_apps.get(app_id, {})
+            port = self._state.get_port_override(app_id) or app_cfg.get("default_port")
+            if port and _is_port_in_use(int(port)):
+                self._emit_log(app_id, f"Liberando puerto {port}...")
+                _kill_processes_on_port(int(port))
+                _wait_port_free(int(port))
+
             app_dir = self._state.installed_apps.get(app_id, {}).get("dir", "")
             if app_dir and os.path.isdir(app_dir):
-                shutil.rmtree(app_dir)
+                robust_rmtree(app_dir)
             self._state.installed_apps.pop(app_id, None)
             self._state.save_state()
             self._emit_log(app_id, f"✅ {app_id} desinstalada.")

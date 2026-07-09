@@ -21,7 +21,7 @@ from modules.storage_manager import (
     create_model_dirs, create_output_dirs, get_disk_space,
     build_app_model_args, validate_path, scan_model_dirs
 )
-from modules.app_installer import install_app, get_app_python
+from modules.app_installer import install_app, get_app_python, robust_rmtree
 from modules.app_launcher import launch_app
 from modules.app_updater import check_for_updates, update_app
 
@@ -548,7 +548,7 @@ def _do_uninstall(app_id: str, app_cfg: dict, config: dict, logger: HubLogger):
     # Delete directory
     if os.path.isdir(app_dir):
         try:
-            shutil.rmtree(app_dir)
+            robust_rmtree(app_dir)
             logger.info("uninstall", f"Deleted {app_dir}")
             print(f"  {C.GREEN}✓{C.RESET} Carpeta eliminada")
         except OSError as e:

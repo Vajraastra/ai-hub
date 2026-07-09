@@ -154,6 +154,31 @@ def _select_config_file(app_config: dict, app_dir: str) -> str:
     return ""
 
 
+def find_npm() -> str:
+    """Locate the npm executable: system PATH, portable hub node, or common Unix paths."""
+    import shutil as _shutil
+    npm_name = "npm.cmd" if os.name == "nt" else "npm"
+    npm = _shutil.which(npm_name)
+    if npm:
+        return npm
+    # Check AI_HUB_NODE_DIR (set by run.sh/run.bat)
+    node_dir = os.environ.get("AI_HUB_NODE_DIR", "")
+    if node_dir:
+        candidate = os.path.join(node_dir, npm_name)
+        if os.path.isfile(candidate):
+            return candidate
+    # Check hub tools portable node
+    hub_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    candidate = os.path.join(hub_dir, "tools", "node", "bin", npm_name)
+    if os.path.isfile(candidate):
+        return candidate
+    # Last resort: common system paths
+    for candidate in ["/usr/bin/npm", "/usr/local/bin/npm"]:
+        if os.path.isfile(candidate):
+            return candidate
+    return ""
+
+
 def _get_launch_command(app_config: dict, app_dir: str) -> list:
     """Build the launch command for an app based on platform and launch type."""
     launch_type = app_config.get("launch_type", "shell")
@@ -184,28 +209,7 @@ def _get_launch_command(app_config: dict, app_dir: str) -> list:
 
     elif launch_type == "npm":
         # Run via npm (e.g., Next.js UI)
-        import shutil as _shutil
-        npm_name = "npm.cmd" if os.name == "nt" else "npm"
-        npm = _shutil.which(npm_name)
-        if not npm:
-            # Check AI_HUB_NODE_DIR (set by run.sh)
-            node_dir = os.environ.get("AI_HUB_NODE_DIR", "")
-            if node_dir:
-                candidate = os.path.join(node_dir, npm_name)
-                if os.path.isfile(candidate):
-                    npm = candidate
-        if not npm:
-            # Check hub tools portable node
-            hub_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            candidate = os.path.join(hub_dir, "tools", "node", "bin", npm_name)
-            if os.path.isfile(candidate):
-                npm = candidate
-        if not npm:
-            # Last resort: common system paths
-            for candidate in ["/usr/bin/npm", "/usr/local/bin/npm"]:
-                if os.path.isfile(candidate):
-                    npm = candidate
-                    break
+        npm = find_npm()
         if not npm:
             return []  # npm truly not found
 

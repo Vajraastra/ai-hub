@@ -10,6 +10,134 @@ import os
 import sys
 import json
 import shutil
+import stat
+
+
+def robust_rmtree(path: str, retries: int = 5, retry_delay: float = 0.5) -> None:
+    """
+    Delete a directory tree, clearing Windows read-only attributes on failure.
+    Git repos set pack files (.git/objects/pack/*) read-only, which makes plain
+    shutil.rmtree() raise PermissionError on Windows — this is why apps could
+    not be uninstalled at all.
+
+    Also retries on locked files (WinError 5): right after killing an app's
+    process, Windows can take a brief moment to release DLLs it had memory-mapped
+    (e.g. Prisma's query_engine-windows.dll.node), so an immediate delete fails
+    even though the process is already dead.
+    """
+    import time
+
+    def _on_error(func, target, exc_info):
+        os.chmod(target, stat.S_IWRITE)
+        func(target)
+
+    last_error = None
+    for attempt in range(retries):
+        try:
+            shutil.rmtree(path, onerror=_on_error)
+            return
+        except (PermissionError, OSError) as e:
+            last_error = e
+            if not os.path.isdir(path):
+                return
+            time.sleep(retry_delay)
+    raise last_error
+
+
+_UV_CACHE_CORRUPTION_MARKERS = (
+    "failed to read from the distribution cache",
+    "missing version prefix",
+)
+
+
+def _find_uv_cache_corruption_packages(lines: list) -> list:
+    """
+    Detecta la firma de una entrada de cache de uv corrupta: 'Failed to
+    download and build `pkg==ver`' seguido de 'Failed to read from the
+    distribution cache' / 'missing version prefix'. No es un fallo real del
+    paquete — la cache de uv es compartida entre TODAS las apps del hub
+    (Nivel 0 de consolidación de deps), así que un build corrupto de una
+    sesión anterior rompe cualquier reinstalación futura de cualquier app que
+    dependa de ese paquete, hasta limpiarlo a mano. Devuelve los nombres para
+    limpiarlos quirúrgicamente en vez de purgar toda la cache.
+    """
+    import re
+    text = "\n".join(lines).lower()
+    if not any(marker in text for marker in _UV_CACHE_CORRUPTION_MARKERS):
+        return []
+    pkgs = []
+    for line in lines:
+        m = re.search(r"failed to (?:download and build|build)\s*`([^`=<>~! ]+)",
+                      line, re.IGNORECASE)
+        if m and m.group(1) not in pkgs:
+            pkgs.append(m.group(1))
+    return pkgs
+
+
+def _run_streamed(cmd, cwd=None, env=None, logger=None, tag="install",
+                  timeout=None, shell=False, _retry=True) -> int:
+    """
+    Run a subprocess routing each output line through the logger (stderr fused
+    into stdout). Without esto, en la webui la salida real de git/uv/npm iba
+    solo a la consola del servidor y la UI se quedaba con el exit code pelado.
+    El logger decide los destinos (el _UILogger del bridge emite a UI + consola;
+    el HubLogger del CLI imprime a terminal). Sin logger, cae a la consola.
+
+    Auto-reparación: si el comando es un `pip install` de uv y falla con la
+    firma de cache corrupta (ver _find_uv_cache_corruption_packages), limpia
+    solo los paquetes afectados (`uv cache clean <pkg>`) y reintenta UNA vez
+    antes de rendirse — así una instalación/desinstalación repetida no vuelve
+    a chocar con la misma entrada dañada.
+
+    Returns the exit code; raises subprocess.TimeoutExpired (proceso ya matado).
+    """
+    import threading
+
+    captured = []
+    proc = subprocess.Popen(
+        cmd, cwd=cwd, env=env, shell=shell,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace", bufsize=1
+    )
+
+    def _pump():
+        for line in proc.stdout:
+            line = line.rstrip()
+            if not line:
+                continue
+            captured.append(line)
+            if logger:
+                logger.info(tag, line)
+            else:
+                print(line, flush=True)
+
+    pump = threading.Thread(target=_pump, daemon=True)
+    pump.start()
+    try:
+        returncode = proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        raise
+    pump.join(timeout=5)
+
+    if returncode != 0 and _retry:
+        cmd_str = cmd if isinstance(cmd, str) else " ".join(cmd)
+        if "pip install" in cmd_str:
+            corrupt_pkgs = _find_uv_cache_corruption_packages(captured)
+            if corrupt_pkgs:
+                uv = _get_uv_path()
+                if logger:
+                    logger.warn(tag, f"Cache de uv corrupta para "
+                                      f"{', '.join(corrupt_pkgs)} — "
+                                      f"limpiando y reintentando...")
+                for pkg in corrupt_pkgs:
+                    subprocess.run([uv, "cache", "clean", pkg], cwd=cwd, env=env,
+                                    capture_output=True, text=True, timeout=60)
+                return _run_streamed(cmd, cwd=cwd, env=env, logger=logger, tag=tag,
+                                     timeout=timeout, shell=shell, _retry=False)
+
+    return returncode
 
 
 def _get_uv_path() -> str:
@@ -105,11 +233,10 @@ def clone_app(repo_url: str, branch: str, target_dir: str, logger=None) -> bool:
         logger.info("git", f"Cloning {repo_url} (branch: {branch})...")
 
     try:
-        proc = subprocess.Popen(
+        returncode = _run_streamed(
             ["git", "clone", repo_url, target_dir, "--branch", branch, "--depth", "1"],
-            stdout=sys.stdout, stderr=sys.stderr
+            logger=logger, tag="git", timeout=300
         )
-        returncode = proc.wait(timeout=300)
         if returncode == 0:
             if logger:
                 logger.success("git", f"Cloned to {target_dir}")
@@ -150,12 +277,10 @@ def create_app_venv(app_dir: str, python_version: str, use_uv: bool = True,
         uv = _get_uv_path()
         env = _get_install_env()
         try:
-            proc = subprocess.Popen(
+            returncode = _run_streamed(
                 [uv, "venv", venv_dir, "--python", python_version, "--seed"],
-                cwd=app_dir, env=env,
-                stdout=sys.stdout, stderr=sys.stderr
+                cwd=app_dir, env=env, logger=logger, tag="venv", timeout=300
             )
-            returncode = proc.wait(timeout=300)
             if returncode == 0:
                 if logger:
                     logger.success("venv", f"Venv created with Python {python_version}")
@@ -188,6 +313,91 @@ def create_app_venv(app_dir: str, python_version: str, use_uv: bool = True,
             if logger:
                 logger.error("venv", f"venv error: {e}")
             return False
+
+
+def install_npm_deps(app_dir: str, app_config: dict, logger=None) -> bool:
+    """
+    Install Node dependencies for launch_type == "npm" apps (e.g. AI Toolkit's
+    Next.js UI). Runs npm install, regenerates the Prisma client/DB if the
+    project defines an update_db script, and pre-builds so the launcher's
+    "already built" marker (.next) is set right after install instead of on
+    first launch.
+    """
+    from modules.app_launcher import find_npm
+
+    npm = find_npm()
+    if not npm:
+        if logger:
+            logger.error("npm", "npm no encontrado (ni sistema ni portable)")
+        return False
+
+    launch_subdir = app_config.get("launch_subdir", "")
+    work_dir = os.path.join(app_dir, launch_subdir) if launch_subdir else app_dir
+
+    # node_modules arrastrado de otra plataforma (p. ej. migración Linux→Windows):
+    # en Windows, cmd.exe necesita los wrappers .cmd/.ps1 en node_modules/.bin
+    # para ejecutar cualquier binario — si no existen, el árbol es de otro SO.
+    node_modules_dir = os.path.join(work_dir, "node_modules")
+    bin_dir = os.path.join(node_modules_dir, ".bin")
+    if os.name == "nt" and os.path.isdir(bin_dir):
+        bin_entries = os.listdir(bin_dir)
+        if bin_entries and not any(f.endswith(".cmd") for f in bin_entries):
+            if logger:
+                logger.warn("npm", "node_modules de otra plataforma detectado — reinstalando")
+            robust_rmtree(node_modules_dir)
+            next_dir = os.path.join(work_dir, ".next")
+            if os.path.isdir(next_dir):
+                robust_rmtree(next_dir)
+
+    env = os.environ.copy()
+    env["PATH"] = os.path.dirname(npm) + os.pathsep + env.get("PATH", "")
+
+    if logger:
+        logger.info("npm", f"Ejecutando npm install en {work_dir}...")
+    try:
+        if _run_streamed([npm, "install"], cwd=work_dir, env=env,
+                         logger=logger, tag="npm", timeout=900) != 0:
+            if logger:
+                logger.error("npm", "npm install falló")
+            return False
+    except (subprocess.TimeoutExpired, OSError, FileNotFoundError) as e:
+        if logger:
+            logger.error("npm", f"npm install error: {e}")
+        return False
+
+    # Si el package.json define un script de setup de DB (p. ej. Prisma
+    # generate + db push), correrlo — el cliente/engine es específico de SO.
+    package_json = os.path.join(work_dir, "package.json")
+    if os.path.isfile(package_json):
+        try:
+            with open(package_json, "r", encoding="utf-8") as f:
+                pkg = json.load(f)
+            if "update_db" in pkg.get("scripts", {}):
+                if logger:
+                    logger.info("npm", "Regenerando cliente/DB (update_db)...")
+                if _run_streamed([npm, "run", "update_db"], cwd=work_dir, env=env,
+                                 logger=logger, tag="npm", timeout=120) != 0 and logger:
+                    logger.warn("npm", "update_db falló (no crítico)")
+        except (OSError, json.JSONDecodeError, subprocess.TimeoutExpired) as e:
+            if logger:
+                logger.warn("npm", f"No se pudo leer package.json: {e}")
+
+    if logger:
+        logger.info("npm", "Compilando build de producción (npm run build)...")
+    try:
+        if _run_streamed([npm, "run", "build"], cwd=work_dir, env=env,
+                         logger=logger, tag="npm", timeout=900) != 0:
+            if logger:
+                logger.error("npm", "npm run build falló")
+            return False
+    except (subprocess.TimeoutExpired, OSError, FileNotFoundError) as e:
+        if logger:
+            logger.error("npm", f"build error: {e}")
+        return False
+
+    if logger:
+        logger.success("npm", "Dependencias Node instaladas y build lista")
+    return True
 
 
 def get_app_python(app_dir: str) -> str:
@@ -286,6 +496,13 @@ def install_app(app_config: dict, apps_dir: str, cuda_env: dict,
         return result
     result["steps_completed"].append("venv_created")
 
+    # Step 3.5: Node deps + build for launch_type == "npm" apps (e.g. ai-toolkit UI)
+    if app_config.get("launch_type") == "npm":
+        if not install_npm_deps(app_dir, app_config, logger):
+            result["error"] = "Failed to install npm dependencies"
+            return result
+        result["steps_completed"].append("npm_deps")
+
     # Steps 4-5: Only if app wants hub to manage deps
     # (forge-neo: install_deps=false → deps install via its own launch.py)
     # (ai-toolkit: install_deps=true → we install torch + requirements.txt)
@@ -375,11 +592,8 @@ def install_app(app_config: dict, apps_dir: str, cuda_env: dict,
                     logger.info("install", f"  Overrides: {overrides}")
 
             try:
-                proc = subprocess.Popen(
-                    cmd, cwd=app_dir, env=env,
-                    stdout=sys.stdout, stderr=sys.stderr
-                )
-                returncode = proc.wait()
+                returncode = _run_streamed(cmd, cwd=app_dir, env=env,
+                                           logger=logger, tag="install")
 
                 # Cleanup temp files
                 if overrides_file and os.path.isfile(overrides_file):
@@ -575,12 +789,8 @@ def _run_pre_install_commands(commands: list, app_dir: str,
             logger.info("pre_install", f"  $ {cmd_str}")
 
         try:
-            proc = subprocess.Popen(
-                cmd_str, shell=True,
-                cwd=app_dir, env=env,
-                stdout=sys.stdout, stderr=sys.stderr
-            )
-            returncode = proc.wait()
+            returncode = _run_streamed(cmd_str, shell=True, cwd=app_dir, env=env,
+                                       logger=logger, tag="pre_install")
             if returncode != 0:
                 if logger:
                     logger.error("pre_install", f"Command failed (exit {returncode})")

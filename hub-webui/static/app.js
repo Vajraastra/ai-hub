@@ -319,14 +319,21 @@ async function saveSettings() {
 
 function confirmPurgeUvCache() {
   const pkg = $("set-purge-package").value.trim();
-  const msg = pkg
-    ? t("settings.purge_confirm_pkg", { pkg: `<strong>${pkg}</strong>` })
-    : t("settings.purge_confirm_all");
-  showConfirm(msg, () => purgeUvCache(pkg));
+  if (!pkg) {
+    showToast(t("settings.purge_need_pkg"));
+    return;
+  }
+  const msg = t("settings.purge_confirm_pkg", { pkg: `<strong>${pkg}</strong>` });
+  showConfirm(msg, () => purgeUvCache(pkg, "btn-purge-uv-cache", "settings.purge_btn"));
 }
 
-async function purgeUvCache(pkg) {
-  const btn = $("btn-purge-uv-cache");
+function confirmPurgeUvCacheAll() {
+  showConfirm(t("settings.purge_confirm_all"),
+    () => purgeUvCache("", "btn-purge-uv-cache-all", "settings.purge_all_btn"));
+}
+
+async function purgeUvCache(pkg, btnId, labelKey) {
+  const btn = $(btnId);
   btn.disabled = true;
   btn.textContent = t("settings.purging");
   try {
@@ -338,7 +345,7 @@ async function purgeUvCache(pkg) {
     const data = await res.json();
     if (data.ok) {
       showToast("✅ " + t("settings.purge_done", { gb: data.freed_gb }));
-      $("set-purge-package").value = "";
+      if (pkg) $("set-purge-package").value = "";
     } else {
       showToast("❌ " + t("settings.purge_error"));
     }
@@ -346,7 +353,7 @@ async function purgeUvCache(pkg) {
     showToast("❌ " + t("settings.purge_error"));
   } finally {
     btn.disabled = false;
-    btn.textContent = t("settings.purge_btn");
+    btn.textContent = t(labelKey);
   }
 }
 
@@ -714,6 +721,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("btn-validate-models-path").addEventListener("click", validateModelsPath);
   $("set-models-path").addEventListener("input", _hidePathStatus);
   $("btn-purge-uv-cache").addEventListener("click", confirmPurgeUvCache);
+  $("btn-purge-uv-cache-all").addEventListener("click", confirmPurgeUvCacheAll);
   $("btn-refresh-log").addEventListener("click", loadEventLog);
 
   // Modal
@@ -730,8 +738,9 @@ document.addEventListener("DOMContentLoaded", () => {
   // Confirm
   $("confirm-no").addEventListener("click", closeConfirm);
   $("confirm-yes").addEventListener("click", () => {
+    const cb = _confirmCallback;
     closeConfirm();
-    if (_confirmCallback) _confirmCallback();
+    if (cb) cb();
   });
   $("confirm-overlay").addEventListener("click", e => {
     if (e.target === $("confirm-overlay")) closeConfirm();
