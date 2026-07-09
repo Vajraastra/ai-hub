@@ -167,16 +167,35 @@ function syncJsonFromState(){
     state.caption.compositional_deconstruction = state.caption.compositional_deconstruction||{background:"",elements:[]};
     state.caption.compositional_deconstruction.elements = state.boxes;
     $("jsonPrompt").value = JSON.stringify(state.caption,null,2);
+    $("jsonPrompt").classList.remove("invalid");
   }
 }
 
+// Aplica el JSON del textarea a state SIN reescribir el textarea (respeta el
+// cursor del usuario). Conserva la selección si sigue en rango.
+function applyJsonToState(obj){
+  state.caption = obj;
+  state.boxes = (obj.compositional_deconstruction?.elements)||[];
+  state.sel = state.boxes.length ? Math.min(Math.max(state.sel,0), state.boxes.length-1) : -1;
+  refreshBoxList(); drawCanvas();
+}
 $("btnSyncFromJson").onclick = () => {
   try{
-    const obj = JSON.parse($("jsonPrompt").value);
-    applyCaption(obj);
+    applyJsonToState(JSON.parse($("jsonPrompt").value));
+    $("jsonPrompt").classList.remove("invalid");
     banner($("genBanner"),"","");
   }catch(e){ banner($("genBanner"),"JSON inválido: "+e.message,"err"); }
 };
+// Espejo bidireccional en vivo: editar el JSON a mano actualiza state al vuelo
+// (parse seguro). Así las cajas y el JSON nunca divergen — tocar una caja ya
+// reescribe el JSON, y escribir en el JSON ya mueve las cajas. Mientras el texto
+// sea inválido (a medio teclear) se marca en rojo y NO se pisa el state.
+$("jsonPrompt").addEventListener("input", () => {
+  try{
+    applyJsonToState(JSON.parse($("jsonPrompt").value));
+    $("jsonPrompt").classList.remove("invalid");
+  }catch{ $("jsonPrompt").classList.add("invalid"); }
+});
 
 // ── Lista/edición de la caja seleccionada ─────────────────────────────────────
 function refreshBoxList(){

@@ -111,7 +111,15 @@ REGLAS CLAVE (afectan directamente a la calidad y a que la imagen NO se bloquee)
    TODO lo demás —personas, objetos, fondos, mobiliario— es type="obj" SIN campo
    "text". Ante la duda, usa "obj". Nunca marques un objeto como "text".
 
-6. Sé descriptivo pero fiel a lo que pidió el usuario. NO inventes contenido no
+6. "high_level_description" DEBE empezar CONCRETANDO la toma (nunca la dejes al
+   azar): encuadre (extreme close-up | close-up | medium shot | cowboy shot |
+   full body | wide shot | establishing shot), ángulo (eye-level | low angle |
+   high angle | overhead/top-down | dutch angle), orientación del sujeto (frontal |
+   3/4 view | profile/side | from behind) y lente/distancia (macro | 35mm wide |
+   85mm portrait | telephoto). Elige lo que mejor sirva a lo que pidió el usuario;
+   si no lo especificó, comprométete con una opción coherente, no la omitas.
+
+7. Sé descriptivo pero fiel a lo que pidió el usuario. NO inventes contenido no
    solicitado ni infles el prompt con florituras (el upsampling agresivo dispara
    el filtro). No añadas texto en la imagen salvo que el usuario lo pida.
 
@@ -200,6 +208,12 @@ Describe SOLO lo que realmente ves; no inventes objetos ni texto, y no infles co
 florituras. Devuelve EXACTAMENTE este formato, una etiqueta por línea:
 
 HLD: <una frase que resume la imagen completa>
+SHOT: <OBLIGATORIO y CONCRETO — encuadre + ángulo + perspectiva. Elige de verdad:
+  encuadre (extreme close-up | close-up | medium shot | cowboy shot | full body |
+  wide shot | establishing shot); ángulo de cámara (eye-level | low angle | high angle |
+  overhead/top-down | dutch angle); orientación del sujeto (frontal | 3/4 view |
+  profile/side | from behind); distancia/lente (macro | 35mm wide | 85mm portrait |
+  telephoto). NUNCA lo dejes vago: comprométete con lo que ves en la imagen.>
 BACKGROUND: <solo el fondo/entorno global, ignorando los sujetos>
 MEDIUM: <photograph | illustration | 3d render | painting | ...>
 PHOTO: <cámara/lente aparente — SOLO si es photograph; si no, escribe ->>
@@ -255,7 +269,7 @@ def parse_vision_freetext(text: str, width: int = 2048, height: int = 2048,
     objs: list[tuple[str, str]] = []       # (desc, region)
     texts: list[tuple[str, str, str]] = []  # (literal, region, style)
     section = None
-    KEYS = ("HLD", "BACKGROUND", "MEDIUM", "PHOTO", "ART_STYLE", "AESTHETICS",
+    KEYS = ("HLD", "SHOT", "BACKGROUND", "MEDIUM", "PHOTO", "ART_STYLE", "AESTHETICS",
             "LIGHTING", "PALETTE")
     for line in text.splitlines():
         ln = line.strip()
@@ -311,7 +325,12 @@ def parse_vision_freetext(text: str, width: int = 2048, height: int = 2048,
         elements.append({"type": "text", "bbox": _region_to_bbox(region),
                          "desc": tstyle or f'text reading "{lit}"', "text": lit})
 
+    # El encuadre/ángulo (SHOT) se antepone al HLD: sin él la generación deja la
+    # toma al azar. Va al condicionamiento como parte de la frase resumen.
     hld = fields.get("HLD", "").strip() or general.strip()
+    shot = fields.get("SHOT", "").strip()
+    if shot and not _blank(shot):
+        hld = f"{shot}. {hld}" if hld else shot
     return {
         "high_level_description": hld,
         "style_description": style,
