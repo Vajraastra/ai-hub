@@ -6,11 +6,12 @@ REM Arranca la WebUI (FastAPI) del hub. La terminal queda abierta
 REM mostrando logs en vivo; todo se graba en logs\session_*.log.
 REM
 REM Bootstrap:
-REM   [1/5] Verificar GPU NVIDIA (nvidia-smi)
-REM   [2/5] Asegurar uv (PATH o descarga portable a hub\tools\win)
-REM   [3/5] Asegurar Node.js portable (hub\tools\win\node)
-REM   [4/5] Crear/auto-reparar venv de la WebUI + dependencias
-REM   [5/5] Lanzar la WebUI con output duplicado a terminal + log
+REM   [1/6] Verificar GPU NVIDIA (nvidia-smi)
+REM   [2/6] Asegurar uv (PATH o descarga portable a hub\tools\win)
+REM   [3/6] Asegurar Node.js portable (hub\tools\win\node)
+REM   [4/6] Asegurar ffmpeg portable (hub\tools\win) — requerido por FaceFusion
+REM   [5/6] Crear/auto-reparar venv de la WebUI + dependencias
+REM   [6/6] Lanzar la WebUI con output duplicado a terminal + log
 REM
 REM Windows-first. No depende de Git Bash. Los binarios Linux de
 REM hub\tools (uv/node/python ELF) NO se usan ni se tocan aqui.
@@ -49,9 +50,9 @@ echo ============================================================
 echo.
 
 REM ============================================================
-REM [1/5] GPU NVIDIA
+REM [1/6] GPU NVIDIA
 REM ============================================================
-echo   [1/5] Verificando GPU NVIDIA...
+echo   [1/6] Verificando GPU NVIDIA...
 where nvidia-smi >nul 2>&1
 if errorlevel 1 (
     echo   ERROR: nvidia-smi no encontrado. Se requiere GPU NVIDIA con drivers.
@@ -69,9 +70,9 @@ if not defined GPU_NAME (
 echo   OK  GPU: %GPU_NAME%
 
 REM ============================================================
-REM [2/5] uv
+REM [2/6] uv
 REM ============================================================
-echo   [2/5] Verificando uv...
+echo   [2/6] Verificando uv...
 
 REM Preferir uv del sistema si esta en PATH
 where uv >nul 2>&1
@@ -94,9 +95,9 @@ if errorlevel 1 (
 for /f "tokens=*" %%V in ('"%UV_BIN%" --version 2^>nul') do echo   OK  %%V
 
 REM ============================================================
-REM [3/5] Node.js portable
+REM [3/6] Node.js portable
 REM ============================================================
-echo   [3/5] Verificando Node.js...
+echo   [3/6] Verificando Node.js...
 REM Path fijo: el portable siempre queda en %TOOLS_DIR%\node\node.exe
 set "NODE_DIR=%TOOLS_DIR%\node"
 set "NODE_BIN="
@@ -117,9 +118,26 @@ if defined NODE_BIN (
 )
 
 REM ============================================================
-REM [4/5] venv de la WebUI + dependencias
+REM [4/6] ffmpeg portable (requerido por FaceFusion)
 REM ============================================================
-echo   [4/5] Verificando entorno de la WebUI...
+echo   [4/6] Verificando ffmpeg...
+
+if not exist "%TOOLS_DIR%\ffmpeg.exe" (
+    echo   Descargando ffmpeg portable...
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $z='%TOOLS_DIR%\ffmpeg.zip'; $tmp='%TOOLS_DIR%\ffmpeg_tmp'; Invoke-WebRequest -Uri 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip' -OutFile $z; if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force }; Expand-Archive -Path $z -DestinationPath $tmp -Force; $sub = Get-ChildItem $tmp -Directory | Select-Object -First 1; Copy-Item (Join-Path $sub.FullName 'bin\ffmpeg.exe') '%TOOLS_DIR%\ffmpeg.exe' -Force; Copy-Item (Join-Path $sub.FullName 'bin\ffprobe.exe') '%TOOLS_DIR%\ffprobe.exe' -Force; Remove-Item $tmp -Recurse -Force; Remove-Item $z -Force } catch { exit 1 }"
+)
+
+if not exist "%TOOLS_DIR%\ffmpeg.exe" (
+    echo   AVISO: No se pudo descargar ffmpeg. FaceFusion no podra procesar video.
+    echo   Instalar manualmente en: %TOOLS_DIR%\ffmpeg.exe
+) else (
+    echo   OK  ffmpeg listo
+)
+
+REM ============================================================
+REM [5/6] venv de la WebUI + dependencias
+REM ============================================================
+echo   [5/6] Verificando entorno de la WebUI...
 
 if not exist "%VENV_PY%" (
     echo   Creando venv [descarga Python %HUB_PY_VERSION% managed si hace falta]...
@@ -149,7 +167,7 @@ set "AI_HUB_UV_PATH=%UV_BIN%"
 set "AI_HUB_TOOLS_DIR=%TOOLS_DIR%"
 
 REM ============================================================
-REM [5/5] Lanzar WebUI
+REM [6/6] Lanzar WebUI
 REM ============================================================
 if not exist "%LOGS_DIR%" mkdir "%LOGS_DIR%"
 
@@ -163,7 +181,7 @@ REM Conservar solo los ultimos 10 logs
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     "Get-ChildItem '%LOGS_DIR%\session_*.log' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -Skip 10 | Remove-Item -Force -ErrorAction SilentlyContinue" 2>nul
 
-echo   [5/5] Iniciando AI Hub...
+echo   [6/6] Iniciando AI Hub...
 echo.
 echo   Log: %SESSION_LOG%
 echo.
