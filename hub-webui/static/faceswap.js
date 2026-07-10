@@ -75,7 +75,7 @@ async function loadStatus() {
   const models = status.swap_models.filter((m) => !m.toLowerCase().includes("inswapper"));
   sm.innerHTML = models.map((m) => `<option>${m}</option>`).join("");
   if (models.includes(status.default_swap_model)) sm.value = status.default_swap_model;
-  // filtro NSFW
+  // corrector del modelo de filtrado
   if (status.nsfw) applyNsfwConfig(status.nsfw);
   renderNsfwLast(status.nsfw_last);
   try { renderPatchStatus((await api("/nsfw")).patch); } catch {}
@@ -91,8 +91,8 @@ function renderNsfwLast(last) {
   const el = $("nsfwLast");
   if (!last || last.score === undefined) { el.textContent = ""; return; }
   const cls = last.blocked ? "bad" : "ok";
-  const verdict = last.blocked ? "BLOQUEADA" : "ok";
-  el.innerHTML = `Último análisis: score <span class="mono ${cls}">${last.score}</span> → <span class="${cls}">${verdict}</span>`;
+  const verdict = last.blocked ? "MARCADA" : "ok";
+  el.innerHTML = `Último análisis: puntaje del modelo <span class="mono ${cls}">${last.score}</span> → <span class="${cls}">${verdict}</span>`;
 }
 
 /* ── dropzones ─────────────────────────────────────────────────────────── */
@@ -244,7 +244,7 @@ async function refreshNsfwLast() {
   try { renderNsfwLast((await api("/nsfw")).last); } catch {}
 }
 
-/* ── medir filtro / reparar ────────────────────────────────────────────── */
+/* ── medir el modelo / reparar corrector ───────────────────────────────── */
 $("btnMeasure").addEventListener("click", async () => {
   if (!images.measure) { alert("Cargá una imagen para medir."); return; }
   const el = $("measureResult");
@@ -253,9 +253,9 @@ $("btnMeasure").addEventListener("click", async () => {
     const r = await api("/measure", { method: "POST", body: JSON.stringify({ image: images.measure }) });
     const thr = parseFloat($("nsfwThreshold").value);
     const pass = r.score <= thr;
-    el.innerHTML = `score NSFW = <b class="${pass ? "ok" : "bad"}">${r.score}</b> — ` +
-      (pass ? `pasa con el umbral actual (${thr.toFixed(3)})`
-            : `<span class="bad">BLOQUEADA</span> con umbral ${thr.toFixed(3)}; subilo por encima de ${r.score}`);
+    el.innerHTML = `puntaje del modelo = <b class="${pass ? "ok" : "bad"}">${r.score}</b> — ` +
+      (pass ? `pasa con la tolerancia actual (${thr.toFixed(3)})`
+            : `<span class="bad">MARCADA</span> con tolerancia ${thr.toFixed(3)}; subila por encima de ${r.score}`);
   } catch (e) {
     el.innerHTML = `<span class="bad">error: ${e.message}</span>`;
   }
@@ -264,7 +264,7 @@ $("btnMeasure").addEventListener("click", async () => {
 $("btnRepairFilter").addEventListener("click", async () => {
   try {
     const r = await api("/repair-filter", { method: "POST" });
-    alert(r.ok ? `Filtro reparado (${r.action}).` + (r.note ? "\n" + r.note : "")
+    alert(r.ok ? `Corrector reparado (${r.action}).` + (r.note ? "\n" + r.note : "")
                : "No se pudo reparar: " + (r.reason || "desconocido"));
     loadStatus();
   } catch (e) { alert("Error: " + e.message); }
@@ -275,8 +275,8 @@ function renderPatchStatus(patch) {
   if (!patch) { el.textContent = ""; return; }
   if (!patch.installed) { el.innerHTML = '<span class="warn">ReActor no instalado</span>'; return; }
   el.innerHTML = patch.patched
-    ? '<span class="ok">control de umbral activo</span>'
-    : '<span class="bad">parche ausente — reparalo</span>';
+    ? '<span class="ok">corrector activo</span>'
+    : '<span class="bad">corrector ausente — reparalo</span>';
 }
 
 /* ── resultado ─────────────────────────────────────────────────────────── */

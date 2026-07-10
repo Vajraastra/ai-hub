@@ -260,11 +260,11 @@
         </div>
 
         <div class="card">
-          <h2>Filtro de contenido <span class="spacer"></span>
+          <h2>Corrector del modelo de filtrado <span class="spacer"></span>
             <label class="chk" style="margin:0"><input type="checkbox" id="nsfwEnabled" checked> activo</label>
           </h2>
-          <p class="dim" style="margin-bottom:8px">El filtro anti-NSFW de ReActor descarta la foto (y devuelve un cuadro negro) si la marca como sensible. En fotografía deportiva/de eventos da falsos positivos (shorts, traje de baño, hombros descubiertos). Subí el umbral hasta que deje de molestar.</p>
-          <label class="fld">Umbral — más alto = más permisivo</label>
+          <p class="dim" style="margin-bottom:8px">ReActor trae un modelo de filtrado que descarta la foto (y devuelve un cuadro negro) cuando la marca como sensible. En fotografía deportiva/de eventos ese modelo se equivoca seguido (falsos positivos: shorts, traje de baño, hombros descubiertos). Este corrector ajusta cuánto le hacés caso: subí la tolerancia hasta que deje de marcar tus fotos legítimas.</p>
+          <label class="fld">Tolerancia — más alta = corrige más el modelo (deja pasar más)</label>
           <div class="slider-row">
             <input type="range" id="nsfwThreshold" min="0.5" max="1" step="0.005" value="0.979">
             <span class="v mono" id="vNsfw" style="width:48px">0.979</span>
@@ -272,20 +272,20 @@
           <p class="dim" id="nsfwLast" style="margin-top:8px"></p>
 
           <details class="adv" style="margin-top:10px">
-            <summary>Medir filtro (calibrar sin swap)</summary>
-            <p class="dim" style="margin:8px 0">Subí una foto de cada tipo de prenda y mirá su score real. Poné el umbral por encima del más alto de tus casos legítimos — así todo lo menos revelador pasa con margen. La foto no entra al pipeline de swap.</p>
+            <summary>Medir el modelo (calibrar sin swap)</summary>
+            <p class="dim" style="margin:8px 0">Subí una foto de cada tipo de prenda y mirá qué puntaje le pone el modelo. Poné la tolerancia por encima del puntaje más alto de tus casos legítimos — así todo lo demás pasa con margen. La foto no entra al pipeline de swap.</p>
             <div class="drop" id="dropMeasure" style="min-height:120px">
               <button class="clear">✕</button>
               <span class="ttl">Imagen a medir</span>
               <span class="hint">Clic o arrastrá</span>
               <input type="file" accept="image/*" hidden>
             </div>
-            <button class="ghost" id="btnMeasure" style="width:100%;margin-top:8px">Medir score</button>
+            <button class="ghost" id="btnMeasure" style="width:100%;margin-top:8px">Medir puntaje</button>
             <p class="mono" id="measureResult" style="margin-top:8px;font-size:13px"></p>
           </details>
 
           <div style="margin-top:10px;display:flex;align-items:center;gap:8px">
-            <button class="ghost" id="btnRepairFilter">🔧 Reparar filtro</button>
+            <button class="ghost" id="btnRepairFilter">🔧 Reparar corrector</button>
             <span class="dim" id="patchStatus"></span>
           </div>
         </div>
