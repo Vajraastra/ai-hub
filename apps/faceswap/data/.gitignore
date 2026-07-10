@@ -1,0 +1,5 @@
+# Historial de swaps (fotos de entrada + resultados + metadata) — local, no se versiona
+history/
+# Estado runtime del filtro NSFW (config del operador + último score) — local
+nsfw_filter.json
+nsfw_last.json

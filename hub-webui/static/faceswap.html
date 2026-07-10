@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Face Swap — AI Hub</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+  <style>
+    #tool-wrap { display:flex; flex-direction:column; min-height:100vh; }
+    #tool-header {
+      display:flex; align-items:center; gap:12px;
+      padding:0 16px; height:52px; flex-shrink:0;
+      background:var(--bg-card); border-bottom:1px solid var(--border);
+    }
+    .back-btn {
+      background:none; border:1px solid var(--border); color:var(--text-secondary);
+      border-radius:6px; padding:4px 10px; font-size:12px; cursor:pointer;
+      transition:color .15s, border-color .15s;
+    }
+    .back-btn:hover { color:var(--text-primary); border-color:var(--accent-purple); }
+    #tool-header h1 { font-size:15px; font-weight:600; color:var(--text-primary); }
+    #tool-header .badge { font-size:11px; padding:2px 8px; border-radius:10px;
+      border:1px solid var(--border); color:var(--text-dim); }
+
+    .tabs { display:flex; gap:2px; padding:0 16px; background:var(--bg-card);
+      border-bottom:1px solid var(--border); }
+    .tab { background:none; border:none; border-bottom:2px solid transparent;
+      color:var(--text-dim); padding:10px 16px; font-size:13px; cursor:pointer; }
+    .tab.active { color:var(--text-primary); border-bottom-color:var(--accent-purple); }
+
+    .page { display:none; padding:20px; max-width:1360px; }
+    .page.active { display:block; }
+    .grid2 { display:grid; grid-template-columns:420px 1fr; gap:16px; align-items:start; }
+    @media (max-width:1080px){ .grid2 { grid-template-columns:1fr; } }
+
+    .card { background:var(--bg-card); border:1px solid var(--border);
+      border-radius:8px; padding:16px 18px; margin-bottom:16px; }
+    .card h2 { font-size:12px; font-weight:600; color:var(--text-secondary);
+      margin-bottom:12px; text-transform:uppercase; letter-spacing:.4px;
+      display:flex; align-items:center; gap:8px; }
+    .card h2 .spacer { flex:1; }
+
+    label.fld { display:block; font-size:12px; color:var(--text-dim); margin:8px 0 4px; }
+    input[type=text], input[type=number], select, textarea {
+      width:100%; background:var(--bg-input,#141414); border:1px solid var(--border);
+      color:var(--text-primary); border-radius:6px; padding:7px 9px; font-size:13px;
+      font-family:inherit; }
+    textarea { resize:vertical; font-family:'JetBrains Mono',monospace; font-size:12px; line-height:1.5; }
+    .row { display:flex; gap:10px; } .row > * { flex:1; }
+    input[type=range] { width:100%; accent-color:var(--accent-purple); }
+    .slider-row { display:flex; align-items:center; gap:10px; }
+    .slider-row input[type=range] { flex:1; }
+    .slider-row .v { font-family:'JetBrains Mono',monospace; font-size:12px;
+      color:var(--text-secondary); width:38px; text-align:right; }
+    .chk { display:flex; align-items:center; gap:8px; font-size:13px;
+      color:var(--text-primary); cursor:pointer; margin:8px 0; }
+    .chk input { accent-color:var(--accent-purple); }
+
+    button.act { background:var(--accent-purple); border:none; color:#fff;
+      border-radius:6px; padding:9px 16px; font-size:13px; font-weight:600; cursor:pointer; }
+    button.act:disabled { opacity:.5; cursor:not-allowed; }
+    button.ghost { background:none; border:1px solid var(--border); color:var(--text-secondary);
+      border-radius:6px; padding:8px 14px; font-size:12px; cursor:pointer; }
+    button.ghost:hover { border-color:var(--accent-purple); color:var(--text-primary); }
+
+    .ok{color:#4caf82;} .bad{color:#e05c5c;} .warn{color:#e0a94c;}
+    .mono{font-family:'JetBrains Mono',monospace;} .dim{color:var(--text-dim);font-size:12px;}
+    .status-row{display:flex;justify-content:space-between;font-size:13px;padding:3px 0;}
+    .banner { padding:8px 12px; border-radius:6px; font-size:12px; margin-bottom:12px; }
+    .banner.warn { background:rgba(224,169,76,.1); border:1px solid rgba(224,169,76,.4); color:#e0a94c; }
+    .banner.err  { background:rgba(224,92,92,.1); border:1px solid rgba(224,92,92,.4); color:#e05c5c; }
+
+    /* dropzones */
+    .drops { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+    .drop { border:2px dashed var(--border); border-radius:8px; min-height:170px;
+      display:flex; flex-direction:column; align-items:center; justify-content:center;
+      gap:6px; cursor:pointer; position:relative; overflow:hidden;
+      background:var(--bg-input,#141414); transition:border-color .15s; }
+    .drop:hover, .drop.over { border-color:var(--accent-purple); }
+    .drop .hint { font-size:12px; color:var(--text-dim); text-align:center; padding:0 10px; }
+    .drop .ttl { font-size:12px; font-weight:600; color:var(--text-secondary); }
+    .drop img { position:absolute; inset:0; width:100%; height:100%; object-fit:contain;
+      background:#101014; }
+    .drop .clear { position:absolute; top:6px; right:6px; z-index:2;
+      background:rgba(0,0,0,.6); border:1px solid var(--border); color:#fff;
+      border-radius:5px; padding:1px 7px; cursor:pointer; font-size:12px; display:none; }
+    .drop.filled .clear { display:block; }
+    .drop.filled .hint, .drop.filled .ttl { display:none; }
+
+    /* donantes: principal + secundarios */
+    .donor-grid { display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; margin-top:8px; }
+    .donor-grid .drop { min-height:110px; }
+    .donor-grid .drop .ttl { font-size:11px; }
+    .donor-grid .drop .hint { font-size:11px; }
+
+    /* barra de acción fija arriba para iterar sin bajar */
+    .run-bar { position:sticky; top:0; z-index:5; background:var(--bg-body,#0d0d0f);
+      padding:10px 0; margin-bottom:4px; border-bottom:1px solid var(--border); }
+
+    /* tira de generaciones bajo el visor */
+    .genstrip { display:flex; gap:8px; overflow-x:auto; padding:4px 2px 8px; }
+    .genstrip .gen { position:relative; flex:0 0 auto; width:88px; cursor:pointer;
+      border:2px solid transparent; border-radius:6px; overflow:hidden; background:#101014; }
+    .genstrip .gen.sel { border-color:var(--accent-purple); }
+    .genstrip .gen img { width:88px; height:88px; object-fit:cover; display:block; }
+    .genstrip .gen .num { position:absolute; top:2px; left:2px; background:rgba(0,0,0,.7);
+      color:#fff; font-size:10px; padding:0 5px; border-radius:8px; font-family:'JetBrains Mono',monospace; }
+    .genstrip .gen .blk { position:absolute; bottom:2px; right:2px; font-size:11px; }
+
+    /* progreso / resultado */
+    .phase-pill { font-size:11px; padding:2px 8px; border-radius:10px;
+      background:var(--bg-input,#141414); border:1px solid var(--border); color:var(--text-dim); }
+    .progress { height:6px; background:var(--bg-input,#141414); border-radius:3px; overflow:hidden; margin-top:8px; }
+    .progress > div { height:100%; width:0; background:var(--accent-purple); transition:width .2s; }
+    #resultImg { max-width:100%; border-radius:8px; border:1px solid var(--border); display:block; }
+    .view-tabs { display:flex; gap:6px; margin-bottom:10px; flex-wrap:wrap; }
+    .view-tabs button { font-size:11px; padding:3px 10px; }
+    .view-tabs button.sel { border-color:var(--accent-purple); color:var(--text-primary); }
+
+    /* galería */
+    .gallery { display:grid; grid-template-columns:repeat(auto-fill,minmax(190px,1fr)); gap:12px; }
+    .gcard { background:var(--bg-card); border:1px solid var(--border); border-radius:8px; overflow:hidden; }
+    .gcard img { width:100%; display:block; aspect-ratio:1; object-fit:cover; cursor:pointer; }
+    .gcard .meta { padding:8px 10px; font-size:11px; color:var(--text-dim);
+      display:flex; align-items:center; gap:6px; }
+    .gcard .meta .spacer { flex:1; }
+    .gcard .meta button { background:none; border:none; cursor:pointer; font-size:13px;
+      color:var(--text-dim); padding:0 2px; }
+    .gcard .meta button:hover { color:var(--text-primary); }
+
+    details.adv { margin-top:8px; }
+    details.adv summary { font-size:12px; color:var(--text-dim); cursor:pointer; }
+    .credits { font-size:11px; color:var(--text-dim); line-height:1.7; margin-top:8px; }
+  </style>
+</head>
+<body>
+<div id="tool-wrap">
+  <header id="tool-header">
+    <button class="back-btn" onclick="location.href='/'">← Hub</button>
+    <h1>🎭 Face Swap</h1>
+    <span class="badge">LivePortrait + ReActor/HyperSwap</span>
+    <div style="flex:1"></div>
+    <span id="statusPill" class="phase-pill">comprobando…</span>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab active" data-page="gen">Generar</button>
+    <button class="tab" data-page="hist">Historial</button>
+  </nav>
+
+  <!-- ── Generar ─────────────────────────────────────────────────────── -->
+  <div class="page active" id="page-gen">
+    <div id="statusBanner"></div>
+    <div class="grid2">
+      <div><!-- columna izquierda: entradas + opciones -->
+        <div class="run-bar">
+          <button class="act" id="btnRun" style="width:100%">Hacer el swap</button>
+          <button class="ghost" id="btnInterrupt" style="width:100%;margin-top:8px;display:none">Cancelar</button>
+          <div id="progressWrap" style="display:none">
+            <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
+              <span class="phase-pill" id="phasePill">—</span>
+              <span class="dim" id="stepLabel"></span>
+            </div>
+            <div class="progress"><div id="progressBar"></div></div>
+          </div>
+        </div>
+        <div class="card">
+          <h2>Fotos</h2>
+          <div class="drop" id="dropScene" style="min-height:150px">
+            <button class="clear">✕</button>
+            <span class="ttl">Escena (destino)</span>
+            <span class="hint">La foto real: aporta pose, expresión y fondo.<br>Clic o arrastrá una imagen.</span>
+            <input type="file" accept="image/*" hidden>
+          </div>
+          <label class="fld" style="margin-top:12px">Donante (rostro) — 1 obligatoria, hasta 3 para promediar identidad</label>
+          <div class="donor-grid">
+            <div class="drop" id="dropDonor0">
+              <button class="clear">✕</button>
+              <span class="ttl">Principal</span>
+              <span class="hint">frontal, neutra</span>
+              <input type="file" accept="image/*" hidden>
+            </div>
+            <div class="drop" id="dropDonor1">
+              <button class="clear">✕</button>
+              <span class="ttl">+ opcional</span>
+              <span class="hint">otro ángulo</span>
+              <input type="file" accept="image/*" hidden>
+            </div>
+            <div class="drop" id="dropDonor2">
+              <button class="clear">✕</button>
+              <span class="ttl">+ opcional</span>
+              <span class="hint">otro ángulo</span>
+              <input type="file" accept="image/*" hidden>
+            </div>
+          </div>
+          <p class="dim" style="margin-top:6px">Con el reenactment apagado, el donante solo aporta la identidad — la pose y la expresión salen de la escena. Varias fotos frontales promedian un embedding más estable.</p>
+        </div>
+
+        <div class="card">
+          <h2>Opciones</h2>
+          <label class="chk"><input type="checkbox" id="optReenact">
+            Reenactment con LivePortrait — <b>solo</b> si la pose del donante no casa con la escena (retrato formal). En shots en vivo dejalo apagado: deforma la expresión.</label>
+
+          <div id="reenactOpts" style="display:none">
+            <label class="fld">Ojos (retargeting)</label>
+            <div class="slider-row"><input type="range" id="optEyes" min="0" max="1" step="0.01" value="0"><span class="v" id="vEyes">0</span></div>
+            <label class="fld">Boca (retargeting)</label>
+            <div class="slider-row"><input type="range" id="optMouth" min="0" max="1" step="0.01" value="0"><span class="v" id="vMouth">0</span></div>
+            <label class="fld">Crop factor (recorte de cara del donante)</label>
+            <div class="slider-row"><input type="range" id="optCrop" min="1.5" max="2.5" step="0.1" value="1.7"><span class="v" id="vCrop">1.7</span></div>
+          </div>
+
+          <label class="chk"><input type="checkbox" id="optMask" checked>
+            Fundido del rostro — mezcla la cara nueva con la foto respetando pelo y bordes (menos «pegote»)</label>
+          <div id="maskOpts">
+            <p class="dim" style="margin:2px 0 8px">Ajustá estos si se ve el <b>borde</b> donde termina el rostro nuevo y empieza la foto (la «costura»).</p>
+
+            <label class="fld">Ancho del difuminado del borde</label>
+            <div class="slider-row"><input type="range" id="optMaskBlur" min="0" max="48" step="1" value="12"><span class="v" id="vMaskBlur">12</span></div>
+            <p class="dim" style="margin:2px 0 8px">Qué tan ancha es la franja donde se mezclan la cara y la foto. Si se nota el borde, subilo: la transición se hace más gradual y disimula la costura.</p>
+
+            <label class="fld">Tamaño de la zona reemplazada</label>
+            <div class="slider-row"><input type="range" id="optMaskDilation" min="-40" max="40" step="1" value="0"><span class="v" id="vMaskDilation">0</span></div>
+            <p class="dim" style="margin:2px 0 8px">Agranda (+) o achica (−) el área de cara que se reemplaza. Si la costura cae justo sobre el borde de la cara, agrandala para que la mezcla empiece más adentro, sobre piel pareja.</p>
+
+            <label class="fld">Suavidad del difuminado</label>
+            <div class="slider-row"><input type="range" id="optMaskSigma" min="0.2" max="3" step="0.1" value="1"><span class="v" id="vMaskSigma">1</span></div>
+            <p class="dim" style="margin:2px 0 0">Qué tan suave es el desvanecido dentro de esa franja. Subilo si el borde sigue notándose aunque el ancho ya esté alto.</p>
+          </div>
+
+          <label class="chk"><input type="checkbox" id="optRestore" checked>
+            Restaurar rostro (GFPGAN — nitidez; bajá la visibilidad si queda plástico)</label>
+          <div id="restoreOpts">
+            <label class="fld">Visibilidad de la restauración</label>
+            <div class="slider-row"><input type="range" id="optRestoreVis" min="0.1" max="1" step="0.05" value="0.8"><span class="v" id="vRestoreVis">0.8</span></div>
+          </div>
+
+          <details class="adv">
+            <summary>Avanzado</summary>
+            <div class="row">
+              <div>
+                <label class="fld">Índice de cara en escena</label>
+                <input type="text" id="optInputIdx" value="0">
+              </div>
+              <div>
+                <label class="fld">Índice de cara del donante</label>
+                <input type="text" id="optSourceIdx" value="0">
+              </div>
+            </div>
+            <label class="fld">Detector de caras</label>
+            <select id="optDetector"></select>
+            <label class="fld">Modelo de swap</label>
+            <select id="optSwapModel"></select>
+            <label class="fld">Comando de expresión (nodo AdvancedLivePortrait)</label>
+            <textarea id="optCommand" rows="2" placeholder="vacío = copiar la expresión de la escena tal cual"></textarea>
+          </details>
+        </div>
+
+        <div class="card">
+          <h2>Filtro de contenido <span class="spacer"></span>
+            <label class="chk" style="margin:0"><input type="checkbox" id="nsfwEnabled" checked> activo</label>
+          </h2>
+          <p class="dim" style="margin-bottom:8px">El filtro anti-NSFW de ReActor descarta la foto (y devuelve un cuadro negro) si la marca como sensible. En fotografía deportiva/de eventos da falsos positivos (shorts, traje de baño, hombros descubiertos). Subí el umbral hasta que deje de molestar.</p>
+          <label class="fld">Umbral — más alto = más permisivo</label>
+          <div class="slider-row">
+            <input type="range" id="nsfwThreshold" min="0.5" max="1" step="0.005" value="0.979">
+            <span class="v mono" id="vNsfw" style="width:48px">0.979</span>
+          </div>
+          <p class="dim" id="nsfwLast" style="margin-top:8px"></p>
+
+          <details class="adv" style="margin-top:10px">
+            <summary>Medir filtro (calibrar sin swap)</summary>
+            <p class="dim" style="margin:8px 0">Subí una foto de cada tipo de prenda y mirá su score real. Poné el umbral por encima del más alto de tus casos legítimos — así todo lo menos revelador pasa con margen. La foto no entra al pipeline de swap.</p>
+            <div class="drop" id="dropMeasure" style="min-height:120px">
+              <button class="clear">✕</button>
+              <span class="ttl">Imagen a medir</span>
+              <span class="hint">Clic o arrastrá</span>
+              <input type="file" accept="image/*" hidden>
+            </div>
+            <button class="ghost" id="btnMeasure" style="width:100%;margin-top:8px">Medir score</button>
+            <p class="mono" id="measureResult" style="margin-top:8px;font-size:13px"></p>
+          </details>
+
+          <div style="margin-top:10px;display:flex;align-items:center;gap:8px">
+            <button class="ghost" id="btnRepairFilter">🔧 Reparar filtro</button>
+            <span class="dim" id="patchStatus"></span>
+          </div>
+        </div>
+
+      </div>
+
+      <div><!-- columna derecha: resultado -->
+        <div class="card">
+          <h2>Resultado <span class="spacer"></span>
+            <button class="ghost" id="btnReveal" style="display:none">📂 Abrir carpeta</button>
+          </h2>
+          <div class="view-tabs" id="viewTabs" style="display:none">
+            <button class="ghost sel" data-kind="result">Resultado</button>
+            <button class="ghost" data-kind="scene">Escena</button>
+            <button class="ghost" data-kind="donor">Donante</button>
+            <button class="ghost" data-kind="reenact" id="tabReenact">Donante reanimado</button>
+          </div>
+          <img id="resultImg" style="display:none">
+          <p class="dim" id="resultEmpty">Cargá la escena y al menos una foto de donante, y dale a «Hacer el swap».</p>
+        </div>
+        <div class="card">
+          <h2>Generaciones <span class="spacer"></span>
+            <span class="dim" id="genCount"></span>
+          </h2>
+          <div class="genstrip" id="genStrip"></div>
+          <p class="dim" id="genEmpty">Cada swap se guarda acá para comparar iteraciones. Clic en una miniatura para verla arriba.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Historial ───────────────────────────────────────────────────── -->
+  <div class="page" id="page-hist">
+    <div class="card">
+      <h2>Historial <span class="spacer"></span>
+        <button class="ghost" id="btnRefreshHist">↻ Actualizar</button>
+      </h2>
+      <div class="gallery" id="gallery"></div>
+      <p class="dim" id="histEmpty" style="display:none">Todavía no hay swaps guardados.</p>
+    </div>
+  </div>
+</div>
+
+<script src="/static/faceswap.js"></script>
+</body>
+</html>

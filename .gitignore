@@ -175,6 +175,10 @@ apps/*
 !apps/lora_merger/
 !apps/forge_lab/
 !apps/ideogram/
+!apps/faceswap/
+
+# Fotos de prueba locales (pueden incluir material sensible) — nunca versionar
+image-test/
 models/
 outputs/
 backups/
