@@ -1,0 +1,37 @@
+{
+  "required": [
+    {
+      "id": "comfyui-tooling-nodes",
+      "repo": "https://github.com/Acly/comfyui-tooling-nodes",
+      "probe_node": "ETN_LoadImageBase64",
+      "reason": "Carga de imagen/máscara como base64 sin subir archivos al servidor"
+    },
+    {
+      "id": "comfyui_controlnet_aux",
+      "repo": "https://github.com/comfyorg/comfyui-controlnet-aux",
+      "probe_node": "ControlNetPreprocessorSelector",
+      "reason": "Preprocessors de ControlNet (Canny, Depth, DWPose, etc.)"
+    }
+  ],
+  "enhanced": [
+    {
+      "id": "comfyui-inpaint-nodes",
+      "repo": "https://github.com/Acly/comfyui-inpaint-nodes",
+      "probe_node": "INPAINT_InpaintWithModel",
+      "reason": "Inpaint mejorado — Fooocus (SDXL), LaMa, MAT",
+      "fallback_workflow": "inpaint_basic.json"
+    },
+    {
+      "id": "comfyui-impact-pack",
+      "repo": "https://github.com/ltdrdata/ComfyUI-Impact-Pack",
+      "probe_node": "FaceDetailer",
+      "reason": "ADetailer — detección YOLO y refinado de caras/manos/personas"
+    },
+    {
+      "id": "comfyui-impact-subpack",
+      "repo": "https://github.com/ltdrdata/ComfyUI-Impact-Subpack",
+      "probe_node": "UltralyticsDetectorProvider",
+      "reason": "ADetailer — UltralyticsDetectorProvider para cargar modelos YOLO (.pt)"
+    }
+  ]
+}

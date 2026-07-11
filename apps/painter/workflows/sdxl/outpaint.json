@@ -1,0 +1,78 @@
+{
+  "_comment": "Outpaint SDXL con ImagePadForOutpaint. Placeholders: {{checkpoint}} {{prompt}} {{negative_prompt}} {{image_b64}} {{pad_left}} {{pad_top}} {{pad_right}} {{pad_bottom}} {{feathering}} {{seed}} {{steps}} {{cfg}} {{sampler}} {{scheduler}} {{denoise}}. Requiere: ETN_LoadImageBase64",
+  "1": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": {
+      "ckpt_name": "{{checkpoint}}"
+    }
+  },
+  "2": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "{{prompt}}",
+      "clip": ["1", 1]
+    }
+  },
+  "3": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "{{negative_prompt}}",
+      "clip": ["1", 1]
+    }
+  },
+  "4": {
+    "class_type": "ETN_LoadImageBase64",
+    "inputs": {
+      "image": "{{image_b64}}"
+    }
+  },
+  "5": {
+    "class_type": "ImagePadForOutpaint",
+    "inputs": {
+      "image":      ["4", 0],
+      "left":       "{{pad_left}}",
+      "top":        "{{pad_top}}",
+      "right":      "{{pad_right}}",
+      "bottom":     "{{pad_bottom}}",
+      "feathering": "{{feathering}}"
+    }
+  },
+  "6": {
+    "class_type": "VAEEncodeForInpaint",
+    "inputs": {
+      "pixels":       ["5", 0],
+      "vae":          ["1", 2],
+      "mask":         ["5", 1],
+      "grow_mask_by": 0
+    }
+  },
+  "7": {
+    "class_type": "KSampler",
+    "inputs": {
+      "seed":         "{{seed}}",
+      "steps":        "{{steps}}",
+      "cfg":          "{{cfg}}",
+      "sampler_name": "{{sampler}}",
+      "scheduler":    "{{scheduler}}",
+      "denoise":      "{{denoise}}",
+      "model":        ["1", 0],
+      "positive":     ["2", 0],
+      "negative":     ["3", 0],
+      "latent_image": ["6", 0]
+    }
+  },
+  "8": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": ["7", 0],
+      "vae":     ["1", 2]
+    }
+  },
+  "9": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images":          ["8", 0],
+      "filename_prefix": "painter_outpaint"
+    }
+  }
+}

@@ -176,6 +176,10 @@ apps/*
 !apps/forge_lab/
 !apps/ideogram/
 !apps/faceswap/
+!apps/painter/
+# tags CSV de painter: 5.5MB descargables, no versionar (solo el .gitkeep)
+apps/painter/tags/*
+!apps/painter/tags/.gitkeep
 
 # Fotos de prueba locales (pueden incluir material sensible) — nunca versionar
 image-test/
@@ -187,6 +191,7 @@ hub/.ui_venv/
 hub/.cache/
 hub/bitacora/
 hub/logs/
+/logs/
 hub/.log/
 hub/hub_config.json
 AI-Hub*.desktop

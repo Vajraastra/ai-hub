@@ -547,9 +547,24 @@ function confirmSizeDialog() {
 
   document.getElementById('canvas-size-modal').style.display = 'none';
   resizeCanvases(w, h);
-  document.getElementById('inp-width').value  = w;
-  document.getElementById('inp-height').value = h;
+  const [gw, gh] = fitGenDims(w, h);
+  document.getElementById('inp-width').value  = gw;
+  document.getElementById('inp-height').value = gh;
   requestAnimationFrame(render);
+}
+
+// Ajusta unas dimensiones al rango válido de generación SDXL (512–2048,
+// múltiplo de 8) manteniendo la proporción. El canvas puede ser más grande;
+// esto solo aplica a los campos Ancho/Alto que van al backend.
+function fitGenDims(w, h) {
+  let scale = 1;
+  if (Math.max(w, h) * scale > 2048) scale = 2048 / Math.max(w, h);
+  if (Math.min(w, h) * scale < 512)  scale = 512  / Math.min(w, h);
+  let W = Math.round(w * scale / 8) * 8;
+  let H = Math.round(h * scale / 8) * 8;
+  W = Math.max(512, Math.min(2048, W));
+  H = Math.max(512, Math.min(2048, H));
+  return [W, H];
 }
 
 // ── Cargar imagen ─────────────────────────────────────────────────────────
@@ -566,8 +581,9 @@ function loadImageFile(file) {
     ctxBg.clearRect(0, 0, w, h);
     ctxBg.drawImage(img, 0, 0, w, h);
     clearMask();
-    document.getElementById('inp-width').value  = w;
-    document.getElementById('inp-height').value = h;
+    const [gw, gh] = fitGenDims(w, h);
+    document.getElementById('inp-width').value  = gw;
+    document.getElementById('inp-height').value = gh;
     S.hasImage = true;
     updateButtons();
     URL.revokeObjectURL(url);
@@ -591,7 +607,14 @@ async function apiPost(path, body) {
   });
   if (!r.ok) {
     const e = await r.json().catch(() => ({}));
-    throw new Error(e.detail || r.statusText);
+    let d = e.detail;
+    if (Array.isArray(d)) {
+      // 422 de FastAPI: [{loc, msg, ...}, ...]
+      d = d.map(x => x && x.msg ? `${(x.loc || []).slice(1).join('.')}: ${x.msg}` : JSON.stringify(x)).join('; ');
+    } else if (d && typeof d === 'object') {
+      d = JSON.stringify(d);
+    }
+    throw new Error(d || r.statusText);
   }
   return r.json();
 }
@@ -624,7 +647,7 @@ function getParams() {
       p.cn_model     = cnModel;
       p.cn_strength  = parseFloat(document.getElementById('inp-cn-strength').value);
       const isUnion  = cnModel.toLowerCase().includes('union');
-      if (isUnion) p.cn_type = parseInt(document.getElementById('sel-cn-type').value);
+      if (isUnion) p.cn_type = document.getElementById('sel-cn-type').value;
       const prep = document.getElementById('sel-cn-prep').value;
       if (prep && prep !== 'none') p.cn_preprocess = prep;
     }
@@ -638,12 +661,18 @@ async function doGenerate() {
     return toast(t('painter.no_checkpoint'));
   }
   const p = getParams();
-  p.width  = parseInt(document.getElementById('inp-width').value);
-  p.height = parseInt(document.getElementById('inp-height').value);
+  const rawW = parseInt(document.getElementById('inp-width').value)  || 1024;
+  const rawH = parseInt(document.getElementById('inp-height').value) || 1024;
+  [p.width, p.height] = fitGenDims(rawW, rawH);
+  if (p.width !== rawW || p.height !== rawH) {
+    // reflejar el ajuste en la UI para que el usuario vea lo que se generó
+    document.getElementById('inp-width').value  = p.width;
+    document.getElementById('inp-height').value = p.height;
+  }
   try {
     const { job_id } = await apiPost('/generate', p);
     await trackJob(job_id);
-  } catch (_) { toast(t('painter.conn_error')); }
+  } catch (e) { toast(e.message || t('painter.conn_error')); }
 }
 
 // ── Inpaint ───────────────────────────────────────────────────────────────
@@ -657,7 +686,7 @@ async function doInpaint() {
   try {
     const { job_id } = await apiPost('/inpaint', p);
     await trackJob(job_id);
-  } catch (_) { toast(t('painter.conn_error')); }
+  } catch (e) { toast(e.message || t('painter.conn_error')); }
 }
 
 // ── Guardar imagen a disco ────────────────────────────────────────────────
@@ -711,7 +740,7 @@ async function doOutpaint() {
       denoise, feathering: feather,
     });
     await trackJob(job_id);
-  } catch (_) { toast(t('painter.conn_error')); }
+  } catch (e) { toast(e.message || t('painter.conn_error')); }
 }
 
 // ── Upscale ───────────────────────────────────────────────────────────────
@@ -725,7 +754,7 @@ async function doUpscale() {
       image_b64: getCurrentB64(), model_name: model, arch,
     });
     await trackJob(job_id);
-  } catch (_) { toast(t('painter.conn_error')); }
+  } catch (e) { toast(e.message || t('painter.conn_error')); }
 }
 
 // ── Job tracking via WebSocket ────────────────────────────────────────────
@@ -783,7 +812,7 @@ async function onJobDone(jobId) {
       showAcceptReject(true);
     }
     updateButtons();
-  } catch (_) { toast(t('painter.conn_error')); }
+  } catch (e) { toast(e.message || t('painter.conn_error')); }
 }
 
 function blobToB64(blob) {
@@ -826,7 +855,7 @@ async function doAccept() {
     updateButtons();
     updateUndoRedo();
     toast(t('painter.accept_ok'));
-  } catch (_) { toast(t('painter.conn_error')); }
+  } catch (e) { toast(e.message || t('painter.conn_error')); }
 }
 
 async function doReject() {
@@ -839,7 +868,7 @@ async function doReject() {
     showAcceptReject(false);
     updateButtons();
     toast(t('painter.reject_ok'));
-  } catch (_) { toast(t('painter.conn_error')); }
+  } catch (e) { toast(e.message || t('painter.conn_error')); }
 }
 
 // ── Undo / Redo ───────────────────────────────────────────────────────────
@@ -889,7 +918,7 @@ async function doCancelJob() {
     showProgress(false);
     S.activeJobId = null;
     updateButtons();
-  } catch (_) { toast(t('painter.conn_error')); }
+  } catch (e) { toast(e.message || t('painter.conn_error')); }
 }
 
 // ── UI helpers ────────────────────────────────────────────────────────────
@@ -945,15 +974,25 @@ function updateButtons() {
   const hasCkpt = !!document.getElementById('sel-checkpoint').value;
   const btnGen  = document.getElementById('btn-generate');
   btnGen.disabled  = busy || !hasCkpt;
-  btnGen.textContent = S.hasMask
-    ? t('painter.btn_inpaint')
-    : t('painter.btn_generate');
+  btnGen.textContent = S.regional.active
+    ? t('painter.btn_generate') + ' (Regional)'
+    : (S.hasMask ? t('painter.btn_inpaint') : t('painter.btn_generate'));
   document.getElementById('btn-save-img').disabled  = !S.hasImage;
   document.getElementById('btn-outpaint').disabled  = busy || !S.hasImage;
   document.getElementById('btn-upscale').disabled   = busy || !S.hasImage;
   const hasAdEnabled = _adDetectors.some(d => d.available && _adEnabled.has(d.id));
   document.getElementById('btn-adetailer').disabled  = busy || !S.hasImage || !hasCkpt || !hasAdEnabled;
+  updateSectionBadges();
   updateUndoRedo();
+}
+
+// Badges ON de las secciones plegables del panel Generar
+function updateSectionBadges() {
+  const cnOn = document.getElementById('cn-enabled').checked;
+  const adOn = _adDetectors.some(d => d.available && _adEnabled.has(d.id));
+  document.getElementById('cn-sec-badge').style.display  = cnOn ? '' : 'none';
+  document.getElementById('reg-sec-badge').style.display = S.regional.active ? '' : 'none';
+  document.getElementById('ad-sec-badge').style.display  = adOn ? '' : 'none';
 }
 
 function updateUndoRedo() {
@@ -1111,8 +1150,7 @@ function getRegionalMaskB64(idx) {
 }
 
 async function doRegional() {
-  const checkpoint = document.getElementById('reg-checkpoint').value
-                  || document.getElementById('sel-checkpoint').value;
+  const checkpoint = document.getElementById('sel-checkpoint').value;
   if (!checkpoint) return toast(t('painter.no_checkpoint'));
 
   const queue = [];
@@ -1126,7 +1164,7 @@ async function doRegional() {
     return toast('Pinta al menos una región antes de generar.');
   }
 
-  const baseSeed = parseInt(document.getElementById('reg-seed').value);
+  const baseSeed = parseInt(document.getElementById('inp-seed').value);
 
   _regSeq = {
     active:  true,
@@ -1137,11 +1175,11 @@ async function doRegional() {
     lastB64: null,
     params: {
       checkpoint,
-      negative_prompt: document.getElementById('reg-negative').value,
-      steps:     parseInt(document.getElementById('reg-steps').value),
-      cfg:       parseFloat(document.getElementById('reg-cfg').value),
+      negative_prompt: document.getElementById('inp-negative').value,
+      steps:     parseInt(document.getElementById('inp-steps').value),
+      cfg:       parseFloat(document.getElementById('inp-cfg').value),
       scheduler: document.getElementById('sel-scheduler').value,
-      denoise:   parseFloat(document.getElementById('reg-denoise').value),
+      denoise:   parseFloat(document.getElementById('inp-denoise').value),
       width:     S.imgW || parseInt(document.getElementById('inp-width').value),
       height:    S.imgH || parseInt(document.getElementById('inp-height').value),
     },
@@ -1172,9 +1210,9 @@ async function _runRegStep() {
   try {
     const { job_id } = await apiPost('/regional_step', body);
     await trackJob(job_id);
-  } catch (_) {
+  } catch (e) {
     _regSeq.active = false;
-    toast(t('painter.conn_error'));
+    toast(e.message || t('painter.conn_error'));
   }
 }
 
@@ -1241,7 +1279,7 @@ async function _acceptRegStep() {
       updateButtons();
       updateUndoRedo();
       toast(t('painter.reg_all_done'));
-    } catch (_) { toast(t('painter.conn_error')); }
+    } catch (e) { toast(e.message || t('painter.conn_error')); }
   }
 }
 
@@ -1351,13 +1389,6 @@ function populateModelSelects(m, arch) {
   const prevCkpt = selCkpt.value;
   selCkpt.innerHTML = ckptHtml;
   if (checkpoints.includes(prevCkpt)) selCkpt.value = prevCkpt;
-
-  // Sincronizar selector en tab Regional (mantiene selección previa si sigue disponible)
-  const regCkpt = document.getElementById('reg-checkpoint');
-  const prevRegCkpt = regCkpt.value;
-  regCkpt.innerHTML = ckptHtml;
-  if (checkpoints.includes(prevRegCkpt)) regCkpt.value = prevRegCkpt;
-  else if (checkpoints.includes(prevCkpt)) regCkpt.value = prevCkpt;
 
   // ── Samplers / Schedulers — sin arquitectura ──────────────────────────
   const selSampler = document.getElementById('sel-sampler');
@@ -1791,8 +1822,9 @@ function initEvents() {
   // Limpiar máscara
   document.getElementById('btn-clear-mask').addEventListener('click', clearMask);
 
-  // Generar
+  // Generar (Regional activo → generación regional; máscara → inpaint)
   document.getElementById('btn-generate').addEventListener('click', () => {
+    if (S.regional.active) return doRegional();
     S.hasMask ? doInpaint() : doGenerate();
   });
 
@@ -1840,13 +1872,15 @@ function initEvents() {
     document.getElementById('cn-strength-val').textContent = parseFloat(this.value).toFixed(2);
   });
 
-  // Selector de modo del panel
+  // Selector de modo del panel (Regional vive como sección dentro de Generar)
   document.getElementById('panel-mode-select').addEventListener('change', function () {
     const targetTab = this.value;
-    if (S.regional.active && targetTab !== 'regional') {
-      if (!exitRegionalMode()) { this.value = 'regional'; return; }
+    if (S.regional.active && targetTab !== 'generate') {
+      if (!exitRegionalMode()) { this.value = 'generate'; return; }
+      document.getElementById('reg-enabled').checked = false;
+      document.getElementById('reg-active-controls').style.display = 'none';
+      updateButtons();
     }
-    if (targetTab === 'regional') enterRegionalMode();
     document.querySelectorAll('.panel-body').forEach(b => b.classList.remove('active'));
     document.getElementById('tab-' + targetTab).classList.add('active');
   });
@@ -1864,18 +1898,28 @@ function initEvents() {
     b.addEventListener('click', () => setActiveRegion(parseInt(b.dataset.region)));
   });
 
-  // Regional: slider denoise
-  document.getElementById('reg-denoise').addEventListener('input', function () {
-    document.getElementById('reg-denoise-val').textContent = parseFloat(this.value).toFixed(2);
+  // Secciones plegables del panel Generar (ControlNet / Regional / ADetailer)
+  [['cn-sec-toggle', 'cn-sec-body'],
+   ['reg-sec-toggle', 'reg-sec-body'],
+   ['ad-sec-toggle', 'ad-sec-body']].forEach(([hdrId, bodyId]) => {
+    document.getElementById(hdrId).addEventListener('click', function () {
+      const open = this.getAttribute('aria-expanded') === 'true';
+      this.setAttribute('aria-expanded', String(!open));
+      document.getElementById(bodyId).style.display = open ? 'none' : '';
+    });
   });
 
-  // Regional: randomize seed
-  document.getElementById('reg-btn-randomize').addEventListener('click', () => {
-    document.getElementById('reg-seed').value = Math.floor(Math.random() * 2 ** 32);
+  // Regional: toggle de activación (pinta máscaras R1-R4, genera con btn-generate)
+  document.getElementById('reg-enabled').addEventListener('change', function () {
+    if (this.checked) {
+      enterRegionalMode();
+    } else if (!exitRegionalMode()) {
+      this.checked = true;   // el usuario canceló el confirm — no salir
+    }
+    document.getElementById('reg-active-controls').style.display =
+      this.checked ? '' : 'none';
+    updateButtons();
   });
-
-  // Regional: botón generar
-  document.getElementById('btn-regional').addEventListener('click', doRegional);
 
   // Arch selector
   document.getElementById('arch-select').addEventListener('change', function () {
@@ -2151,7 +2195,7 @@ async function saveStyle() {
     applyStyle({ name, prompt });
     document.getElementById('styles-name-input').value = '';
     toast(t('painter.styles_saved'));
-  } catch (_) { toast(t('painter.conn_error')); }
+  } catch (e) { toast(e.message || t('painter.conn_error')); }
 }
 
 async function deleteStyle(name) {
@@ -2160,7 +2204,7 @@ async function deleteStyle(name) {
     if (_activeStyleName === name) clearStyle();
     await loadStyles();
     toast(t('painter.styles_deleted'));
-  } catch (_) { toast(t('painter.conn_error')); }
+  } catch (e) { toast(e.message || t('painter.conn_error')); }
 }
 
 function toggleStylesPanel() {
@@ -2579,7 +2623,7 @@ function initProfiles() {
         const label = document.getElementById('tag-count-label');
         if (label) label.textContent = count.toLocaleString() + ' tags';
         toast(`Tags recargados: ${count.toLocaleString()}`);
-      } catch (_) { toast(t('painter.conn_error')); }
+      } catch (e) { toast(e.message || t('painter.conn_error')); }
     });
 
   loadProfiles();
@@ -2674,7 +2718,7 @@ function initTagDownloadModal() {
 
 async function initTagSystem() {
   // Attach autocomplete a todos los textareas de prompt (estáticos)
-  ['inp-prompt', 'inp-negative', 'reg-global-prompt', 'reg-negative'].forEach(id => {
+  ['inp-prompt', 'inp-negative', 'ad-prompt-override'].forEach(id => {
     const el = document.getElementById(id);
     if (el) initAutocomplete(el);
   });
@@ -2720,6 +2764,7 @@ function initControlNet() {
   function _syncActiveControls() {
     document.getElementById('cn-active-controls').style.opacity =
       enabled.checked ? '1' : '0.4';
+    updateSectionBadges();
   }
   enabled.addEventListener('change', _syncActiveControls);
   _syncActiveControls();

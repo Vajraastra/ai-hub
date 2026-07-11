@@ -1,0 +1,49 @@
+{
+  "ready": true,
+  "needs_restart": false,
+  "warnings": [],
+  "fallbacks": {},
+  "models": {
+    "checkpoints": [
+      "fucktastic25DCheckpointPony_32.safetensors",
+      "fucktasticRealCheckpointPony_52.safetensors",
+      "juggernautXL_ragnarokBy.safetensors",
+      "kodorail_v100.safetensors",
+      "luciddreamerZit_v03Anime.safetensors",
+      "noobaiXLNAIXL_vPred10Version.safetensors",
+      "unstableRevolution_V2Fp16.safetensors",
+      "waiIllustriousSDXL_v160.safetensors",
+      "z_image_turbo_bf16.safetensors",
+      "zimageTurboByStable_xmasBf16.safetensors"
+    ],
+    "controlnet": [
+      "FLUX.1-dev-ControlNet-Union-Pro.safetensors",
+      "Qwen-Image-InstantX-ControlNet-Union.safetensors",
+      "SDXL/controlnet-union-sdxl-1.0/diffusion_pytorch_model.safetensors",
+      "Z-Image-Turbo-Fun-Controlnet-Union.safetensors",
+      "noobIPAMARK1_mark1.safetensors",
+      "noobaiXLControlnet_epsTile.safetensors",
+      "noobaiXLControlnet_openposeModel.safetensors",
+      "styleIpadapterFor_v10.safetensors"
+    ],
+    "upscale_models": [
+      "1x_NMKD-YandereInpaint_375000_G.pth",
+      "4x_NMKD-Superscale-SP_178000_G.pth",
+      "ESRGAN_4x.pth",
+      "OmniSR_X2_DIV2K.safetensors",
+      "OmniSR_X3_DIV2K.safetensors",
+      "OmniSR_X4_DIV2K.safetensors",
+      "RealESRGAN_x4plus_anime_6B.pth",
+      "krita/4x_NMKD-Superscale-SP_178000_G.pth",
+      "krita/OmniSR_X2_DIV2K.safetensors",
+      "krita/OmniSR_X4_DIV2K.safetensors"
+    ]
+  },
+  "installed_node_ids": [
+    "comfyui-tooling-nodes",
+    "comfyui_controlnet_aux",
+    "comfyui-inpaint-nodes",
+    "comfyui-impact-pack",
+    "comfyui-impact-subpack"
+  ]
+}

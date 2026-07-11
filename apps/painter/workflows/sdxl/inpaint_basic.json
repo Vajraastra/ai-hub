@@ -1,0 +1,83 @@
+{
+  "_comment": "Inpaint básico con nodos core de ComfyUI (fallback si comfyui-inpaint-nodes no está disponible). Placeholders: {{checkpoint}} {{prompt}} {{negative_prompt}} {{image_b64}} {{mask_b64}} {{seed}} {{steps}} {{cfg}} {{sampler}} {{scheduler}} {{denoise}} {{feather_radius}}. Requiere: ETN_LoadImageBase64, ETN_LoadMaskBase64",
+  "1": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": {
+      "ckpt_name": "{{checkpoint}}"
+    }
+  },
+  "2": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "{{prompt}}",
+      "clip": ["1", 1]
+    }
+  },
+  "3": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "{{negative_prompt}}",
+      "clip": ["1", 1]
+    }
+  },
+  "4": {
+    "class_type": "ETN_LoadImageBase64",
+    "inputs": {
+      "image": "{{image_b64}}"
+    }
+  },
+  "5": {
+    "class_type": "ETN_LoadMaskBase64",
+    "inputs": {
+      "mask": "{{mask_b64}}"
+    }
+  },
+  "6": {
+    "class_type": "FeatherMask",
+    "inputs": {
+      "mask": ["5", 0],
+      "left": "{{feather_radius}}",
+      "top": "{{feather_radius}}",
+      "right": "{{feather_radius}}",
+      "bottom": "{{feather_radius}}"
+    }
+  },
+  "7": {
+    "class_type": "VAEEncodeForInpaint",
+    "inputs": {
+      "pixels": ["4", 0],
+      "vae": ["1", 2],
+      "mask": ["6", 0],
+      "grow_mask_by": 6
+    }
+  },
+  "8": {
+    "class_type": "KSampler",
+    "inputs": {
+      "seed": "{{seed}}",
+      "steps": "{{steps}}",
+      "cfg": "{{cfg}}",
+      "sampler_name": "{{sampler}}",
+      "scheduler": "{{scheduler}}",
+      "denoise": "{{denoise}}",
+      "model": ["1", 0],
+      "positive": ["2", 0],
+      "negative": ["3", 0],
+      "latent_image": ["7", 0]
+    }
+  },
+  "9": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": ["8", 0],
+      "vae": ["1", 2]
+    }
+  },
+  "10": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": ["9", 0],
+      "filename_prefix": "painter_inpaint"
+    }
+  }
+}

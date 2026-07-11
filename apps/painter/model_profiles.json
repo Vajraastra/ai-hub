@@ -1,0 +1,142 @@
+{
+  "_comment": "tag_csv: nombre del archivo en apps/painter/tags/ (sin .csv). null = sin autocomplete de tags. defaults: cfg/sampler/scheduler/steps se aplican al seleccionar el perfil. checkpoint_keywords: substrings (lowercase) del nombre de checkpoint para auto-detectar perfil.",
+  "profiles": [
+    {
+      "id": "wai-illustrious",
+      "name": "WAI-Illustrious-SDXL",
+      "family": "illustrious",
+      "checkpoint_keywords": ["wai", "illustrious"],
+      "quality_prefix": "masterpiece, best quality, amazing quality, very aesthetic, absurdres",
+      "negative_base": "worst quality, bad quality, bad anatomy, lowres, bad hands, deformed",
+      "rating_tags": {
+        "general":   "rating:general",
+        "sensitive": "rating:sensitive",
+        "explicit":  "rating:explicit"
+      },
+      "defaults": {
+        "cfg":       7.0,
+        "steps":     25,
+        "sampler":   "dpmpp_2m",
+        "scheduler": "karras"
+      },
+      "tag_csv":         "danbooru_e621_merged_2024-12-22_pt25-ia-dd-ed",
+      "tag_csv_url":     "https://raw.githubusercontent.com/DraconicDragon/dbr-e621-lists-archive/main/tag-lists/danbooru_e621_merged/danbooru_e621_merged_2024-12-22_pt25-ia-dd-ed.csv",
+      "danbooru_cutoff": "2024-06",
+      "prompt_style":    "tags",
+      "_note": "Merged Danbooru+e621 dic-2024. dpmpp_2m+karras óptimo para epsilon-pred SDXL."
+    },
+    {
+      "id": "noobai-vpred-1",
+      "name": "NoobAI-XL V-Pred 1.0 (Laxhar)",
+      "family": "noobai",
+      "checkpoint_keywords": ["vpred", "v-pred", "v_pred"],
+      "quality_prefix": "masterpiece, best quality, amazing quality, very aesthetic, absurdres",
+      "negative_base": "worst quality, old, early, low quality, lowres, bad hands, mutated hands, mammal, anthro, furry, ambiguous form, feral, semi-anthro",
+      "rating_tags": {
+        "general":   "rating:general",
+        "sensitive": "rating:sensitive",
+        "explicit":  "rating:explicit"
+      },
+      "defaults": {
+        "cfg":       4.5,
+        "steps":     30,
+        "sampler":   "euler",
+        "scheduler": "exponential"
+      },
+      "tag_csv":         "danbooru_e621_merged_2024-12-22_pt25-ia-dd-ed",
+      "tag_csv_url":     "https://raw.githubusercontent.com/DraconicDragon/dbr-e621-lists-archive/main/tag-lists/danbooru_e621_merged/danbooru_e621_merged_2024-12-22_pt25-ia-dd-ed.csv",
+      "danbooru_cutoff": "2024-10",
+      "prompt_style":    "tags",
+      "_note": "V-Pred: karras incompatible (noise schedule epsilon-pred). euler+exponential estable. CFG alto quema. civitai:833294/1190596"
+    },
+    {
+      "id": "noobai",
+      "name": "NoobAI-XL (generic)",
+      "family": "noobai",
+      "checkpoint_keywords": ["noobai", "noob"],
+      "quality_prefix": "masterpiece, best quality, amazing quality, very aesthetic, absurdres, newest",
+      "negative_base": "worst quality, bad quality, bad anatomy, lowres, bad hands, deformed, old",
+      "rating_tags": {
+        "general":   "rating:general",
+        "sensitive": "rating:sensitive",
+        "explicit":  "rating:explicit"
+      },
+      "defaults": {
+        "cfg":       7.0,
+        "steps":     25,
+        "sampler":   "dpmpp_2m",
+        "scheduler": "karras"
+      },
+      "tag_csv":         "danbooru_e621_merged_2024-12-22_pt25-ia-dd-ed",
+      "tag_csv_url":     "https://raw.githubusercontent.com/DraconicDragon/dbr-e621-lists-archive/main/tag-lists/danbooru_e621_merged/danbooru_e621_merged_2024-12-22_pt25-ia-dd-ed.csv",
+      "danbooru_cutoff": "2024-10",
+      "prompt_style":    "tags",
+      "_note": "NoobAI entrenó en Danbooru + e621. Merged CSV cubre ambas fuentes. Epsilon-pred: dpmpp_2m+karras."
+    },
+    {
+      "id": "pony",
+      "name": "Pony Diffusion v6 XL",
+      "family": "pony",
+      "checkpoint_keywords": ["pony", "pdxl"],
+      "quality_prefix": "score_9, score_8_up, score_7_up, score_6_up, score_5_up, score_4_up",
+      "negative_base": "score_1, score_2, score_3, worst quality, bad quality",
+      "rating_tags": {
+        "safe":         "rating_safe",
+        "questionable": "rating_questionable",
+        "explicit":     "rating_explicit"
+      },
+      "defaults": {
+        "cfg":       7.0,
+        "steps":     25,
+        "sampler":   "dpmpp_2m",
+        "scheduler": "karras"
+      },
+      "tag_csv":         "e621_2026-04-01_pt20-ia-ed",
+      "tag_csv_url":     "https://raw.githubusercontent.com/DraconicDragon/dbr-e621-lists-archive/main/tag-lists/e621/e621_2026-04-01_pt20-ia-ed.csv",
+      "danbooru_cutoff": null,
+      "prompt_style":    "tags",
+      "_note": "Pony usa e621 como fuente primaria. Epsilon-pred SDXL: dpmpp_2m+karras."
+    },
+    {
+      "id": "sdxl-realistic",
+      "name": "SDXL Realista (Juggernaut, RealVis…)",
+      "family": "sdxl-realistic",
+      "checkpoint_keywords": ["juggernaut", "realvis", "realism", "realistic", "photon"],
+      "quality_prefix": "professional photo, high resolution, sharp focus, detailed",
+      "negative_base": "painting, drawing, anime, cartoon, lowres, blurry, watermark",
+      "rating_tags": {},
+      "defaults": {
+        "cfg":       7.0,
+        "steps":     25,
+        "sampler":   "dpmpp_2m",
+        "scheduler": "karras"
+      },
+      "tag_csv":         null,
+      "tag_csv_url":     null,
+      "danbooru_cutoff": null,
+      "prompt_style":    "natural",
+      "_note": "LAION/CLIP — lenguaje natural. dpmpp_2m+karras estándar para epsilon-pred SDXL."
+    },
+    {
+      "id": "flux",
+      "name": "Flux.1 (dev / schnell / Kontext)",
+      "family": "flux",
+      "checkpoint_keywords": ["flux"],
+      "quality_prefix": "",
+      "negative_base": "",
+      "rating_tags": {},
+      "defaults": {
+        "cfg":       1.0,
+        "steps":     20,
+        "sampler":   "euler",
+        "scheduler": "simple"
+      },
+      "tag_csv":         null,
+      "tag_csv_url":     null,
+      "danbooru_cutoff": null,
+      "prompt_style":    "natural",
+      "_note": "Flow matching — no difusión tradicional. CFG 1.0 (distilado). euler+simple. Dev: steps 20-28, schnell: 4-8."
+    }
+  ],
+  "default": "wai-illustrious"
+}

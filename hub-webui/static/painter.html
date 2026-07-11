@@ -314,6 +314,15 @@
 
     /* ── ADetailer ─────────────────────────────────────────────── */
     .ad-section { display:flex; flex-direction:column; gap:0; }
+    /* Secciones plegables del panel Generar (ControlNet / Regional / ADetailer) */
+    .mod-section { border:1px solid var(--border); border-radius:7px; overflow:hidden; flex-shrink:0; }
+    .mod-section > .ad-section-hdr { padding:8px 10px; background:var(--bg-input); width:100%; }
+    .mod-section-body { padding:8px 10px; display:flex; flex-direction:column; gap:10px; }
+    .sec-badge {
+      display:inline-block; font-size:9px; font-weight:700; letter-spacing:.5px;
+      padding:1px 6px; border-radius:8px; margin-left:6px; vertical-align:1px;
+      background:var(--accent-cyan); color:#04222a;
+    }
     .ad-section-hdr {
       display:flex; justify-content:space-between; align-items:center;
       background:none; border:none; color:var(--text-secondary);
@@ -773,9 +782,6 @@
           <option value="generate"   data-i18n="painter.tab_generate">Generar</option>
           <option value="outpaint"   data-i18n="painter.tab_outpaint">Outpaint</option>
           <option value="upscale"    data-i18n="painter.tab_upscale">Upscale</option>
-          <option value="controlnet" data-i18n="painter.tab_controlnet">ControlNet</option>
-          <option value="regional">Regional</option>
-          <option value="adetailer">ADetailer</option>
         </select>
       </div>
 
@@ -894,6 +900,187 @@
           </select>
         </div>
 
+        <div class="panel-divider"></div>
+
+        <!-- ── Sección: ControlNet (modificador de la generación) ─────── -->
+        <div class="mod-section">
+          <button class="ad-section-hdr" id="cn-sec-toggle" aria-expanded="false" type="button">
+            <span>ControlNet<span class="sec-badge" id="cn-sec-badge" style="display:none">ON</span></span>
+            <span class="ad-arrow">▾</span>
+          </button>
+          <div class="mod-section-body" id="cn-sec-body" style="display:none">
+            <p id="cn-disabled-msg" class="panel-note" style="display:none" data-i18n="painter.controlnet_disabled">Sin modelos ControlNet instalados.</p>
+            <div id="cn-controls">
+
+              <!-- Activar toggle -->
+              <div class="ctrl-group" style="flex-direction:row; align-items:center; gap:8px;">
+                <input type="checkbox" id="cn-enabled" style="accent-color:var(--accent-cyan); width:15px; height:15px; cursor:pointer;">
+                <label for="cn-enabled" class="ctrl-label" style="margin:0; cursor:pointer;" data-i18n="painter.cn_enable">Activar ControlNet</label>
+              </div>
+
+              <div id="cn-active-controls">
+                <!-- Imagen de guía -->
+                <div class="ctrl-group">
+                  <label class="ctrl-label" data-i18n="painter.cn_img_label">Imagen de guía</label>
+                  <div id="cn-img-drop" style="
+                    border:1px dashed var(--border); border-radius:6px;
+                    min-height:64px; display:flex; align-items:center; justify-content:center;
+                    cursor:pointer; overflow:hidden; position:relative; background:var(--bg-input);">
+                    <span id="cn-img-placeholder" class="panel-note" style="margin:0; font-size:10px;"
+                          data-i18n="painter.cn_img_drop">Arrastra o haz clic</span>
+                    <img id="cn-img-thumb" style="display:none; max-width:100%; max-height:120px; object-fit:contain;">
+                  </div>
+                  <button class="btn-secondary" id="btn-cn-use-canvas" style="margin-top:4px; font-size:11px; padding:3px 10px;"
+                          data-i18n="painter.cn_use_canvas">Usar imagen actual</button>
+                </div>
+
+                <!-- Preprocesador -->
+                <div class="ctrl-group">
+                  <label class="ctrl-label" data-i18n="painter.label_cn_preprocessor">Preprocesador</label>
+                  <select class="ctrl-select" id="sel-cn-prep">
+                    <option value="none">Sin preprocesar</option>
+                    <option value="CannyEdgePreprocessor">Canny (bordes)</option>
+                    <option value="MiDaS-DepthMapPreprocessor">Depth (MiDaS)</option>
+                    <option value="DWPreprocessor">Pose (DWPose)</option>
+                    <option value="HEDPreprocessor">Soft Edge (HED)</option>
+                    <option value="NormalBaePreprocessor">Normal Map</option>
+                  </select>
+                </div>
+
+                <!-- Modelo -->
+                <div class="ctrl-group">
+                  <label class="ctrl-label" data-i18n="painter.label_cn_model">Modelo ControlNet</label>
+                  <select class="ctrl-select" id="sel-cn-model"></select>
+                </div>
+
+                <!-- Tipo Union (visible solo con modelos Union) -->
+                <div class="ctrl-group" id="cn-union-row" style="display:none;">
+                  <label class="ctrl-label" data-i18n="painter.cn_union_type">Tipo (Union)</label>
+                  <select class="ctrl-select" id="sel-cn-type">
+                    <option value="openpose">Pose</option>
+                    <option value="depth">Depth</option>
+                    <option value="hed/pidi/scribble/ted">Soft Edge</option>
+                    <option value="canny/lineart/anime_lineart/mlsd">Canny</option>
+                    <option value="normal">Normal</option>
+                    <option value="segment">Segment</option>
+                    <option value="tile">Tile</option>
+                    <option value="repaint">Inpaint</option>
+                  </select>
+                </div>
+
+                <!-- Strength -->
+                <div class="ctrl-group">
+                  <label class="ctrl-label" data-i18n="painter.label_cn_strength">Strength</label>
+                  <div class="ctrl-range-row">
+                    <input type="range" class="ctrl-range" id="inp-cn-strength" min="0" max="2" step="0.05" value="1">
+                    <span class="range-val" id="cn-strength-val">1.00</span>
+                  </div>
+                </div>
+              </div><!-- /cn-active-controls -->
+            </div><!-- /cn-controls -->
+          </div>
+        </div>
+
+        <!-- ── Sección: Regional (máscaras R1-R4 sobre el canvas) ─────── -->
+        <div class="mod-section">
+          <button class="ad-section-hdr" id="reg-sec-toggle" aria-expanded="false" type="button">
+            <span>Regional<span class="sec-badge" id="reg-sec-badge" style="display:none">ON</span></span>
+            <span class="ad-arrow">▾</span>
+          </button>
+          <div class="mod-section-body" id="reg-sec-body" style="display:none">
+            <div class="ctrl-group" style="flex-direction:row; align-items:center; gap:8px;">
+              <input type="checkbox" id="reg-enabled" style="accent-color:var(--accent-cyan); width:15px; height:15px; cursor:pointer;">
+              <label for="reg-enabled" class="ctrl-label" style="margin:0; cursor:pointer;">Activar Regional</label>
+            </div>
+            <div id="reg-active-controls" style="display:none">
+              <p class="panel-note" style="margin:0 0 6px">Pinta cada región en el canvas con los botones R1–R4 y dale un prompt propio. Usa el checkpoint, negativo y parámetros de arriba; se genera con el botón Generar.</p>
+              <!-- Regiones R1-R4 (generadas por JS) -->
+              <div id="reg-regions"></div>
+              <p id="reg-sampler-note">Sampler: Euler + Normal (forzado)</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── Sección: ADetailer (retoque de la imagen actual) ───────── -->
+        <div class="mod-section">
+          <button class="ad-section-hdr" id="ad-sec-toggle" aria-expanded="false" type="button">
+            <span>ADetailer<span class="sec-badge" id="ad-sec-badge" style="display:none">ON</span></span>
+            <span class="ad-arrow">▾</span>
+          </button>
+          <div class="mod-section-body" id="ad-sec-body" style="display:none">
+            <!-- Estado de impact-pack: instalación pendiente -->
+            <div id="ad-install-panel" style="display:none; flex-direction:column; gap:8px; align-items:center; padding:12px; text-align:center;">
+              <p class="panel-note" style="font-style:normal; color:var(--text-secondary)">
+                ADetailer requiere <strong style="color:var(--text-primary)">comfyui-impact-pack</strong>,
+                un nodo de ComfyUI que no está instalado aún.
+              </p>
+              <div id="ad-install-log" style="display:none; width:100%; max-height:120px; overflow-y:auto;
+                background:var(--bg-input); border:1px solid var(--border); border-radius:6px;
+                padding:6px 10px; font-size:10px; font-family:var(--font-mono); text-align:left;
+                color:var(--text-secondary);"></div>
+              <button class="btn-generate" id="btn-ad-install" style="width:auto; padding:6px 20px;">
+                Instalar impact-pack
+              </button>
+              <p class="panel-note" id="ad-install-note">ComfyUI necesitará reiniciarse tras la instalación.</p>
+            </div>
+            <div id="ad-controls">
+              <!-- Detectores desplegable -->
+              <div class="ad-section">
+                <button class="ad-section-hdr" id="ad-det-toggle" aria-expanded="true">
+                  <span>Detectores</span>
+                  <span class="ad-arrow">▾</span>
+                </button>
+                <div id="ad-det-body">
+                  <!-- Las filas se generan por JS según _adDetectors -->
+                  <div id="ad-det-list"></div>
+                </div>
+              </div>
+
+              <div class="panel-divider"></div>
+
+              <!-- Parámetros -->
+              <div class="ctrl-group">
+                <label class="ctrl-label">Denoise</label>
+                <div class="ctrl-range-row">
+                  <input type="range" class="ctrl-range" id="ad-denoise" min="0" max="1" step="0.01" value="0.4">
+                  <span class="range-val" id="ad-denoise-val">0.40</span>
+                </div>
+              </div>
+              <div class="ctrl-group">
+                <label class="ctrl-label">Guide Size</label>
+                <input type="number" class="ctrl-input" id="ad-guide-size" value="512" min="256" max="1024" step="64">
+              </div>
+              <div class="ctrl-group">
+                <label class="ctrl-label">Threshold</label>
+                <div class="ctrl-range-row">
+                  <input type="range" class="ctrl-range" id="ad-threshold" min="0.1" max="1" step="0.05" value="0.5">
+                  <span class="range-val" id="ad-threshold-val">0.50</span>
+                </div>
+              </div>
+              <div class="ctrl-group">
+                <label class="ctrl-label">Dilation</label>
+                <input type="number" class="ctrl-input" id="ad-dilation" value="10" min="0" max="100" step="1">
+              </div>
+
+              <div class="panel-divider"></div>
+
+              <!-- Prompt override desplegable -->
+              <div class="ad-section">
+                <button class="ad-section-hdr" id="ad-prompt-toggle" aria-expanded="false">
+                  <span>Prompt override (opcional)</span>
+                  <span class="ad-arrow">▾</span>
+                </button>
+                <div id="ad-prompt-body" style="display:none">
+                  <p class="panel-note" style="margin-top:4px">Si está vacío, usa el prompt del tab Generar.</p>
+                  <textarea class="ctrl-textarea" id="ad-prompt-override" rows="3" placeholder="prompt de detalle…"></textarea>
+                </div>
+              </div>
+
+              <button class="btn-generate" id="btn-adetailer" style="margin-top:8px">Run ADetailer</button>
+            </div>
+          </div>
+        </div>
+
         <button class="btn-generate" id="btn-generate" data-i18n="painter.btn_generate">Generar</button>
         <button class="btn-action" id="btn-load-img-panel" data-i18n="painter.btn_load">↑ Cargar imagen</button>
       </div>
@@ -970,200 +1157,6 @@
         <button class="btn-action" id="btn-upscale" data-i18n="painter.btn_upscale">Upscale</button>
       </div>
 
-      <!-- Tab: Regional Conditioning -->
-      <div class="panel-body" id="tab-regional">
-        <div class="ctrl-group">
-          <label class="ctrl-label" data-i18n="painter.label_checkpoint">Checkpoint</label>
-          <select class="ctrl-select" id="reg-checkpoint"><option value="">Cargando…</option></select>
-        </div>
-        <div class="ctrl-group">
-          <label class="ctrl-label">Prompt Global</label>
-          <textarea class="ctrl-textarea" id="reg-global-prompt" style="min-height:52px" placeholder="Prompt base — coherencia de toda la imagen…"></textarea>
-        </div>
-        <div class="ctrl-group">
-          <label class="ctrl-label" data-i18n="painter.label_negative">Negativo</label>
-          <textarea class="ctrl-textarea" id="reg-negative" style="min-height:36px" rows="2" placeholder="worst quality, blurry…"></textarea>
-        </div>
-        <div class="panel-divider"></div>
-        <!-- Regiones R1-R4 (generadas por JS) -->
-        <div id="reg-regions"></div>
-        <div class="panel-divider"></div>
-        <div class="ctrl-row">
-          <div class="ctrl-group">
-            <label class="ctrl-label" data-i18n="painter.label_steps">Pasos</label>
-            <input type="number" class="ctrl-input" id="reg-steps" value="25" min="1" max="150">
-          </div>
-          <div class="ctrl-group">
-            <label class="ctrl-label" data-i18n="painter.label_cfg">CFG</label>
-            <input type="number" class="ctrl-input" id="reg-cfg" value="7" min="1" max="30" step="0.5">
-          </div>
-        </div>
-        <div class="ctrl-group">
-          <label class="ctrl-label" data-i18n="painter.label_denoise">Denoise</label>
-          <div class="ctrl-range-row">
-            <input type="range" class="ctrl-range" id="reg-denoise" min="0" max="1" step="0.01" value="0.85">
-            <span class="range-val" id="reg-denoise-val">0.85</span>
-          </div>
-        </div>
-        <div class="ctrl-group">
-          <label class="ctrl-label" data-i18n="painter.label_seed">Seed</label>
-          <div class="seed-row">
-            <input type="number" class="ctrl-input" id="reg-seed" value="-1">
-            <button id="reg-btn-randomize" title="Seed aleatorio">↺</button>
-          </div>
-        </div>
-        <p id="reg-sampler-note">Sampler: Euler + Normal (forzado)</p>
-        <button class="btn-generate" id="btn-regional">Regional</button>
-      </div>
-
-      <!-- Tab: ControlNet -->
-      <div class="panel-body" id="tab-controlnet">
-        <p id="cn-disabled-msg" class="panel-note" style="display:none" data-i18n="painter.controlnet_disabled">Sin modelos ControlNet instalados.</p>
-        <div id="cn-controls">
-
-          <!-- Activar toggle -->
-          <div class="ctrl-group" style="flex-direction:row; align-items:center; gap:8px;">
-            <input type="checkbox" id="cn-enabled" style="accent-color:var(--accent-cyan); width:15px; height:15px; cursor:pointer;">
-            <label for="cn-enabled" class="ctrl-label" style="margin:0; cursor:pointer;" data-i18n="painter.cn_enable">Activar ControlNet</label>
-          </div>
-
-          <div id="cn-active-controls">
-            <!-- Imagen de guía -->
-            <div class="ctrl-group">
-              <label class="ctrl-label" data-i18n="painter.cn_img_label">Imagen de guía</label>
-              <div id="cn-img-drop" style="
-                border:1px dashed var(--border); border-radius:6px;
-                min-height:64px; display:flex; align-items:center; justify-content:center;
-                cursor:pointer; overflow:hidden; position:relative; background:var(--bg-input);">
-                <span id="cn-img-placeholder" class="panel-note" style="margin:0; font-size:10px;"
-                      data-i18n="painter.cn_img_drop">Arrastra o haz clic</span>
-                <img id="cn-img-thumb" style="display:none; max-width:100%; max-height:120px; object-fit:contain;">
-              </div>
-              <button class="btn-secondary" id="btn-cn-use-canvas" style="margin-top:4px; font-size:11px; padding:3px 10px;"
-                      data-i18n="painter.cn_use_canvas">Usar imagen actual</button>
-            </div>
-
-            <!-- Preprocesador -->
-            <div class="ctrl-group">
-              <label class="ctrl-label" data-i18n="painter.label_cn_preprocessor">Preprocesador</label>
-              <select class="ctrl-select" id="sel-cn-prep">
-                <option value="none">Sin preprocesar</option>
-                <option value="CannyEdgePreprocessor">Canny (bordes)</option>
-                <option value="MiDaS-DepthMapPreprocessor">Depth (MiDaS)</option>
-                <option value="DWPreprocessor">Pose (DWPose)</option>
-                <option value="HEDPreprocessor">Soft Edge (HED)</option>
-                <option value="NormalBaePreprocessor">Normal Map</option>
-              </select>
-            </div>
-
-            <!-- Modelo -->
-            <div class="ctrl-group">
-              <label class="ctrl-label" data-i18n="painter.label_cn_model">Modelo ControlNet</label>
-              <select class="ctrl-select" id="sel-cn-model"></select>
-            </div>
-
-            <!-- Tipo Union (visible solo con modelos Union) -->
-            <div class="ctrl-group" id="cn-union-row" style="display:none;">
-              <label class="ctrl-label" data-i18n="painter.cn_union_type">Tipo (Union)</label>
-              <select class="ctrl-select" id="sel-cn-type">
-                <option value="0">Pose</option>
-                <option value="1">Depth</option>
-                <option value="2">Soft Edge</option>
-                <option value="3">Canny</option>
-                <option value="4">Normal</option>
-                <option value="5">Segment</option>
-                <option value="6">Tile</option>
-                <option value="7">Inpaint</option>
-              </select>
-            </div>
-
-            <!-- Strength -->
-            <div class="ctrl-group">
-              <label class="ctrl-label" data-i18n="painter.label_cn_strength">Strength</label>
-              <div class="ctrl-range-row">
-                <input type="range" class="ctrl-range" id="inp-cn-strength" min="0" max="2" step="0.05" value="1">
-                <span class="range-val" id="cn-strength-val">1.00</span>
-              </div>
-            </div>
-          </div><!-- /cn-active-controls -->
-        </div><!-- /cn-controls -->
-      </div>
-
-      <!-- Tab: ADetailer -->
-      <div class="panel-body" id="tab-adetailer">
-        <!-- Estado de impact-pack: instalación pendiente -->
-        <div id="ad-install-panel" style="display:none; flex-direction:column; gap:8px; align-items:center; padding:12px; text-align:center;">
-          <p class="panel-note" style="font-style:normal; color:var(--text-secondary)">
-            ADetailer requiere <strong style="color:var(--text-primary)">comfyui-impact-pack</strong>,
-            un nodo de ComfyUI que no está instalado aún.
-          </p>
-          <div id="ad-install-log" style="display:none; width:100%; max-height:120px; overflow-y:auto;
-            background:var(--bg-input); border:1px solid var(--border); border-radius:6px;
-            padding:6px 10px; font-size:10px; font-family:var(--font-mono); text-align:left;
-            color:var(--text-secondary);"></div>
-          <button class="btn-generate" id="btn-ad-install" style="width:auto; padding:6px 20px;">
-            Instalar impact-pack
-          </button>
-          <p class="panel-note" id="ad-install-note">ComfyUI necesitará reiniciarse tras la instalación.</p>
-        </div>
-        <div id="ad-controls">
-          <!-- Detectores desplegable -->
-          <div class="ad-section">
-            <button class="ad-section-hdr" id="ad-det-toggle" aria-expanded="true">
-              <span>Detectores</span>
-              <span class="ad-arrow">▾</span>
-            </button>
-            <div id="ad-det-body">
-              <!-- Las filas se generan por JS según _adDetectors -->
-              <div id="ad-det-list"></div>
-            </div>
-          </div>
-
-          <div class="panel-divider"></div>
-
-          <!-- Parámetros -->
-          <div class="ctrl-group">
-            <label class="ctrl-label">Denoise</label>
-            <div class="ctrl-range-row">
-              <input type="range" class="ctrl-range" id="ad-denoise" min="0" max="1" step="0.01" value="0.4">
-              <span class="range-val" id="ad-denoise-val">0.40</span>
-            </div>
-          </div>
-          <div class="ctrl-group">
-            <label class="ctrl-label">Guide Size</label>
-            <input type="number" class="ctrl-input" id="ad-guide-size" value="512" min="256" max="1024" step="64">
-          </div>
-          <div class="ctrl-group">
-            <label class="ctrl-label">Threshold</label>
-            <div class="ctrl-range-row">
-              <input type="range" class="ctrl-range" id="ad-threshold" min="0.1" max="1" step="0.05" value="0.5">
-              <span class="range-val" id="ad-threshold-val">0.50</span>
-            </div>
-          </div>
-          <div class="ctrl-group">
-            <label class="ctrl-label">Dilation</label>
-            <input type="number" class="ctrl-input" id="ad-dilation" value="10" min="0" max="100" step="1">
-          </div>
-
-          <div class="panel-divider"></div>
-
-          <!-- Prompt override desplegable -->
-          <div class="ad-section">
-            <button class="ad-section-hdr" id="ad-prompt-toggle" aria-expanded="false">
-              <span>Prompt override (opcional)</span>
-              <span class="ad-arrow">▾</span>
-            </button>
-            <div id="ad-prompt-body" style="display:none">
-              <p class="panel-note" style="margin-top:4px">Si está vacío, usa el prompt del tab Generar.</p>
-              <textarea class="ctrl-textarea" id="ad-prompt-override" rows="3" placeholder="prompt de detalle…"></textarea>
-            </div>
-          </div>
-
-          <button class="btn-generate" id="btn-adetailer" style="margin-top:8px">Run ADetailer</button>
-        </div>
-      </div>
-
-
     </div><!-- /p-panel -->
   </div><!-- /p-main -->
 
@@ -1175,6 +1168,8 @@
     <span>Tool: <span class="val" id="st-tool">Brush</span></span>
     <span id="st-warning" style="color:var(--accent-amber);display:none"></span>
     <span id="st-nodes-installing" style="display:none">⟳ Instalando nodos…</span>
+    <span id="st-shortcuts" style="margin-left:auto;opacity:.6"
+          title="B Brush · R Rect · L Lasso · W Wand · F Fill · E Eraser · X alterna borrador · [ ] tamaño de brush · Ctrl+Z/Y deshacer/rehacer · Esc cancela selección">⌨ Atajos</span>
   </footer>
 </div><!-- /painter -->
 
