@@ -1,0 +1,52 @@
+{
+  "_comment": "SDXL txt2img + SDXLSelectiveLoRALoader (exploración por bloques, Fase 4). Placeholders: model (ckpt_name), lora, lora_strength, prompt, negative, seed, steps, cfg, sampler, scheduler, width, height. Los toggles/dosis por bloque los inyecta explore.py mutando inputs del nodo 10 — el nodo escala TODOS los tensores del bloque, así que la strength actúa al cuadrado (o al cubo si el LoRA trae alpha) sobre el delta; explore.py pasa dosis**(1/exponente). text_encoder_1/2 y other_weights van SIEMPRE OFF (política: el merge nunca toca los TE; preview ≡ fichero).",
+  "1": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": { "ckpt_name": "{{model}}" }
+  },
+  "10": {
+    "class_type": "SDXLSelectiveLoRALoader",
+    "inputs": {
+      "model": ["1", 0],
+      "clip": ["1", 1],
+      "lora_name": "{{lora}}",
+      "strength": "{{lora_strength}}",
+      "preset": "Custom"
+    }
+  },
+  "4": {
+    "class_type": "CLIPTextEncode",
+    "inputs": { "text": "{{prompt}}", "clip": ["10", 1] }
+  },
+  "5": {
+    "class_type": "CLIPTextEncode",
+    "inputs": { "text": "{{negative}}", "clip": ["10", 1] }
+  },
+  "6": {
+    "class_type": "EmptyLatentImage",
+    "inputs": { "width": "{{width}}", "height": "{{height}}", "batch_size": 1 }
+  },
+  "7": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": ["10", 0],
+      "positive": ["4", 0],
+      "negative": ["5", 0],
+      "latent_image": ["6", 0],
+      "seed": "{{seed}}",
+      "steps": "{{steps}}",
+      "cfg": "{{cfg}}",
+      "sampler_name": "{{sampler}}",
+      "scheduler": "{{scheduler}}",
+      "denoise": 1.0
+    }
+  },
+  "8": {
+    "class_type": "VAEDecode",
+    "inputs": { "samples": ["7", 0], "vae": ["1", 2] }
+  },
+  "9": {
+    "class_type": "SaveImage",
+    "inputs": { "images": ["8", 0], "filename_prefix": "forge_lab_explore" }
+  }
+}

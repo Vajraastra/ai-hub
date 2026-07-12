@@ -38,7 +38,7 @@ CHECKPOINTS_DIR = _FORGE_ROOT / "data" / "checkpoints"
 # Python del venv de ComfyUI (torch + safetensors); ver handoff "Venvs".
 WORKER_PYTHON = _REPO_ROOT / "apps" / "comfyui" / "venv" / "Scripts" / "python.exe"
 
-# Subcarpeta de diffusion_models donde viven los derivados
+# Subcarpeta (dentro del weights_root de cada arquitectura) de los derivados
 DERIVED_SUBDIR = "forge_lab"
 
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
@@ -93,20 +93,75 @@ class MergeOrchestrator:
         # cache del catálogo: leer 1400+ headers cuesta ~5 s; con mtime+size
         # como llave solo se paga el primer escaneo y los ficheros nuevos
         self._lora_cache: dict[str, tuple[tuple, dict]] = {}
+        # cache de la arquitectura real de cada checkpoint (para filtrar el
+        # scan multi_base: un fichero z-image en checkpoints/ no es base sdxl)
+        self._ckpt_arch_cache: dict[str, tuple[tuple, str]] = {}
 
     # ── Catálogo de LoRAs ─────────────────────────────────────────────────
 
+    @staticmethod
+    def _header_matches_arch(hdr: dict, arch: str) -> bool:
+        """Detección de arquitectura por las claves/shapes del header.
+        zimage: claves diffusers del S3-DiT (lora_A de entrada 3840/256).
+        sdxl: formato kohya del UNet LDM con cross-attention de 2048
+        (attn2.to_k entra desde el pooled CLIP-L+G; en SD15 sería 768)."""
+        if arch == "zimage":
+            for k, v in hdr.items():
+                if k.startswith("diffusion_model.layers.") and ".lora_A." in k:
+                    return v.get("shape", [None, None])[1] in (3840, 256)
+        elif arch == "sdxl":
+            for k, v in hdr.items():
+                if (k.startswith("lora_unet_") and "attn2_to_k" in k
+                        and k.endswith(".lora_down.weight")):
+                    return v.get("shape", [None, None])[1] == 2048
+        return False
+
+    @staticmethod
+    def _checkpoint_header_arch(hdr: dict) -> str:
+        """Arquitectura de un checkpoint COMPLETO por sus claves de tensor.
+        SDXL: UNet LDM (`model.diffusion_model.input_blocks.*`). Z-Image:
+        DiT (`...layers.N` o claves desnudas del S3-DiT). '' si no se
+        reconoce (no se ofrece como base de ninguna arquitectura)."""
+        keys = hdr.keys()
+        for k in keys:
+            if k.startswith("model.diffusion_model.input_blocks."):
+                return "sdxl"
+        for k in keys:
+            if (k.startswith("model.diffusion_model.layers.")
+                    or k.startswith("layers.")):
+                return "zimage"
+        return ""
+
+    def _checkpoint_arch(self, path: Path) -> str:
+        """Arquitectura detectada de un checkpoint, cacheada por mtime+size."""
+        try:
+            st = path.stat()
+        except OSError:
+            return ""
+        stamp = (st.st_mtime_ns, st.st_size)
+        cached = self._ckpt_arch_cache.get(str(path))
+        if cached and cached[0] == stamp:
+            return cached[1]
+        try:
+            hdr, _ = _read_st_header(path)
+            arch = self._checkpoint_header_arch(hdr)
+        except Exception:
+            arch = ""
+        self._ckpt_arch_cache[str(path)] = (stamp, arch)
+        return arch
+
     def list_loras(self, arch: str = "zimage") -> list[dict]:
-        """LoRAs del almacén con detección de arquitectura por header.
-        Detección zimage: metadata de entrenamiento o claves diffusers del
-        S3-DiT (diffusion_model.layers + lora_A de entrada 3840/256)."""
+        """LoRAs del almacén con detección de arquitectura por header
+        (metadata de entrenamiento o claves/shapes, ver _header_matches_arch)."""
         base = self.models_root / "loras"
         out = []
         if not base.exists():
             return out
         for p in sorted(base.rglob("*.safetensors")):
             st = p.stat()
-            cache_key, stamp = str(p), (st.st_mtime_ns, st.st_size)
+            # arch va en la llave: la entrada cacheada depende de la
+            # arquitectura consultada (arch_match, base_model…)
+            cache_key, stamp = f"{arch}::{p}", (st.st_mtime_ns, st.st_size)
             cached = self._lora_cache.get(cache_key)
             if cached and cached[0] == stamp:
                 out.append(cached[1])
@@ -117,20 +172,18 @@ class MergeOrchestrator:
                 continue    # fichero raro: no es motivo para tirar el catálogo
             base_model = (meta.get("ss_base_model_version")
                           or meta.get("ss_base_model") or "")
-            is_arch = arch.lower() in base_model.lower()
-            if not is_arch and arch == "zimage":
-                for k, v in hdr.items():
-                    if k.startswith("diffusion_model.layers.") and ".lora_A." in k:
-                        is_arch = v.get("shape", [None, None])[1] in (3840, 256)
-                        break
+            is_arch = (arch.lower() in base_model.lower()
+                       or self._header_matches_arch(hdr, arch))
             rank = max((v["shape"][0] for k, v in hdr.items()
-                        if k.endswith("lora_A.weight")), default=None)
+                        if k.endswith(("lora_A.weight", "lora_down.weight"))),
+                       default=None)
             entry = {
                 "file": p.relative_to(base).as_posix(),
                 "name": p.stem,
                 "subfolder": ("" if p.parent == base
                               else p.parent.relative_to(base).as_posix()),
                 "size_bytes": st.st_size,
+                "mtime": st.st_mtime,          # orden "recientes" del picker
                 "arch_match": is_arch,
                 "base_model": base_model or None,
                 "rank": rank,
@@ -160,26 +213,54 @@ class MergeOrchestrator:
 
     # ── Registro de checkpoints ───────────────────────────────────────────
 
-    def derived_dir(self) -> Path:
-        return self.models_root / "diffusion_models" / DERIVED_SUBDIR
+    def derived_dir(self, arch: str) -> Path:
+        from .architectures import get_adapter
+        return self.models_root / get_adapter(arch).weights_root / DERIVED_SUBDIR
 
-    def _official_entry(self, arch: str) -> dict:
+    def _official_entries(self, arch: str) -> list[dict]:
+        """Bases oficiales elegibles. Layout por piezas (zimage): solo la
+        configurada en model_files. multi_base (sdxl): todo checkpoint del
+        weights_root fuera de forge_lab/ es base válida."""
+        from .architectures import get_adapter
         from .model_config import model_files, loader_name
-        rel = model_files(arch)["diffusion_model"]
-        path = self.models_root / rel
-        name = Path(rel).name
-        return {
-            "kind": "official", "name": name.removesuffix(".safetensors"),
-            "arch": arch, "file": Path(rel).relative_to("diffusion_models").as_posix(),
-            "unet_name": loader_name(rel),   # subpath con os.sep si está anidado
-            "present": path.exists(),
-            "size_bytes": path.stat().st_size if path.exists() else None,
-            "label": "base oficial (De-Turbo)",
-        }
+        adapter = get_adapter(arch)
+        root = adapter.weights_root
+
+        def entry(rel: str, label: str) -> dict:
+            path = self.models_root / rel
+            return {
+                "kind": "official",
+                "name": Path(rel).name.removesuffix(".safetensors"),
+                "arch": arch, "file": Path(rel).relative_to(root).as_posix(),
+                "unet_name": loader_name(rel),  # subpath con os.sep si anidado
+                "present": path.exists(),
+                "size_bytes": path.stat().st_size if path.exists() else None,
+                "has_preview": _find_preview(path) is not None,
+                "label": label,
+            }
+
+        if not adapter.multi_base:
+            rel = model_files(arch)["diffusion_model"]
+            return [entry(rel, "base oficial (De-Turbo)")]
+        base = self.models_root / root
+        out = []
+        if base.exists():
+            for p in sorted(base.rglob("*.safetensors")):
+                rel = p.relative_to(self.models_root).as_posix()
+                if rel.startswith(f"{root}/{DERIVED_SUBDIR}/"):
+                    continue
+                # filtro por arquitectura real: otros modelos que compartan la
+                # carpeta checkpoints/ (p.ej. z-image) no son base sdxl
+                if self._checkpoint_arch(p) != arch:
+                    continue
+                out.append(entry(rel, "checkpoint del almacén"))
+        return out
 
     def list_checkpoints(self, arch: str = "zimage") -> list[dict]:
-        """Base oficial + derivados (linaje completo), más antiguos primero."""
-        out = [self._official_entry(arch)]
+        """Bases oficiales + derivados (linaje completo), oficiales primero."""
+        from .architectures import get_adapter
+        weights_root = get_adapter(arch).weights_root
+        out = self._official_entries(arch)
         if CHECKPOINTS_DIR.exists():
             for f in sorted(CHECKPOINTS_DIR.glob("*.json")):
                 d = json.loads(f.read_text(encoding="utf-8"))
@@ -188,9 +269,12 @@ class MergeOrchestrator:
                 d["kind"] = "derived"
                 # unet_name = ruta que ComfyUI lista en Windows (os.sep)
                 d["unet_name"] = d["file"].replace("/", os.sep)
-                d["present"] = (self.models_root / "diffusion_models" / d["file"]).exists()
+                wpath = self.models_root / weights_root / d["file"]
+                d["present"] = wpath.exists()
+                d["has_preview"] = _find_preview(wpath) is not None
                 out.append(d)
-        out.sort(key=lambda e: (e["kind"] != "official", e.get("created_at") or ""))
+        out.sort(key=lambda e: (e["kind"] != "official",
+                                e.get("created_at") or "", e["name"]))
         return out
 
     def get_checkpoint(self, name: str, arch: str = "zimage") -> dict:
@@ -199,14 +283,27 @@ class MergeOrchestrator:
                 return c
         raise MergeError(f"no existe el checkpoint {name!r}")
 
+    def checkpoint_preview_path(self, name: str, arch: str = "zimage") -> Path:
+        """Path del preview .preview.* de un checkpoint (oficial o derivado)."""
+        from .architectures import get_adapter
+        c = self.get_checkpoint(name, arch)
+        weights_root = get_adapter(arch).weights_root
+        weight = self.models_root / weights_root / c["file"]
+        prev = _find_preview(weight)
+        if prev is None:
+            raise MergeError(f"el checkpoint {name!r} no tiene preview")
+        return prev
+
     def delete_checkpoint(self, name: str):
         """Borra un derivado (peso + registro). El linaje de otros derivados
         que lo referencien queda como histórico (texto), igual que los runs."""
+        from .architectures import get_adapter
         reg = CHECKPOINTS_DIR / f"{name}.json"
         if not reg.exists():
             raise MergeError(f"no existe el checkpoint derivado {name!r}")
         d = json.loads(reg.read_text(encoding="utf-8"))
-        weight = self.models_root / "diffusion_models" / d["file"]
+        weights_root = get_adapter(d["arch"]).weights_root
+        weight = self.models_root / weights_root / d["file"]
         if weight.exists():
             weight.unlink()
         reg.unlink()
@@ -234,10 +331,12 @@ class MergeOrchestrator:
         if not 0.0 < strength <= 2.0:
             raise MergeError(f"strength {strength} fuera de rango razonable (0–2]")
 
+        from .architectures import get_adapter
+        weights_root = get_adapter(arch).weights_root
         base_entry = self.get_checkpoint(base, arch)
         if not base_entry["present"]:
             raise MergeError(f"el checkpoint base {base!r} no está en disco")
-        base_path = self.models_root / "diffusion_models" / base_entry["file"]
+        base_path = self.models_root / weights_root / base_entry["file"]
 
         lora_path = self.models_root / "loras" / lora_file
         if not lora_path.is_file():
@@ -245,7 +344,7 @@ class MergeOrchestrator:
         _, lora_meta = _read_st_header(lora_path)
 
         out_rel = f"{DERIVED_SUBDIR}/{name}.safetensors"
-        out_path = self.models_root / "diffusion_models" / out_rel
+        out_path = self.models_root / weights_root / out_rel
         if out_path.exists():
             raise MergeError(f"ya existe el fichero {out_rel!r}")
 
@@ -290,7 +389,8 @@ class MergeOrchestrator:
             "sha256": sha,
             "size_bytes": out_path.stat().st_size,
             "worker": {k: result[k] for k in
-                       ("merged_tensors", "lora_pairs", "skipped_blocks")},
+                       ("merged_tensors", "lora_pairs", "skipped_blocks",
+                        "skipped_policy") if k in result},
         }
         CHECKPOINTS_DIR.mkdir(parents=True, exist_ok=True)
         (CHECKPOINTS_DIR / f"{name}.json").write_text(

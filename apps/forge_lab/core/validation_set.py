@@ -267,9 +267,12 @@ class ValidationSet:
             _cb(0, self.sampling["steps"])
             params = {"model": model, "prompt": p["text"],
                       "negative": p["negative"], "seed": p["seed"],
-                      "text_encoder": loader_name(files["text_encoder"]),
-                      "vae": loader_name(files["vae"]),
                       **self.sampling, **(extra_params or {})}
+            # layouts por piezas cargan TE/VAE aparte; un checkpoint
+            # completo (sdxl) no tiene estas claves
+            for k in ("text_encoder", "vae"):
+                if files.get(k):
+                    params[k] = loader_name(files[k])
             t0 = time.time()
             png = await comfy.run_workflow(template, params, on_progress=_cb)
             fname = f"{p['id']}.png"
@@ -283,9 +286,10 @@ class ValidationSet:
             "fingerprint": self.fingerprint(), "draft": not self.locked,
             "model": model_desc or model, "label": label,
             # trazabilidad: con qué TE/VAE se generó (si cambian, los runs
-            # anteriores dejan de ser comparables y esto es la evidencia)
-            "model_files": {"text_encoder": files["text_encoder"],
-                            "vae": files["vae"]},
+            # anteriores dejan de ser comparables y esto es la evidencia);
+            # en checkpoint completo van dentro del propio fichero
+            "model_files": {k: files[k] for k in ("text_encoder", "vae")
+                            if files.get(k)},
             "sampling": dict(self.sampling),
             "started_at": started, "finished_at": _now(),
             "seconds": round(time.time() - t_run, 1),

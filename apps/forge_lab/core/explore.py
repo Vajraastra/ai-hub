@@ -9,19 +9,27 @@ Flujo (visión del usuario, sesión 2026-07-04):
   4. Config buena → confirmar regenerando el set de validación en runtime.
   5. Convencido → merge a fichero con esa misma config (misma matemática).
 
-Las imágenes de exploración son TEMPORALES a propósito (no acumular): viven
-en data/explore_tmp/ y se borran al crear otra sesión o cerrarla. Lo único
-que merece persistir de una exploración es la config ganadora, y esa acaba
-en el linaje del checkpoint mergeado y/o en el label del run de confirmación.
+Los trabajos (generaciones) PERSISTEN en disco (data/explore_tmp/: session.json
++ <gen_id>.png) y sobreviven al cierre del hub/navegador. El borrado es siempre
+MANUAL: papelera por trabajo (delete_generation), vaciar el historial
+conservando la sesión (clear_generations) o descartar la sesión entera para
+empezar otra config (clear_session). Antes eran efímeros y se autoborraban;
+ahora el usuario decide. La config ganadora además acaba en el linaje del
+checkpoint mergeado y/o en el label del run de confirmación.
 
-Dosis lineal vs nodo: ZImageSelectiveLoRALoader multiplica lora_A Y lora_B
-por layer_N_str, así que su efecto sobre el delta (B@A) es CUADRÁTICO. Aquí
-la dosis del usuario es lineal (0.5 = 50% del delta) y al nodo se le pasa
-sqrt(dosis); el merge usa la dosis tal cual (strength × dosis). Así preview
-runtime ≡ checkpoint final. Verificado empíricamente (test de equivalencia).
+Config de bloques (genérica, ids del adaptador):
+  {"blocks": {"layers.0": dosis, ...}, "other": dosis}
+  dosis 0 (o ausente) = bloque apagado; 1.0 = efecto completo; LINEAL.
+
+Dosis lineal vs nodo: los nodos selectivos de Realtime-Lora multiplican
+TODOS los tensores del bloque por su strength, así que el efecto sobre el
+delta es strength² (lora_up×lora_down) o strength³ si el LoRA trae alpha
+(kohya/SDXL). El exponente se detecta del header del LoRA al crear la sesión
+y al nodo se le pasa dosis**(1/exponente); el merge usa la dosis tal cual
+(strength × dosis). Así preview runtime ≡ checkpoint final. Verificado
+empíricamente en zimage (test de equivalencia, 2026-07-04).
 """
 import json
-import math
 import os
 import shutil
 import time
@@ -36,8 +44,6 @@ from .comfy_client import load_workflow
 EXPLORE_DIR = Path(__file__).parent.parent / "data" / "explore_tmp"
 _SESSION_FILE = EXPLORE_DIR / "session.json"
 
-N_LAYERS = 30
-
 
 class ExploreError(Exception):
     pass
@@ -48,64 +54,68 @@ def _now() -> str:
 
 
 # ── Config de bloques ──────────────────────────────────────────────────────
-# Formato: {"layers": {"0": dosis, ..., "29": dosis}, "other": dosis}
-# dosis 0 (o ausente) = bloque apagado; 1.0 = efecto completo; lineal.
 
-def normalize_config(config: dict) -> dict:
-    layers = {}
-    for i in range(N_LAYERS):
-        d = float((config.get("layers") or {}).get(str(i), 0.0))
+def _switch_ids(arch: str) -> tuple[list[str], bool]:
+    """(ids de bloque reales, ¿hay pseudo-bloque "other"?)."""
+    sw = [s["id"] for s in get_adapter(arch).explore_switches()]
+    has_other = "other" in sw
+    return [s for s in sw if s != "other"], has_other
+
+
+def normalize_config(config: dict, arch: str) -> dict:
+    block_ids, has_other = _switch_ids(arch)
+    raw = config.get("blocks") or {}
+    unknown = set(raw) - set(block_ids)
+    if unknown:
+        raise ExploreError(f"bloques desconocidos para {arch!r}: "
+                           f"{sorted(unknown)[:5]}")
+    blocks = {}
+    for b in block_ids:
+        d = float(raw.get(b, 0.0))
         if d < 0:
-            raise ExploreError(f"dosis negativa en layers.{i} (no soportado: "
-                               "la conversión sqrt al nodo la impide)")
-        layers[str(i)] = round(d, 4)
-    other = float(config.get("other", 0.0))
+            raise ExploreError(f"dosis negativa en {b} (no soportado: la "
+                               "conversión a strength del nodo la impide)")
+        blocks[b] = round(d, 4)
+    other = float(config.get("other", 0.0)) if has_other else 0.0
     if other < 0:
         raise ExploreError("dosis negativa en 'other' (no soportado)")
-    return {"layers": layers, "other": round(other, 4)}
+    return {"blocks": blocks, "other": round(other, 4)}
 
 
-def full_config() -> dict:
-    return {"layers": {str(i): 1.0 for i in range(N_LAYERS)}, "other": 1.0}
+def full_config(arch: str) -> dict:
+    block_ids, has_other = _switch_ids(arch)
+    return {"blocks": {b: 1.0 for b in block_ids},
+            "other": 1.0 if has_other else 0.0}
 
 
-def node_inputs(config: dict) -> dict:
-    """Inputs del ZImageSelectiveLoRALoader para una config (dosis lineal →
-    sqrt para compensar el escalado cuadrático del nodo)."""
-    out = {}
-    for i in range(N_LAYERS):
-        d = config["layers"][str(i)]
-        out[f"layer_{i}"] = d > 0
-        out[f"layer_{i}_str"] = round(math.sqrt(d), 6) if d > 0 else 1.0
-    out["other_weights"] = config["other"] > 0
-    out["other_weights_str"] = (round(math.sqrt(config["other"]), 6)
-                                if config["other"] > 0 else 1.0)
-    return out
+def node_inputs(config: dict, arch: str, exponent: int) -> dict:
+    """Inputs del nodo selectivo (nodo "10" del workflow) para una config
+    normalizada, con la conversión de dosis lineal → strength del nodo."""
+    return get_adapter(arch).selective_node_inputs(config, exponent)
 
 
-def config_to_merge_blocks(config: dict) -> dict[str, float]:
+def config_to_merge_blocks(config: dict, arch: str) -> dict[str, float]:
     """Config de exploración → parámetro `blocks` del merge worker."""
-    blocks = {f"layers.{i}": d
-              for i, d in ((int(k), v) for k, v in config["layers"].items())
-              if d > 0}
-    if config["other"] > 0:
-        blocks["noise_refiner"] = config["other"]
-        blocks["context_refiner"] = config["other"]
+    blocks = get_adapter(arch).config_to_merge_blocks(config)
     if not blocks:
         raise ExploreError("config vacía: todos los bloques apagados")
-    return dict(sorted(blocks.items()))
+    return blocks
 
 
-def config_summary(config: dict) -> str:
-    """Resumen corto y legible ("28 ON, 2 OFF (7,9), dosis: 20=0.5")."""
-    off = [k for k, d in config["layers"].items() if d == 0]
-    dosed = [f"{k}={d}" for k, d in config["layers"].items() if 0 < d != 1.0]
-    parts = [f"{N_LAYERS - len(off)}/{N_LAYERS} ON"]
+def config_summary(config: dict, arch: str) -> str:
+    """Resumen corto y legible ("28/30 ON · OFF: 7,9 · dosis: 20=0.5")."""
+    switches = get_adapter(arch).explore_switches()
+    labels = {s["id"]: s["label"] for s in switches}
+    blocks = config["blocks"]
+    off = [labels[b].split(" ")[0] for b in blocks if blocks[b] == 0]
+    dosed = [f"{labels[b].split(' ')[0]}={d}"
+             for b, d in blocks.items() if 0 < d != 1.0]
+    parts = [f"{len(blocks) - len(off)}/{len(blocks)} ON"]
     if off:
-        parts.append("OFF: " + ",".join(sorted(off, key=int)))
+        parts.append("OFF: " + ",".join(off))
     if dosed:
         parts.append("dosis: " + ",".join(dosed))
-    if config["other"] != 1.0:
+    if "other" in labels and config.get("other", 0.0) != 1.0:
         parts.append(f"other={config['other']}")
     return " · ".join(parts)
 
@@ -133,16 +143,30 @@ def clear_session():
 
 def create_session(arch: str, checkpoint: str, model: str, lora: str,
                    strength: float, prompt: str, negative: str, seed: int,
-                   sampling: dict | None = None) -> dict:
+                   sampling: dict | None = None,
+                   models_root: Path | None = None) -> dict:
     """Arranca una sesión nueva (borra la anterior, imágenes incluidas).
 
     checkpoint: nombre en el registro (para el merge final).
-    model: unet_name que entiende ComfyUI. lora: ruta relativa posix."""
+    model: unet/ckpt_name que entiende ComfyUI. lora: ruta relativa posix.
+    models_root: almacén global; si se da, se lee el header del LoRA para
+    fijar el exponente de dosis (3 con alpha, 2 sin él)."""
     adapter = get_adapter(arch)
     if not str(prompt).strip():
         raise ExploreError("prompt vacío")
     if not 0.0 < float(strength) <= 2.0:
         raise ExploreError(f"strength {strength} fuera de rango (0–2]")
+
+    exponent = 2
+    if models_root is not None:
+        from .merge import _read_st_header
+        lora_path = Path(models_root) / "loras" / lora
+        if not lora_path.is_file():
+            raise ExploreError(f"no existe el LoRA {lora!r}")
+        hdr, _ = _read_st_header(lora_path)
+        exponent = adapter.dose_exponent(
+            lora_has_alpha=any(k.endswith(".alpha") for k in hdr))
+
     clear_session()
     session = {
         "id": uuid.uuid4().hex[:8],
@@ -152,6 +176,7 @@ def create_session(arch: str, checkpoint: str, model: str, lora: str,
         "model": model,
         "lora": lora,
         "strength": float(strength),
+        "dose_exponent": exponent,
         "prompt": {"text": str(prompt).strip(),
                    "negative": str(negative or "").strip(),
                    "seed": int(seed)},
@@ -159,6 +184,42 @@ def create_session(arch: str, checkpoint: str, model: str, lora: str,
         "reference": None,
         "generations": [],
     }
+    _save(session)
+    return session
+
+
+def delete_generation(gen_id: str) -> dict:
+    """Borra un trabajo (entry + imagen). Si era la referencia, la reasigna al
+    último que quede (o None)."""
+    session = get_session()
+    if not session:
+        raise ExploreError("no hay sesión de exploración activa")
+    gens = session["generations"]
+    idx = next((i for i, g in enumerate(gens) if g["id"] == gen_id), None)
+    if idx is None:
+        raise ExploreError(f"no existe la generación {gen_id!r}")
+    gens.pop(idx)
+    img = EXPLORE_DIR / f"{gen_id}.png"
+    if img.exists():
+        img.unlink()
+    if session["reference"] == gen_id:
+        session["reference"] = gens[-1]["id"] if gens else None
+    _save(session)
+    return session
+
+
+def clear_generations() -> dict:
+    """Vacía el historial de trabajos (imágenes incluidas) CONSERVANDO la
+    sesión y su config (misma base/LoRA/prompt para seguir generando)."""
+    session = get_session()
+    if not session:
+        raise ExploreError("no hay sesión de exploración activa")
+    for g in session["generations"]:
+        img = EXPLORE_DIR / f"{g['id']}.png"
+        if img.exists():
+            img.unlink()
+    session["generations"] = []
+    session["reference"] = None
     _save(session)
     return session
 
@@ -182,40 +243,47 @@ def image_path(gen_id: str) -> Path:
     return p
 
 
-async def generate(comfy, config: dict,
-                   on_progress: Callable[[int, int], None] | None = None) -> dict:
-    """Genera una variante con la config dada y la añade a la sesión.
-    La primera generación queda como referencia automáticamente."""
-    session = get_session()
-    if not session:
-        raise ExploreError("no hay sesión de exploración activa")
-    config = normalize_config(config)
+async def _render(session: dict, config: dict, prompt: dict,
+                  comfy,
+                  on_progress: Callable[[int, int], None] | None = None
+                  ) -> tuple[bytes, dict, float]:
+    """Corre el workflow selectivo (nodo "10") con la config de bloques dada y
+    un prompt dado. Devuelve (png, config_normalizada, segundos). No toca la
+    sesión en disco: sirve tanto a la exploración (prompt de sesión) como a la
+    batería (config fija × N prompts)."""
+    arch = session["arch"]
+    adapter = get_adapter(arch)
+    config = normalize_config(config, arch)
 
-    template = load_workflow("txt2img_lora_selective.json", session["arch"])
-    template["10"]["inputs"].update(node_inputs(config))
+    template = load_workflow(adapter.workflow_name("txt2img_lora_selective"),
+                             arch)
+    exponent = session.get("dose_exponent", 2)
+    template["10"]["inputs"].update(node_inputs(config, arch, exponent))
     from .model_config import model_files, loader_name
-    files = model_files(session["arch"])
+    files = model_files(arch)
     params = {
         "model": session["model"],
         "lora": session["lora"].replace("/", os.sep),
         "lora_strength": session["strength"],
-        "prompt": session["prompt"]["text"],
-        "negative": session["prompt"]["negative"],
-        "seed": session["prompt"]["seed"],
-        "text_encoder": loader_name(files["text_encoder"]),
-        "vae": loader_name(files["vae"]),
+        "prompt": prompt["text"],
+        "negative": prompt.get("negative", ""),
+        "seed": int(prompt["seed"]),
         **session["sampling"],
     }
+    # layouts por piezas cargan TE/VAE aparte; el checkpoint completo no
+    for k in ("text_encoder", "vae"):
+        if files.get(k):
+            params[k] = loader_name(files[k])
     t0 = time.time()
     png = await comfy.run_workflow(template, params, on_progress=on_progress)
+    return png, config, round(time.time() - t0, 1)
 
-    gen = {"id": uuid.uuid4().hex[:8], "config": config,
-           "summary": config_summary(config),
-           "seconds": round(time.time() - t0, 1), "created_at": _now()}
+
+def _append_generation(gen: dict, png: bytes) -> dict:
+    """Escribe la imagen y añade el trabajo a la sesión (releyéndola por si
+    cambió durante la generación). La primera queda como referencia."""
     EXPLORE_DIR.mkdir(parents=True, exist_ok=True)
     (EXPLORE_DIR / f"{gen['id']}.png").write_bytes(png)
-
-    # releer por si algo cambió durante la generación (p. ej. referencia)
     session = get_session()
     if not session:
         raise ExploreError("la sesión se cerró durante la generación")
@@ -223,4 +291,45 @@ async def generate(comfy, config: dict,
     if session["reference"] is None:
         session["reference"] = gen["id"]
     _save(session)
+    return session
+
+
+async def generate(comfy, config: dict,
+                   on_progress: Callable[[int, int], None] | None = None) -> dict:
+    """Genera una variante con la config dada (prompt fijo de la sesión) y la
+    añade al historial. La primera generación queda como referencia."""
+    session = get_session()
+    if not session:
+        raise ExploreError("no hay sesión de exploración activa")
+    arch = session["arch"]
+    png, config, secs = await _render(session, config, session["prompt"],
+                                      comfy, on_progress)
+    gen = {"id": uuid.uuid4().hex[:8], "config": config,
+           "summary": config_summary(config, arch),
+           "seconds": secs, "created_at": _now()}
+    _append_generation(gen, png)
+    return gen
+
+
+async def generate_battery_item(comfy, config: dict, prompt: dict,
+                                battery: str, battery_label: str = "",
+                                on_progress: Callable[[int, int], None] | None = None
+                                ) -> dict:
+    """Genera un ítem de batería: MISMA config de bloques, prompt de la batería.
+    El trabajo queda marcado (`battery`, `prompt_id`, `prompt_text`) para que el
+    historial lo muestre por prompt y no por config."""
+    session = get_session()
+    if not session:
+        raise ExploreError("no hay sesión de exploración activa")
+    arch = session["arch"]
+    png, config, secs = await _render(session, config, prompt,
+                                      comfy, on_progress)
+    label = prompt.get("id") or prompt["text"][:32]
+    gen = {"id": uuid.uuid4().hex[:8], "config": config,
+           "summary": f"🔋 {label}",
+           "battery": battery, "battery_label": battery_label,
+           "prompt_id": prompt.get("id", ""),
+           "prompt_text": prompt["text"], "seed": int(prompt["seed"]),
+           "seconds": secs, "created_at": _now()}
+    _append_generation(gen, png)
     return gen

@@ -15,7 +15,7 @@ Reglas duras de la variante:
   - Merge/entrenamiento SIEMPRE sobre De-Turbo; el Turbo destilado colapsa.
   - Inferencia De-Turbo: CFG 2.0–3.0, 20–30 steps (Turbo usaba cfg=1).
 """
-from .base import ArchAdapter, BlockGroup, ModelFiles, SamplingDefaults
+from .base import ArchAdapter, BlockGroup, SamplingDefaults
 
 _N_LAYERS = 30
 
@@ -24,12 +24,28 @@ class ZImageAdapter(ArchAdapter):
     name = "zimage"
     label = "Z-Image (De-Turbo)"
 
-    def model_files(self) -> ModelFiles:
-        return ModelFiles(
-            diffusion_model="diffusion_models/z_image_de_turbo_v1_bf16.safetensors",
-            text_encoder="clip/qwen_3_4b.safetensors",
-            vae="vae/ae.safetensors",   # ZImage usa latent_formats.Flux (VAE de Flux)
-        )
+    # layout por piezas: DiT suelto en diffusion_models/, claves desnudas
+    weights_root = "diffusion_models"
+    container_prefix = ""
+    multi_base = False
+
+    def file_keys(self) -> dict[str, tuple[str, ...]]:
+        return {
+            "diffusion_model": ("diffusion_models",),
+            "text_encoder": ("clip", "text_encoders"),
+            "vae": ("vae",),
+        }
+
+    def model_files(self) -> dict[str, str]:
+        return {
+            "diffusion_model": "diffusion_models/z_image_de_turbo_v1_bf16.safetensors",
+            "text_encoder": "clip/qwen_3_4b.safetensors",
+            "vae": "vae/ae.safetensors",  # ZImage usa latent_formats.Flux (VAE de Flux)
+        }
+
+    def required_nodes(self) -> list[str]:
+        return ["ZImageSelectiveLoRALoader", "LoRALoaderWithAnalysis",
+                "ScheduledLoRALoader"]
 
     def list_blocks(self) -> list[str]:
         return (["noise_refiner", "context_refiner"]
@@ -86,6 +102,34 @@ class ZImageAdapter(ArchAdapter):
             m[f"{p}.adaLN_modulation.0"] = (f"{p}.adaLN_modulation.0.weight", None)
         return m
 
+    # ── Exploración (ZImageSelectiveLoRALoader) ───────────────────────────
+
+    def explore_switches(self) -> list[dict]:
+        return ([{"id": f"layers.{i}", "label": str(i)} for i in range(_N_LAYERS)]
+                + [{"id": "other", "label": "other (refiners+resto)"}])
+
+    def selective_node_inputs(self, config: dict, exponent: int) -> dict:
+        out = {}
+        for i in range(_N_LAYERS):
+            d = config["blocks"].get(f"layers.{i}", 0.0)
+            out[f"layer_{i}"] = d > 0
+            out[f"layer_{i}_str"] = round(d ** (1 / exponent), 6) if d > 0 else 1.0
+        other = config.get("other", 0.0)
+        out["other_weights"] = other > 0
+        out["other_weights_str"] = (round(other ** (1 / exponent), 6)
+                                    if other > 0 else 1.0)
+        return out
+
+    def config_to_merge_blocks(self, config: dict) -> dict[str, float]:
+        blocks = {b: d for b, d in config["blocks"].items() if d > 0}
+        # "other" del nodo cubre las claves fuera de layers.*: en los LoRAs
+        # de Z-Image eso son los refiners (los embedders no se entrenan)
+        other = config.get("other", 0.0)
+        if other > 0:
+            blocks["noise_refiner"] = other
+            blocks["context_refiner"] = other
+        return dict(sorted(blocks.items()))
+
     def sampling_defaults(self) -> SamplingDefaults:
         return SamplingDefaults(
             cfg=2.5, steps=25,           # rango De-Turbo: CFG 2.0–3.0, 20–30
@@ -94,4 +138,5 @@ class ZImageAdapter(ArchAdapter):
         )
 
     def workflow_name(self, task: str) -> str:
-        return {"txt2img": "txt2img.json"}[task]
+        return {"txt2img": "txt2img.json",
+                "txt2img_lora_selective": "txt2img_lora_selective.json"}[task]

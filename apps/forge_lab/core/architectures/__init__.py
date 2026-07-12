@@ -1,14 +1,15 @@
 """
 Registro de adaptadores de arquitectura.
 
-Solo `zimage` está implementado; `sdxl` e `ideogram4` se añadirán aquí cuando
-toque, implementando la misma interfaz ArchAdapter.
+`zimage` y `sdxl` implementados; `ideogram4` se añadirá cuando toque,
+implementando la misma interfaz ArchAdapter.
 """
-from .base import ArchAdapter, BlockGroup, ModelFiles, SamplingDefaults
+from .base import ArchAdapter, BlockGroup, SamplingDefaults
 from .zimage import ZImageAdapter
+from .sdxl import SdxlAdapter
 
 _ADAPTERS: dict[str, ArchAdapter] = {
-    a.name: a for a in [ZImageAdapter()]
+    a.name: a for a in [ZImageAdapter(), SdxlAdapter()]
 }
 
 SUPPORTED_ARCHITECTURES = list(_ADAPTERS)

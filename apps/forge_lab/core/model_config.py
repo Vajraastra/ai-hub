@@ -8,8 +8,10 @@ nombres que esperan los loaders de ComfyUI.
 
 Contrato de paths: siempre relativos al almacén global de modelos
 (hub_config paths.models), en posix: "clip/qwen_3_4b.safetensors".
-Cada clave tiene su(s) carpeta(s) raíz válida(s) — son las que listan los
-loaders de ComfyUI; un fichero fuera de ellas no sería seleccionable allí.
+Las claves de fichero y su(s) carpeta(s) raíz válida(s) las define cada
+adaptador (file_keys()) — son las que listan los loaders de ComfyUI; un
+fichero fuera de ellas no sería seleccionable allí. zimage va por piezas
+(diffusion_model + text_encoder + vae); sdxl es un único checkpoint completo.
 """
 import json
 import os
@@ -17,13 +19,6 @@ from pathlib import Path
 
 DATA_DIR = Path(__file__).parent.parent / "data"
 CONFIG_PATH = DATA_DIR / "model_config.json"
-
-# clave → carpetas raíz admitidas dentro del almacén
-FILE_ROOTS = {
-    "diffusion_model": ("diffusion_models",),
-    "text_encoder": ("clip", "text_encoders"),
-    "vae": ("vae",),
-}
 
 
 class ModelConfigError(Exception):
@@ -41,9 +36,10 @@ def model_files(arch: str) -> dict:
     """Paths efectivos (relativos al almacén global): defaults del adaptador
     pisados por los overrides guardados."""
     from .architectures import get_adapter
-    files = dict(vars(get_adapter(arch).model_files()))
+    adapter = get_adapter(arch)
+    files = dict(adapter.model_files())
     saved = _load().get(arch, {})
-    for k in FILE_ROOTS:
+    for k in adapter.file_keys():
         if saved.get(k):
             files[k] = saved[k]
     return files
@@ -53,8 +49,8 @@ def set_model_files(arch: str, files: dict, models_root: Path) -> dict:
     """Persiste overrides. Valor vacío = volver al default del adaptador.
     Valida clave, carpeta raíz y existencia del fichero."""
     from .architectures import get_adapter
-    get_adapter(arch)                       # valida la arquitectura
-    bad = set(files) - set(FILE_ROOTS)
+    roots = get_adapter(arch).file_keys()
+    bad = set(files) - set(roots)
     if bad:
         raise ModelConfigError(f"claves desconocidas: {sorted(bad)}")
     for k, rel in files.items():
@@ -62,9 +58,9 @@ def set_model_files(arch: str, files: dict, models_root: Path) -> dict:
             continue
         rel = rel.replace("\\", "/")
         top = rel.split("/", 1)[0]
-        if top not in FILE_ROOTS[k]:
+        if top not in roots[k]:
             raise ModelConfigError(
-                f"{k}: debe vivir bajo {' o '.join(FILE_ROOTS[k])}/ (no {top!r})")
+                f"{k}: debe vivir bajo {' o '.join(roots[k])}/ (no {top!r})")
         if not (Path(models_root) / rel).is_file():
             raise ModelConfigError(f"{k}: no existe {rel!r} en el almacén")
     cfg = _load()
@@ -80,14 +76,15 @@ def set_model_files(arch: str, files: dict, models_root: Path) -> dict:
     return model_files(arch)
 
 
-def list_options(models_root: Path) -> dict:
+def list_options(models_root: Path, arch: str) -> dict:
     """Ficheros elegibles por clave, escaneando el almacén global.
     Los derivados de forge_lab no aparecen: son checkpoints del registro,
     no bases seleccionables como fichero suelto."""
     from .merge import DERIVED_SUBDIR
+    from .architectures import get_adapter
     root = Path(models_root)
     out: dict[str, list] = {}
-    for key, tops in FILE_ROOTS.items():
+    for key, tops in get_adapter(arch).file_keys().items():
         opts = []
         for top in tops:
             base = root / top
@@ -95,8 +92,7 @@ def list_options(models_root: Path) -> dict:
                 continue
             for p in sorted(base.rglob("*.safetensors")):
                 rel = p.relative_to(root).as_posix()
-                if key == "diffusion_model" and rel.startswith(
-                        f"{top}/{DERIVED_SUBDIR}/"):
+                if rel.startswith(f"{top}/{DERIVED_SUBDIR}/"):
                     continue
                 opts.append({"path": rel,
                              "size_bytes": p.stat().st_size})

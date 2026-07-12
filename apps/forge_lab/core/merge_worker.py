@@ -5,20 +5,30 @@ Se ejecuta con el Python del venv de ComfyUI (torch + safetensors) porque el
 venv de hub-webui es ligero a propósito. TODO el cálculo va en CPU/RAM (regla
 dura del handoff: la GPU se reserva para inferencia).
 
-Matemática (idéntica a la carga runtime de ComfyUI para formato PEFT
-lora_A/lora_B sin tensor alpha → scale = 1.0):
+Matemática (idéntica a la carga runtime de ComfyUI):
 
-    W' = W + strength * (B @ A)          en fp32, resultado al dtype original
+    W' = W + strength * scale * (B @ A)      en fp32, resultado al dtype orig.
+    scale = alpha / rank  si el módulo trae tensor alpha (formato kohya),
+            1.0           si no (formato PEFT sin alpha, p. ej. ai-toolkit)
 
-Para proyecciones fusionadas (qkv) el delta aterriza en su franja de filas
+Formatos de fichero LoRA soportados:
+  - PEFT/diffusers: <prefijo>modulo.lora_A.weight / .lora_B.weight, con
+    prefijo contenedor diffusion_model. / transformer. (Z-Image y cía.)
+  - kohya: lora_unet_modulo.lora_down.weight / .lora_up.weight / .alpha
+    (SDXL/Civitai). lora_down ≡ A, lora_up ≡ B. Las claves de text encoder
+    (adapter.ignored_lora_prefixes) se SALTAN por política, nunca se mergean.
+
+Para proyecciones fusionadas (qkv de Z-Image) el delta aterriza en su franja
 según el lora_key_map() del adaptador — réplica del mapeo de ComfyUI, así
 mergear a fichero ≡ cargar el LoRA en memoria (verificado empíricamente).
+El filtro de bloques compara contra la clave SIN adapter.container_prefix
+(sdxl: "model.diffusion_model."); las zonas prohibidas, contra la completa.
 
 Uso:  python merge_worker.py <job.json>
 
 job.json:
   {
-    "arch": "zimage",
+    "arch": "zimage" | "sdxl",
     "base_path": "...", "lora_path": "...", "out_path": "...",
     "strength": 1.0,
     "blocks": null                        # null = merge completo (Fase 3)
@@ -31,7 +41,8 @@ job.json:
 
 Protocolo: una línea JSON por evento en stdout —
   {"phase": "map|merge|write", "done": n, "total": n}
-  {"ok": true, "merged_tensors": n, "lora_pairs": n, "skipped_blocks": n}
+  {"ok": true, "merged_tensors": n, "lora_pairs": n, "skipped_blocks": n,
+   "skipped_policy": n}
   {"error": "..."} y exit(1) si algo no cuadra. Nada de merges "a medias":
   cualquier clave LoRA no mapeable o con shape inesperada aborta el trabajo.
 """
@@ -42,10 +53,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from architectures import get_adapter  # noqa: E402  (stdlib puro)
 
-# Prefijos contenedor que usan los ficheros LoRA según la herramienta de
-# entrenamiento (mismos que acepta ComfyUI en model_lora_keys_unet).
-_LORA_PREFIXES = ("diffusion_model.", "transformer.")
-_LORA_SUFFIXES = (".lora_A.weight", ".lora_B.weight")
+# Prefijos contenedor del formato PEFT según la herramienta de entrenamiento
+# (mismos que acepta ComfyUI en model_lora_keys_unet). El formato kohya
+# conserva su prefijo (lora_unet_…) como parte del nombre de módulo.
+_PEFT_PREFIXES = ("diffusion_model.", "transformer.")
+_PEFT_SUFFIXES = {".lora_A.weight": "A", ".lora_B.weight": "B"}
+_KOHYA_SUFFIXES = {".lora_down.weight": "A", ".lora_up.weight": "B"}
 
 
 def fail(msg: str):
@@ -57,34 +70,41 @@ def progress(phase: str, done: int, total: int):
     print(json.dumps({"phase": phase, "done": done, "total": total}), flush=True)
 
 
-def collect_pairs(lora_keys):
-    """Agrupa claves del LoRA por módulo → {"A": key, "B": key}."""
+def collect_pairs(lora_keys, ignored_prefixes):
+    """Agrupa claves del LoRA por módulo → {"A": key, "B": key, "alpha": key?}.
+    Devuelve (pairs, skipped_policy): los módulos con prefijo ignorable
+    (text encoders en sdxl) se apartan en vez de tratarse como error."""
     pairs: dict[str, dict] = {}
+    skipped: set[str] = set()
     strays = []
     for k in lora_keys:
+        if ".dora_" in k or k.endswith(".diff") or k.endswith(".diff_b"):
+            fail(f"clave {k!r}: formato DoRA/diff no soportado")
         if k.endswith(".alpha"):
-            # formato con alpha explícito: aún no visto en Z-Image (ai-toolkit
-            # PEFT no lo escribe). Soportarlo implica scale=alpha/rank; mejor
-            # abortar que mergear con la escala equivocada.
-            fail(f"el LoRA trae tensores .alpha ({k}) — formato no soportado "
-                 "todavía; el scale cambiaría (alpha/rank) y no está validado")
-        suffix = next((s for s in _LORA_SUFFIXES if k.endswith(s)), None)
-        if suffix is None:
-            strays.append(k)
+            module, part = k[: -len(".alpha")], "alpha"
+        else:
+            suffix = next((s for s in {**_PEFT_SUFFIXES, **_KOHYA_SUFFIXES}
+                           if k.endswith(s)), None)
+            if suffix is None:
+                strays.append(k)
+                continue
+            module = k[: -len(suffix)]
+            part = (_PEFT_SUFFIXES.get(suffix) or _KOHYA_SUFFIXES[suffix])
+        if any(module.startswith(p) for p in ignored_prefixes):
+            skipped.add(module)
             continue
-        module = k[: -len(suffix)]
-        for p in _LORA_PREFIXES:
+        for p in _PEFT_PREFIXES:
             if module.startswith(p):
                 module = module[len(p):]
                 break
-        pairs.setdefault(module, {})["A" if "lora_A" in suffix else "B"] = k
+        pairs.setdefault(module, {})[part] = k
     if strays:
         fail(f"claves LoRA con formato desconocido: {strays[:5]}"
              f"{' …' if len(strays) > 5 else ''}")
-    for module, ab in pairs.items():
-        if set(ab) != {"A", "B"}:
-            fail(f"módulo {module!r}: par lora_A/lora_B incompleto")
-    return pairs
+    for module, parts in pairs.items():
+        if not {"A", "B"} <= set(parts):
+            fail(f"módulo {module!r}: par lora down/up incompleto")
+    return pairs, skipped
 
 
 def main(job_path: str):
@@ -101,11 +121,19 @@ def main(job_path: str):
 
     key_map = adapter.lora_key_map()
     forbidden = adapter.forbidden_zones()
+    cprefix = adapter.container_prefix
+
+    def strip_container(key: str) -> str:
+        return key[len(cprefix):] if cprefix and key.startswith(cprefix) else key
 
     # ── 1. Mapear el LoRA contra el checkpoint ────────────────────────────
     with safe_open(lora_path, framework="pt", device="cpu") as lf:
         lora_keys = list(lf.keys())
-    pairs = collect_pairs(lora_keys)
+    pairs, skipped_policy = collect_pairs(lora_keys,
+                                          adapter.ignored_lora_prefixes)
+    if not pairs:
+        fail("el LoRA solo contiene claves saltadas por política "
+             "(¿LoRA de text encoder puro?)")
 
     # normalizar blocks: None → sin filtro; lista → dosis 1.0; dict → dosis
     block_dose: dict[str, float] | None
@@ -117,11 +145,13 @@ def main(job_path: str):
         block_dose = {b: float(d) for b, d in blocks.items()}
 
     def dose_for(base_key: str) -> float | None:
-        """Dosis del bloque al que pertenece el tensor (None = filtrado)."""
+        """Dosis del bloque al que pertenece el tensor (None = filtrado).
+        Los ids de bloque van sin container_prefix (contrato del adaptador)."""
         if block_dose is None:
             return 1.0
+        bare = strip_container(base_key)
         for b, d in block_dose.items():
-            if base_key == b or base_key.startswith(b + "."):
+            if bare == b or bare.startswith(b + "."):
                 return d if d != 0 else None
         return None
 
@@ -138,8 +168,9 @@ def main(job_path: str):
         if dose is None:
             skipped_blocks.add(module)
             continue
-        if any(base_key == z or base_key.startswith(z + ".") for z in forbidden) \
-                and not job.get("allow_forbidden"):
+        if any(base_key == z or
+               base_key.startswith(z if z.endswith(".") else z + ".")
+               for z in forbidden) and not job.get("allow_forbidden"):
             fail(f"el LoRA toca la zona prohibida {base_key!r} "
                  "(override explícito requerido)")
         deltas.setdefault(base_key, []).append((module, sl, dose))
@@ -168,7 +199,14 @@ def main(job_path: str):
                 for module, sl, dose in deltas[k]:
                     A = lf.get_tensor(pairs[module]["A"]).to(torch.float32)
                     B = lf.get_tensor(pairs[module]["B"]).to(torch.float32)
-                    d = (strength * dose) * (B @ A)
+                    if A.dim() != 2 or B.dim() != 2:
+                        fail(f"{module}: tensores LoRA de dim {A.dim()}/"
+                             f"{B.dim()} (¿LoCon/conv?) — no soportado")
+                    scale = 1.0
+                    if "alpha" in pairs[module]:
+                        alpha = float(lf.get_tensor(pairs[module]["alpha"]))
+                        scale = alpha / A.shape[0]   # rank = filas de lora_down
+                    d = (strength * dose * scale) * (B @ A)
                     if sl is None:
                         if d.shape != t.shape:
                             fail(f"{module}: delta {tuple(d.shape)} ≠ "
@@ -198,7 +236,8 @@ def main(job_path: str):
 
     print(json.dumps({"ok": True, "merged_tensors": n_merged,
                       "lora_pairs": len(pairs),
-                      "skipped_blocks": len(skipped_blocks)}), flush=True)
+                      "skipped_blocks": len(skipped_blocks),
+                      "skipped_policy": len(skipped_policy)}), flush=True)
 
 
 if __name__ == "__main__":

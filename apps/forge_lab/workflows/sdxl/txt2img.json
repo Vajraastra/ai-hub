@@ -1,0 +1,42 @@
+{
+  "_comment": "SDXL txt2img sobre checkpoint completo (CheckpointLoaderSimple: UNet + CLIP-L/G + VAE del propio fichero). Placeholders: model (ckpt_name), prompt, negative, seed, steps, cfg, sampler, scheduler, width, height.",
+  "1": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": { "ckpt_name": "{{model}}" }
+  },
+  "4": {
+    "class_type": "CLIPTextEncode",
+    "inputs": { "text": "{{prompt}}", "clip": ["1", 1] }
+  },
+  "5": {
+    "class_type": "CLIPTextEncode",
+    "inputs": { "text": "{{negative}}", "clip": ["1", 1] }
+  },
+  "6": {
+    "class_type": "EmptyLatentImage",
+    "inputs": { "width": "{{width}}", "height": "{{height}}", "batch_size": 1 }
+  },
+  "7": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": ["1", 0],
+      "positive": ["4", 0],
+      "negative": ["5", 0],
+      "latent_image": ["6", 0],
+      "seed": "{{seed}}",
+      "steps": "{{steps}}",
+      "cfg": "{{cfg}}",
+      "sampler_name": "{{sampler}}",
+      "scheduler": "{{scheduler}}",
+      "denoise": 1.0
+    }
+  },
+  "8": {
+    "class_type": "VAEDecode",
+    "inputs": { "samples": ["7", 0], "vae": ["1", 2] }
+  },
+  "9": {
+    "class_type": "SaveImage",
+    "inputs": { "images": ["8", 0], "filename_prefix": "forge_lab" }
+  }
+}

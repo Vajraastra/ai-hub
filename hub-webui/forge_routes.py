@@ -33,6 +33,10 @@ from forge_lab.core.architectures import get_adapter, SUPPORTED_ARCHITECTURES
 from forge_lab.core import validation_set as vsets
 from forge_lab.core import explore
 from forge_lab.core import model_config
+from forge_lab.core import favorites
+from forge_lab.core import battery
+from forge_lab.core.battery import BatteryError
+from forge_lab.core.favorites import FavoritesError
 from forge_lab.core.validation_set import ValidationSet, ValidationSetError, LockedError
 from forge_lab.core.merge import MergeOrchestrator, MergeError
 from forge_lab.core.explore import ExploreError
@@ -41,13 +45,6 @@ from forge_lab.core.model_config import ModelConfigError
 forge_router = APIRouter(prefix="/api/forge", tags=["forge"])
 
 _comfy = ComfyClient(port=8188)
-
-# Nodos de comfyUI-Realtime-Lora que la Fase 4 necesita disparar por API
-_REQUIRED_NODES = [
-    "ZImageSelectiveLoRALoader",
-    "LoRALoaderWithAnalysis",
-    "ScheduledLoRALoader",
-]
 
 
 def _models_root() -> Path:
@@ -70,6 +67,9 @@ async def architectures():
             "groups": [vars(g) for g in a.block_groups()],
             "forbidden_zones": a.forbidden_zones(),
             "sampling_defaults": vars(a.sampling_defaults()),
+            "explore_switches": a.explore_switches(),
+            "multi_base": a.multi_base,
+            "file_keys": list(a.file_keys()),
         })
     return {"architectures": out}
 
@@ -89,16 +89,20 @@ async def status(arch: str = "zimage"):
     comfy_up = await _comfy.health_check()
     nodes = {}
     if comfy_up:
-        for n in _REQUIRED_NODES:
+        for n in adapter.required_nodes():
             nodes[n] = await _comfy.probe_node(n)
 
+    models_ok = all(m["present"] for m in models.values())
+    if not models_ok and adapter.multi_base:
+        # sin base oficial única: basta con que el almacén tenga checkpoints
+        models_ok = any(e["present"] for e in _merger.list_checkpoints(arch)
+                        if e["kind"] == "official")
     return {
         "arch": adapter.name,
         "comfyui": comfy_up,
         "models": models,
         "nodes": nodes,
-        "ready": comfy_up and all(m["present"] for m in models.values())
-                 and all(nodes.values() or [False]),
+        "ready": comfy_up and models_ok and all(nodes.values() or [False]),
     }
 
 
@@ -304,12 +308,14 @@ async def loras_list(arch: str = "zimage"):
     loras = _merger.list_loras(arch)
     amap = await _vault_arch_map()
     target = _norm_arch(arch)
+    fav = favorites.ids("loras")
     for l in loras:
         bm = amap.get(Path(l["file"]).stem.lower())
         if bm:
             l["vault_arch"] = bm
             if not l["arch_match"] and target and target in _norm_arch(bm):
                 l["arch_match"] = True
+        l["is_favorite"] = l["file"] in fav
     loras.sort(key=lambda e: (not e["arch_match"], e["name"].lower()))
     return {"loras": loras}
 
@@ -319,6 +325,15 @@ async def lora_preview(file: str):
     """Imagen .preview.* junto al safetensors (convención del Vault)."""
     try:
         return FileResponse(_merger.lora_preview_path(file))
+    except MergeError:
+        raise HTTPException(404, "sin preview")
+
+
+@forge_router.get("/checkpoint-preview")
+async def checkpoint_preview(name: str, arch: str = "zimage"):
+    """Imagen .preview.* de un checkpoint (oficial o derivado)."""
+    try:
+        return FileResponse(_merger.checkpoint_preview_path(name, arch))
     except MergeError:
         raise HTTPException(404, "sin preview")
 
@@ -339,8 +354,8 @@ async def model_files_get(arch: str = "zimage"):
     return {
         "arch": arch,
         "files": model_config.model_files(arch),
-        "defaults": vars(adapter.model_files()),
-        "options": model_config.list_options(_models_root()),
+        "defaults": adapter.model_files(),
+        "options": model_config.list_options(_models_root(), arch),
     }
 
 
@@ -358,7 +373,31 @@ async def model_files_put(body: ModelFilesBody):
 
 @forge_router.get("/checkpoints")
 async def checkpoints_list(arch: str = "zimage"):
-    return {"checkpoints": _merger.list_checkpoints(arch)}
+    fav = favorites.ids("checkpoints")
+    ckpts = _merger.list_checkpoints(arch)
+    for c in ckpts:
+        c["is_favorite"] = c["name"] in fav
+    return {"checkpoints": ckpts}
+
+
+class FavToggleBody(BaseModel):
+    kind: str                      # "loras" | "checkpoints"
+    id: str                        # file (lora) | name (checkpoint)
+    on: bool | None = None         # None → alterna
+
+
+@forge_router.get("/favorites")
+async def favorites_get():
+    return favorites.load()
+
+
+@forge_router.post("/favorites/toggle")
+async def favorites_toggle(body: FavToggleBody):
+    try:
+        on = favorites.toggle(body.kind, body.id, body.on)
+    except FavoritesError as e:
+        raise HTTPException(400, str(e))
+    return {"kind": body.kind, "id": body.id, "favorite": on}
 
 
 @forge_router.delete("/checkpoints/{name}")
@@ -457,7 +496,8 @@ async def explore_session_create(body: ExploreSessionBody):
         session = explore.create_session(
             arch=body.arch, checkpoint=ckpt["name"], model=ckpt["unet_name"],
             lora=body.lora, strength=body.strength, prompt=body.prompt,
-            negative=body.negative, seed=body.seed, sampling=body.sampling)
+            negative=body.negative, seed=body.seed, sampling=body.sampling,
+            models_root=_models_root())
     except (ExploreError, MergeError) as e:
         raise HTTPException(400, str(e))
     return {"session": session}
@@ -475,6 +515,28 @@ async def explore_session_close():
 async def explore_reference(body: ExploreRefBody):
     try:
         return {"session": explore.set_reference(body.gen_id)}
+    except ExploreError as e:
+        raise HTTPException(404, str(e))
+
+
+@forge_router.delete("/explore/generation/{gen_id}")
+async def explore_generation_delete(gen_id: str):
+    """Borra un trabajo concreto (imagen + entry) de la sesión."""
+    if any(j["status"] == "running" for j in _jobs.values()):
+        raise HTTPException(409, "hay un job en curso; espera a que termine")
+    try:
+        return {"session": explore.delete_generation(gen_id)}
+    except ExploreError as e:
+        raise HTTPException(404, str(e))
+
+
+@forge_router.post("/explore/clear")
+async def explore_clear():
+    """Vacía el historial de trabajos conservando la sesión y su config."""
+    if any(j["status"] == "running" for j in _jobs.values()):
+        raise HTTPException(409, "hay un job en curso; espera a que termine")
+    try:
+        return {"session": explore.clear_generations()}
     except ExploreError as e:
         raise HTTPException(404, str(e))
 
@@ -509,7 +571,7 @@ async def explore_generate(body: ExploreGenerateBody):
     if not await _comfy.health_check():
         raise HTTPException(503, "ComfyUI no responde en :8188 — arráncalo desde el Hub")
     try:
-        config = explore.normalize_config(body.config)
+        config = explore.normalize_config(body.config, session["arch"])
     except ExploreError as e:
         raise HTTPException(400, str(e))
     job_id = uuid.uuid4().hex[:12]
@@ -526,11 +588,16 @@ async def _explore_confirm_job(job: dict, vs: ValidationSet, session: dict,
     def on_progress(p: dict):
         job.update(p)
     try:
-        template = load_workflow("txt2img_lora_selective.json", session["arch"])
-        template["10"]["inputs"].update(explore.node_inputs(config))
+        arch = session["arch"]
+        adapter = get_adapter(arch)
+        template = load_workflow(adapter.workflow_name("txt2img_lora_selective"),
+                                 arch)
+        template["10"]["inputs"].update(explore.node_inputs(
+            config, arch, session.get("dose_exponent", 2)))
         lora_name = Path(session["lora"]).name
         desc = (f"{session['checkpoint']} + {lora_name} @ "
-                f"{session['strength']} [{explore.config_summary(config)}]")
+                f"{session['strength']} "
+                f"[{explore.config_summary(config, arch)}]")
         manifest = await vs.run(
             _comfy, model=session["model"], label=label,
             on_progress=on_progress, template=template,
@@ -589,7 +656,7 @@ async def explore_merge(body: dict):
     if gen is None:
         raise HTTPException(404, f"no existe la generación {body.get('gen_id')!r}")
     try:
-        blocks = explore.config_to_merge_blocks(gen["config"])
+        blocks = explore.config_to_merge_blocks(gen["config"], session["arch"])
     except ExploreError as e:
         raise HTTPException(400, str(e))
     return await merge_start(MergeBody(
@@ -626,3 +693,94 @@ async def run_image(set_name: str, run_id: str, filename: str):
     if not path.is_relative_to(base) or not path.is_file():
         raise HTTPException(404, "imagen no encontrada")
     return FileResponse(path)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Fase 4 — Batería de prompts (config fija × N prompts sobre la sesión activa)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class BatterySaveBody(BaseModel):
+    id: str
+    label: str = ""
+    lora_type: str                # character | style | concept
+    style: str                    # prosa | tags
+    hint: str = ""
+    prompts: list[dict]           # [{id, text, negative, seed}]
+
+
+class BatteryRunBody(BaseModel):
+    battery_id: str
+    config: dict                  # config de bloques a estresar (fija)
+
+
+@forge_router.get("/batteries")
+async def batteries_list():
+    return {"batteries": battery.list_batteries()}
+
+
+@forge_router.get("/batteries/{bid}")
+async def battery_get(bid: str):
+    try:
+        return battery.get_battery(bid)
+    except BatteryError as e:
+        raise HTTPException(404, str(e))
+
+
+@forge_router.post("/batteries")
+async def battery_save(body: BatterySaveBody):
+    try:
+        return battery.save_battery(body.model_dump())
+    except BatteryError as e:
+        raise HTTPException(400, str(e))
+
+
+@forge_router.delete("/batteries/{bid}")
+async def battery_delete(bid: str):
+    try:
+        battery.delete_battery(bid)
+    except BatteryError as e:
+        raise HTTPException(400, str(e))
+    return {"deleted": bid}
+
+
+async def _battery_run_job(job: dict, battery_id: str, config: dict):
+    def on_progress(p: dict):
+        job.update(p)
+    try:
+        result = await battery.run_battery(_comfy, battery_id, config,
+                                           on_progress=on_progress)
+        job["status"] = "done"
+        job["result"] = result
+    except Exception as e:
+        job["status"] = "error"
+        job["error"] = str(e)
+
+
+@forge_router.post("/explore/battery")
+async def explore_battery(body: BatteryRunBody):
+    """Corre la batería (config fija × N prompts) contra la sesión activa. Cada
+    prompt cae al historial como trabajo de batería. Job en background con
+    progreso {item_index, total, prompt_id, step, steps_total}."""
+    session = explore.get_session()
+    if not session:
+        raise HTTPException(404, "no hay sesión de exploración activa")
+    if any(j["status"] == "running" for j in _jobs.values()):
+        raise HTTPException(409, "ya hay un job en curso")
+    if not await _comfy.health_check():
+        raise HTTPException(503, "ComfyUI no responde en :8188 — arráncalo desde el Hub")
+    try:
+        bat = battery.get_battery(body.battery_id)
+        config = explore.normalize_config(body.config, session["arch"])
+    except BatteryError as e:
+        raise HTTPException(404, str(e))
+    except ExploreError as e:
+        raise HTTPException(400, str(e))
+    job_id = uuid.uuid4().hex[:12]
+    job = {"id": job_id, "type": "battery", "status": "running",
+           "battery": bat["id"], "label": bat["label"],
+           "item_index": 0, "total": len(bat["prompts"]), "prompt_id": "",
+           "step": 0, "steps_total": session["sampling"]["steps"],
+           "result": None, "error": None}
+    _jobs[job_id] = job
+    asyncio.create_task(_battery_run_job(job, body.battery_id, config))
+    return {"job_id": job_id}

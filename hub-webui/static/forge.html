@@ -21,9 +21,10 @@
       transition:color .15s, border-color .15s;
     }
     .back-btn:hover { color:var(--text-primary); border-color:var(--accent-purple); }
+    .back-btn.danger:hover { color:#e05c5c; border-color:#e05c5c; }
     #tool-header h1 { font-size:15px; font-weight:600; color:var(--text-primary); }
 
-    #forge-body { padding:24px; max-width:1280px; display:flex; flex-direction:column; gap:16px; }
+    #forge-body { padding:18px 20px; max-width:1500px; display:flex; flex-direction:column; gap:14px; }
     .card {
       background:var(--bg-card); border:1px solid var(--border);
       border-radius:8px; padding:16px 20px;
@@ -86,53 +87,136 @@
                 border:1px solid var(--border); border-radius:6px; margin-bottom:6px;
                 font-size:13px; color:var(--text-primary); }
     .ckpt-row .lineage { color:var(--text-dim); font-size:11px; }
-    .merge-form { display:flex; flex-wrap:wrap; gap:10px; align-items:flex-end;
-                  margin-top:12px; padding-top:12px; border-top:1px solid var(--border); }
-    .merge-form label { display:flex; flex-direction:column; gap:3px;
-                        font-size:11px; color:var(--text-secondary); }
-    .merge-form input, .merge-form select {
-      background:var(--bg-input,#14141c); border:1px solid var(--border);
-      color:var(--text-primary); border-radius:5px; padding:5px 8px; font-size:12px;
-    }
     #run-model { background:var(--bg-input,#14141c); border:1px solid var(--border);
                  color:var(--text-primary); border-radius:5px; padding:6px 8px;
                  font-size:12px; max-width:340px; }
 
-    /* laboratorio de bloques */
-    .explore-form { display:flex; flex-wrap:wrap; gap:10px; align-items:flex-end; }
-    .explore-form label { display:flex; flex-direction:column; gap:3px;
-                          font-size:11px; color:var(--text-secondary); }
-    .explore-form input, .explore-form select, .explore-form textarea {
+    /* ── WORKBENCH (rediseño: un solo workspace) ─────────────────────── */
+    #inputs-bar {
+      display:flex; align-items:flex-end; gap:14px; flex-wrap:wrap;
+      padding:12px 18px; background:var(--bg-card); border:1px solid var(--border);
+      border-radius:8px;
+    }
+    #inputs-bar .in-field { display:flex; flex-direction:column; gap:3px;
+      font-size:11px; color:var(--text-secondary); }
+    #inputs-bar input[type=number], #inputs-bar select {
       background:var(--bg-input,#14141c); border:1px solid var(--border);
-      color:var(--text-primary); border-radius:5px; padding:5px 8px; font-size:12px;
+      color:var(--text-primary); border-radius:5px; padding:5px 8px; font-size:12px; }
+    #inputs-bar .grow { flex:1; min-width:20px; }
+
+    #workbench {
+      display:grid; gap:14px;
+      grid-template-columns:auto minmax(0,1fr) 138px; align-items:start;
+    }
+
+    /* KSampler colapsable (izquierda) */
+    #ksampler-panel {
+      background:var(--bg-card); border:1px solid var(--border); border-radius:8px;
+      padding:12px; width:184px; transition:width .18s;
+    }
+    #ksampler-panel.collapsed { width:46px; padding:12px 6px; }
+    .ks-head { display:flex; align-items:center; gap:8px; cursor:pointer;
+      font-size:12px; color:var(--text-secondary); font-weight:600; user-select:none; }
+    #ksampler-panel.collapsed .ks-body, #ksampler-panel.collapsed .ks-title { display:none; }
+    .ks-body { display:flex; flex-direction:column; gap:8px; margin-top:12px; }
+    .ks-body label { display:flex; flex-direction:column; gap:3px; font-size:11px;
+      color:var(--text-secondary); }
+    .ks-body input {
+      background:var(--bg-input,#14141c); border:1px solid var(--border);
+      color:var(--text-primary); border-radius:5px; padding:5px 7px; font-size:12px; }
+
+    /* centro: viewport + prompt + bloques */
+    #work-center { display:flex; flex-direction:column; gap:14px; min-width:0; }
+    #viewport {
+      background:var(--bg-card); border:1px solid var(--border); border-radius:8px;
+      padding:14px; min-height:300px;
+    }
+    #test-prompt {
+      background:var(--bg-card); border:1px solid var(--border); border-radius:8px;
+      padding:12px 14px; display:flex; gap:10px; align-items:flex-end;
+    }
+    #test-prompt textarea {
+      flex:1; resize:vertical; min-height:52px; max-height:200px;
+      background:var(--bg-input,#14141c); border:1px solid var(--border);
+      color:var(--text-primary); border-radius:6px; padding:8px 10px; font-size:13px;
       font-family:inherit;
     }
-    .explore-form textarea { resize:vertical; min-height:44px; width:420px; }
+    #blocks-panel {
+      background:var(--bg-card); border:1px solid var(--border); border-radius:8px;
+      padding:12px 14px;
+    }
+    #blocks-panel .blocks-head { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+    #blocks-panel .blocks-title { font-size:12px; font-weight:600; color:var(--text-secondary); }
+
+    /* chips de bloque: valor numérico encima, on/off, slider en popup */
+    .chip-grid { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; justify-content:center; }
+    #blocks-panel .blocks-head { justify-content:center; }
+    .chip {
+      position:relative; display:flex; flex-direction:column; align-items:center;
+      gap:2px; min-width:58px; padding:5px 9px; border:1px solid var(--border);
+      border-radius:7px; cursor:pointer; background:var(--bg-input,#14141c);
+      transition:border-color .12s, opacity .12s;
+    }
+    .chip:hover { border-color:var(--accent-purple); }
+    .chip.off { opacity:.4; }
+    .chip.editing { border-color:var(--accent-purple); box-shadow:0 0 0 1px var(--accent-purple); }
+    .chip .chip-val { font-size:12px; font-weight:600; color:var(--accent-cyan);
+      font-family:'JetBrains Mono',monospace; }
+    .chip.off .chip-val { color:var(--text-dim); }
+    .chip .chip-lbl { font-size:10px; color:var(--text-secondary);
+      font-family:'JetBrains Mono',monospace; }
+
+    /* popup del slider (compartido) */
+    #chip-pop {
+      position:fixed; z-index:60; display:none; flex-direction:column; gap:10px;
+      background:var(--bg-card); border:1px solid var(--border-bright,#3D1080);
+      border-radius:8px; padding:12px 14px; width:230px;
+      box-shadow:0 10px 28px rgba(0,0,0,.55);
+    }
+    #chip-pop.open { display:flex; }
+    #chip-pop .pop-head { display:flex; justify-content:space-between; align-items:center;
+      font-size:12px; color:var(--text-primary); font-weight:600; }
+    #chip-pop .pop-head .mono { color:var(--text-secondary); font-weight:400; }
+    #chip-pop label.pop-on { display:flex; align-items:center; gap:8px;
+      font-size:12px; color:var(--text-secondary); cursor:pointer; }
+    #chip-pop input[type=range] { width:100%; accent-color:var(--accent-purple); }
+    #chip-pop .pop-row { display:flex; gap:8px; align-items:center; }
+    #chip-pop input[type=number] { width:70px; background:var(--bg-input,#14141c);
+      border:1px solid var(--border); color:var(--text-primary); border-radius:5px;
+      padding:4px 6px; font-size:12px; }
+
+    /* historial vertical (derecha) */
+    #history-col {
+      background:var(--bg-card); border:1px solid var(--border); border-radius:8px;
+      padding:10px; max-height:70vh; overflow-y:auto;
+    }
+    #history-col .hist-strip { flex-direction:column; overflow-x:hidden;
+      overflow-y:visible; margin-top:0; padding-bottom:0; }
+    #history-col .hist-item { width:100%; position:relative; }
+    #history-col .hist-empty { font-size:11px; color:var(--text-dim); text-align:center;
+      padding:20px 4px; }
+    .hist-del { position:absolute; top:5px; right:5px; border:none; border-radius:5px;
+      background:rgba(0,0,0,.6); color:#fff; font-size:12px; cursor:pointer;
+      padding:2px 5px; opacity:0; transition:opacity .12s, color .12s; }
+    .hist-item:hover .hist-del { opacity:1; }
+    .hist-del:hover { color:#e05c5c; }
+
+    /* laboratorio de bloques (viewport/compare/historial) */
     #explore-info { font-size:12px; color:var(--text-secondary);
                     display:flex; gap:14px; flex-wrap:wrap; align-items:center; }
-    .switch-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(96px,1fr));
-                   gap:6px; margin:12px 0; }
-    .switch-cell { display:flex; align-items:center; gap:4px; padding:4px 6px;
-                   border:1px solid var(--border); border-radius:5px; font-size:11px;
-                   color:var(--text-primary); }
-    .switch-cell.off { opacity:.45; }
-    .switch-cell .lbl { font-family:'JetBrains Mono',monospace; min-width:22px; }
-    .switch-cell input[type=number] {
-      width:46px; background:var(--bg-input,#14141c); border:1px solid var(--border);
-      color:var(--text-primary); border-radius:4px; padding:2px 4px; font-size:11px;
-    }
-    .preset-row { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:4px; }
-    .compare-wrap { display:flex; gap:14px; margin-top:14px; flex-wrap:wrap; }
-    .compare-pane { flex:1; min-width:320px; max-width:520px; }
+    .preset-row { display:flex; gap:6px; flex-wrap:wrap; }
+    .compare-wrap { display:flex; gap:14px; flex-wrap:wrap; justify-content:center; }
+    .compare-pane { flex:0 1 420px; min-width:280px; max-width:520px; }
     .compare-pane h3 { font-size:11px; font-weight:600; letter-spacing:.5px;
                        text-transform:uppercase; color:var(--text-dim); margin-bottom:6px; }
     .compare-pane img { width:100%; border-radius:6px; cursor:zoom-in;
                         border:1px solid var(--border); }
     .compare-pane .cfg { font-size:11px; color:var(--text-secondary); margin-top:4px;
                          font-family:'JetBrains Mono',monospace; }
-    .hist-strip { display:flex; gap:8px; overflow-x:auto; margin-top:12px;
-                  padding-bottom:6px; }
-    .hist-item { flex:0 0 auto; width:110px; cursor:pointer; border:2px solid transparent;
+    .viewport-empty { font-size:12px; color:var(--text-dim); padding:40px 8px;
+                      text-align:center; }
+    .hist-strip { display:flex; gap:8px; }
+    .hist-item { flex:0 0 auto; cursor:pointer; border:2px solid transparent;
                  border-radius:6px; padding:2px; }
     .hist-item img { width:100%; border-radius:4px; display:block; }
     .hist-item .tag { font-size:9px; color:var(--text-dim); text-align:center;
@@ -140,6 +224,17 @@
                       overflow:hidden; text-overflow:ellipsis; }
     .hist-item.selected { border-color:var(--accent-purple); }
     .hist-item.is-ref { border-color:#d9a44a; }
+
+    /* secciones plegables (batería / gestión) */
+    .fold { background:var(--bg-card); border:1px solid var(--border); border-radius:8px; }
+    .fold > .fold-head {
+      display:flex; align-items:center; gap:10px; padding:12px 16px; cursor:pointer;
+      font-size:13px; font-weight:600; color:var(--text-secondary); user-select:none;
+    }
+    .fold > .fold-head .caret { transition:transform .15s; font-size:11px; }
+    .fold.open > .fold-head .caret { transform:rotate(90deg); }
+    .fold > .fold-body { display:none; padding:0 16px 16px; flex-direction:column; gap:14px; }
+    .fold.open > .fold-body { display:flex; }
 
     /* picker visual de LoRAs (estilo Vault) */
     #lora-picker-overlay { position:fixed; inset:0; background:rgba(0,0,0,.55);
@@ -151,27 +246,51 @@
                    display:flex; flex-direction:column; }
     .lp-head { display:flex; gap:10px; padding:12px 16px; align-items:center;
                border-bottom:1px solid var(--border); }
-    .lp-head input { flex:1; background:var(--bg-input,#14141c);
+    .lp-head input#lp-search { flex:1; background:var(--bg-input,#14141c);
                      border:1px solid var(--border); color:var(--text-primary);
                      border-radius:6px; padding:7px 10px; font-size:13px; }
-    #lp-grid { overflow-y:auto; padding:14px; display:grid; gap:10px;
-               grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); }
-    .lp-card { border:1px solid var(--border); border-radius:8px; overflow:hidden;
-               cursor:pointer; background:var(--bg-input,#14141c);
-               transition:border-color .15s; }
+    /* scroll contenedor: el grid vive dentro para que el centinela de carga
+       progresiva quede DESPUÉS del grid, en el flujo del scroll. */
+    #lp-scroll { overflow-y:auto; padding:14px; }
+    /* grid-auto-rows FIJO: la altura de fila la impone el grid, no las
+       imágenes → nunca colapsa aunque haya 1400 tarjetas o carguen lazy. */
+    #lp-grid { display:grid; gap:10px; align-content:start;
+               grid-template-columns:repeat(auto-fill,minmax(140px,1fr));
+               grid-auto-rows:230px; }
+    #lp-sentinel { height:1px; }
+    .lp-card { position:relative; border:1px solid var(--border); border-radius:8px;
+               overflow:hidden; cursor:pointer; background:var(--bg-input,#14141c);
+               transition:border-color .15s; display:flex; flex-direction:column;
+               height:100%; }
     .lp-card:hover { border-color:var(--accent-purple); }
     .lp-card.selected { border-color:var(--accent-purple);
                         box-shadow:0 0 0 1px var(--accent-purple); }
-    .lp-thumb { width:100%; aspect-ratio:3/4; object-fit:cover; display:block;
-                background:#0d0d13; }
-    .lp-thumb-ph { width:100%; aspect-ratio:3/4; display:flex; align-items:center;
-                   justify-content:center; font-size:40px; background:#0d0d13;
-                   color:var(--text-dim); }
-    .lp-body { padding:7px 9px; }
-    .lp-name { font-size:11.5px; color:var(--text-primary); word-break:break-word;
-               line-height:1.3; }
-    .lp-meta { font-size:10px; color:var(--text-dim); margin-top:3px; }
-    /* tarjeta del LoRA seleccionado (mini-card estilo Vault: imagen + nombre) */
+    .lp-thumb { width:100%; height:170px; object-fit:cover; display:block;
+                background:#0d0d13; flex:0 0 auto; }
+    .lp-thumb-ph { width:100%; height:170px; display:flex; align-items:center;
+                   justify-content:center; font-size:40px; color:var(--text-dim);
+                   background:#0d0d13; flex:0 0 auto; }
+    .lp-body { padding:6px 8px; flex:1; overflow:hidden; }
+    .lp-name { font-size:11.5px; color:var(--text-primary); line-height:1.25;
+               overflow:hidden; display:-webkit-box; -webkit-line-clamp:2;
+               -webkit-box-orient:vertical; word-break:break-word; }
+    .lp-meta { font-size:10px; color:var(--text-dim); margin-top:3px;
+               white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    /* estrella de favorita: aparece al hover, fija si está marcada */
+    .lp-star { position:absolute; top:4px; right:4px; width:24px; height:24px;
+               border:none; border-radius:50%; cursor:pointer; font-size:14px;
+               line-height:1; background:rgba(0,0,0,.5); color:#fff;
+               display:flex; align-items:center; justify-content:center;
+               opacity:0; transition:opacity .12s, color .12s; padding:0; }
+    .lp-card:hover .lp-star { opacity:1; }
+    .lp-star.on { opacity:1; color:#f5c451; }
+    .lp-controls { display:flex; gap:8px; align-items:center; }
+    .lp-controls select, .lp-fav-btn {
+      background:var(--bg-input,#14141c); border:1px solid var(--border);
+      color:var(--text-secondary); border-radius:6px; padding:6px 8px;
+      font-size:12px; cursor:pointer; }
+    .lp-fav-btn.on { color:#f5c451; border-color:#f5c451; }
+    /* tarjeta del pick seleccionado (mini-card estilo Vault: imagen + nombre) */
     .lora-pick { display:flex; flex-direction:column; cursor:pointer; padding:0;
                  background:var(--bg-input,#14141c); border:1px solid var(--border);
                  color:var(--text-primary); border-radius:8px; width:128px;
@@ -192,37 +311,7 @@
       font-family:'JetBrains Mono',monospace;
     }
 
-    /* pestañas por fase */
-    #tab-bar { display:flex; gap:6px; flex-wrap:wrap; }
-    .tab-btn {
-      display:flex; align-items:center; gap:8px;
-      background:var(--bg-card); border:1px solid var(--border); color:var(--text-secondary);
-      border-radius:8px; padding:9px 16px; font-size:13px; cursor:pointer;
-      transition:color .15s, border-color .15s, background .15s;
-    }
-    .tab-btn:hover { color:var(--text-primary); border-color:var(--accent-purple); }
-    .tab-btn.active {
-      color:var(--text-primary); border-color:var(--accent-purple);
-      background:rgba(140,100,255,.10); font-weight:600;
-    }
-    .tab-badge { font-size:10px; padding:1px 7px; border-radius:9px;
-                 border:1px solid var(--border); color:var(--text-dim); }
-    .tab-badge:empty { display:none; }
-    .tab-panel { display:none; flex-direction:column; gap:16px; }
-    .tab-panel.active { display:flex; }
-    .tab-intro {
-      font-size:12.5px; color:var(--text-secondary); line-height:1.55;
-      border:1px solid var(--border); border-left:3px solid var(--accent-purple);
-      border-radius:6px; padding:10px 14px; background:var(--bg-card);
-    }
-    .tab-intro b { color:var(--text-primary); font-weight:600; }
-    #compare-set { background:var(--bg-input,#14141c); border:1px solid var(--border);
-                   color:var(--text-primary); border-radius:5px; padding:6px 8px;
-                   font-size:12px; max-width:340px; }
-    #global-progress { display:contents; }
-
     /* progreso */
-    #run-progress { margin-top:0; }
     .pbar { height:8px; background:var(--bg-input,#14141c); border:1px solid var(--border);
             border-radius:5px; overflow:hidden; }
     .pbar > div { height:100%; width:0%; background:var(--accent-purple); transition:width .4s; }
@@ -243,6 +332,16 @@
     table.result-grid img { width:224px; height:auto; display:block; border-radius:4px;
                             cursor:zoom-in; }
     .cell-missing { color:var(--text-dim); font-size:18px; }
+
+    /* Footer de merge (Fase 5): pie del workbench, config afinada → checkpoint */
+    #merge-footer { margin-top:14px; padding-top:12px; border-top:1px solid var(--border); }
+    #merge-footer-bar { display:flex; align-items:flex-end; gap:12px; flex-wrap:wrap; }
+    #mf-summary { flex:1; min-width:220px; font-size:12px; }
+    #mf-summary.ready { color:var(--text-secondary); }
+    .mf-field { display:flex; flex-direction:column; gap:3px; font-size:11px; color:var(--text-dim); }
+    .mf-field input { background:var(--bg-input,#14141c); border:1px solid var(--border);
+                      color:var(--text-primary); border-radius:6px; padding:5px 8px; font-size:12px; }
+    #btn-merge:disabled { opacity:.5; cursor:not-allowed; }
   </style>
 </head>
 <body>
@@ -250,7 +349,10 @@
     <div id="tool-header">
       <button class="back-btn" onclick="location.href='/'">← Hub</button>
       <h1>🔬 Forge Lab</h1>
-      <span id="arch-label" style="font-size:12px;color:var(--text-dim)"></span>
+      <label style="font-size:11px;color:var(--text-dim);display:flex;align-items:center;gap:6px">
+        arquitectura
+        <select id="arch-select" style="background:var(--bg-input,#14141c);border:1px solid var(--border);color:var(--text-primary);border-radius:6px;padding:4px 8px;font-size:12px"></select>
+      </label>
       <div style="flex:1"></div>
       <span id="comfy-pill" class="badge">ComfyUI: …</span>
       <button class="back-btn" id="btn-status-toggle">Diagnóstico</button>
@@ -263,183 +365,141 @@
         <div id="status-content">Cargando…</div>
       </div>
 
-      <nav id="tab-bar">
-        <button class="tab-btn" data-tab="sets">① Sets &amp; baseline <span class="tab-badge" id="tb-sets"></span></button>
-        <button class="tab-btn" data-tab="lab">② Laboratorio <span class="tab-badge" id="tb-lab"></span></button>
-        <button class="tab-btn" data-tab="merge">③ Merge <span class="tab-badge" id="tb-merge"></span></button>
-        <button class="tab-btn" data-tab="compare">④ Comparar <span class="tab-badge" id="tb-compare"></span></button>
-      </nav>
+      <!-- ENTRADAS: base + lora + arranque (cabecera del workspace) -->
+      <div id="inputs-bar">
+        <div class="in-field">Base (checkpoint)
+          <input type="hidden" id="exp-checkpoint">
+          <button type="button" class="lora-pick" id="btn-pick-exp-checkpoint"></button></div>
+        <div class="in-field">LoRA
+          <input type="hidden" id="exp-lora">
+          <button type="button" class="lora-pick" id="btn-pick-exp-lora"></button></div>
+        <div class="in-field">Strength
+          <input id="exp-strength" type="number" step="0.05" min="0.05" max="2" value="1.0" style="width:72px"></div>
+        <div class="in-field">Seed
+          <input id="exp-seed" type="number" value="424242" style="width:110px"></div>
+        <div class="grow"></div>
+        <span id="explore-info"></span>
+        <span id="lock-badge" class="badge locked" style="display:none"
+              title="Entradas, prompt y KSampler quedan congelados mientras dura la sesión">🔒 prompt + config congelados</span>
+        <button class="btn btn-primary" id="btn-explore-start">🧪 Iniciar sesión</button>
+        <button class="back-btn" id="btn-explore-clear" style="display:none">🗑 Vaciar historial</button>
+        <button class="back-btn danger" id="btn-explore-close" style="display:none">✎ Nueva sesión</button>
+      </div>
 
       <div id="global-progress">
         <div id="run-progress" class="card" style="display:none">
           <div class="plabel" id="run-progress-label"></div>
           <div class="pbar"><div id="run-progress-fill"></div></div>
         </div>
-        <div id="merge-progress" class="card" style="display:none">
-          <div class="plabel" id="merge-progress-label"></div>
-          <div class="pbar"><div id="merge-progress-fill"></div></div>
-        </div>
       </div>
 
-      <!-- ① SETS & BASELINE -->
-      <div class="tab-panel" id="tab-sets">
-        <div class="tab-intro">
-          <b>Paso 1 — La vara de medir.</b> Un set es una lista fija de prompts + seeds
-          que se <b>bloquea</b> y ya nunca cambia: toda comparación entre modelos consiste
-          en regenerar exactamente este set. Crea o selecciona un set, bloquéalo cuando
-          estés conforme y genera su <b>baseline</b> con «▶ Regenerar set» contra el
-          checkpoint oficial. Con el baseline hecho: explora una LoRA en
-          <b>② Laboratorio</b> o mira resultados en <b>④ Comparar</b>.
-        </div>
-
-        <div class="card">
-          <h2>Sets de validación <span class="spacer"></span>
-              <button class="back-btn" id="btn-show-archived">mostrar archivados</button>
-              <button class="back-btn" id="btn-new-set">＋ Nuevo set</button></h2>
-          <div id="sets-list" class="dim" style="font-size:13px">Cargando…</div>
-        </div>
-
-        <div class="card" id="editor-card" style="display:none">
-          <h2><span id="editor-title"></span> <span id="editor-badge"></span>
-              <span class="spacer"></span></h2>
-          <div class="sampling-grid" id="sampling-grid"></div>
-          <div id="prompts-editor"></div>
-          <div class="editor-actions">
-            <button class="btn btn-outline" id="btn-add-prompt">＋ Prompt</button>
-            <button class="btn btn-primary" id="btn-save-set">Guardar borrador</button>
-            <button class="btn btn-outline" id="btn-lock-set">🔒 Bloquear</button>
-            <button class="btn btn-outline" id="btn-clone-set">Clonar</button>
-            <button class="btn btn-outline" id="btn-archive-set">Archivar</button>
-            <button class="btn btn-outline danger" id="btn-delete-set">Eliminar</button>
-            <div style="flex:1"></div>
-            <select id="run-model" title="Checkpoint contra el que regenerar"></select>
-            <button class="btn btn-primary" id="btn-run-set">▶ Regenerar set</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- ③ MERGE -->
-      <div class="tab-panel" id="tab-merge">
-        <div class="tab-intro">
-          <b>Paso 3 — Fijar el resultado.</b> El merge escribe un checkpoint real
-          (~12 GB, corre en CPU) matemáticamente equivalente a la LoRA en runtime.
-          Aquí están la base oficial y los derivados con su linaje. Después de mergear:
-          regenera el set contra el derivado (<b>① Sets</b>) y compáralo con el baseline
-          (<b>④ Comparar</b>).
-        </div>
-
-        <div class="card" id="ckpt-card">
-        <h2>Checkpoints — base y derivados (merge)</h2>
-        <div id="ckpt-list" class="dim" style="font-size:13px">Cargando…</div>
-        <div class="merge-form">
-          <label>Base
-            <select id="merge-base"></select></label>
-          <label>LoRA (Z-Image)
-            <input type="hidden" id="merge-lora">
-            <button type="button" class="lora-pick" id="btn-pick-merge-lora"></button></label>
-          <label>Strength
-            <input id="merge-strength" type="number" step="0.05" min="0.05"
-                   max="2" value="1.0" style="width:72px"></label>
-          <label>Nombre del derivado
-            <input id="merge-name" placeholder="minúsculas-y-guiones"
-                   style="width:200px"></label>
-          <label>Etiqueta
-            <input id="merge-label" placeholder="opcional" style="width:180px"></label>
-          <button class="btn btn-primary" id="btn-merge">⚒ Merge → checkpoint</button>
-        </div>
-      </div>
-      </div>
-
-      <!-- ② LABORATORIO -->
-      <div class="tab-panel" id="tab-lab">
-        <div class="tab-intro">
-          <b>Paso 2 — Descubrir qué hace cada bloque.</b> Monta checkpoint + LoRA con un
-          prompt y seed congelados, genera una <b>referencia</b> y luego apaga o dosifica
-          bloques (0–29 + refiners) para aislar dónde vive el estilo y dónde la anatomía.
-          Las imágenes de aquí son <b>temporales</b>: se borran al cerrar la sesión.
-          Cuando una config te convenza, «✔ Confirmar con set» genera la evidencia
-          completa y «⚒ Merge» la convierte en checkpoint (<b>③ Merge</b>).
-        </div>
-
-      <div class="card" id="explore-card">
-        <h2>Laboratorio de bloques — exploración runtime <span class="spacer"></span>
-            <button class="back-btn danger" id="btn-explore-close" style="display:none">Cerrar sesión (borra imágenes)</button></h2>
-
-        <div id="explore-setup">
-          <div class="explore-form">
-            <label>Checkpoint
-              <select id="exp-checkpoint"></select></label>
-            <label>LoRA (Z-Image)
-              <input type="hidden" id="exp-lora">
-              <button type="button" class="lora-pick" id="btn-pick-exp-lora"></button></label>
-            <label>Strength global
-              <input id="exp-strength" type="number" step="0.05" min="0.05" max="2"
-                     value="1.0" style="width:68px"></label>
-            <label>Prompt del set (opcional)
-              <select id="exp-from-set"><option value="">— libre —</option></select></label>
-            <label>Seed
-              <input id="exp-seed" type="number" value="424242" style="width:110px"></label>
-            <label style="flex-basis:100%">Prompt
-              <textarea id="exp-prompt"></textarea></label>
-            <button class="btn btn-primary" id="btn-explore-start">🧪 Iniciar sesión</button>
+      <!-- WORKBENCH: KSampler (izq) · viewport+prompt+bloques (centro) · historial (der) -->
+      <div id="workbench">
+        <div id="ksampler-panel">
+          <div class="ks-head" id="ks-toggle"><span>⚙</span><span class="ks-title">KSampler</span></div>
+          <div class="ks-body">
+            <label>CFG <input id="ks-cfg" type="number" step="0.5"></label>
+            <label>Steps <input id="ks-steps" type="number"></label>
+            <label>Sampler <input id="ks-sampler"></label>
+            <label>Scheduler <input id="ks-scheduler"></label>
+            <label>Ancho <input id="ks-width" type="number" step="8"></label>
+            <label>Alto <input id="ks-height" type="number" step="8"></label>
           </div>
         </div>
 
-        <div id="explore-session" style="display:none">
-          <div id="explore-info"></div>
-          <div class="preset-row" style="margin-top:10px">
-            <button class="back-btn" data-preset="all-on">todo ON</button>
-            <button class="back-btn" data-preset="all-off">todo OFF</button>
-            <button class="back-btn" data-preset="early">solo 0–9</button>
-            <button class="back-btn" data-preset="mid">solo 10–19</button>
-            <button class="back-btn" data-preset="late">solo 20–29</button>
-            <button class="back-btn" data-preset="invert">invertir</button>
+        <div id="work-center">
+          <div id="viewport">
+            <div class="compare-wrap" id="compare-wrap"></div>
           </div>
-          <div class="switch-grid" id="switch-grid"></div>
-          <div class="editor-actions">
-            <button class="btn btn-primary" id="btn-explore-gen">▶ Generar variante</button>
-            <span class="dim" style="font-size:11px;align-self:center">
-              la 1ª generación queda como referencia; dosis 1.0 = efecto completo (lineal)</span>
+          <div id="test-prompt">
+            <textarea id="exp-prompt" placeholder="Prompt de prueba (se congela al iniciar la sesión)…"></textarea>
+            <button class="btn btn-primary" id="btn-explore-gen" disabled>▶ Generar</button>
           </div>
-          <div id="explore-progress" style="display:none;margin-top:10px">
+          <div id="explore-progress" style="display:none">
             <div class="plabel" id="explore-progress-label"></div>
             <div class="pbar"><div id="explore-progress-fill"></div></div>
           </div>
-          <div class="compare-wrap" id="compare-wrap"></div>
-          <div class="hist-strip" id="hist-strip"></div>
-          <div class="editor-actions" id="explore-actions" style="display:none">
-            <button class="btn btn-outline" id="btn-explore-ref">📌 Fijar como referencia</button>
-            <button class="btn btn-outline" id="btn-explore-confirm">✔ Confirmar con set</button>
-            <button class="btn btn-primary" id="btn-explore-merge">⚒ Merge con esta config</button>
+          <div id="blocks-panel">
+            <div class="blocks-head">
+              <span class="blocks-title">Bloques</span>
+              <div class="preset-row" id="preset-row"></div>
+              <span class="dim" style="font-size:10px">clic en un bloque → slider · valor 1.0 = efecto completo (lineal)</span>
+            </div>
+            <div class="chip-grid" id="switch-grid"></div>
+            <div class="editor-actions" id="explore-actions" style="display:none">
+              <button class="btn btn-outline" id="btn-explore-ref">📌 Referencia</button>
+              <span class="dim" style="font-size:11px">el merge de esta config vive en el pie ↓</span>
+            </div>
           </div>
         </div>
-      </div>
-      </div>
 
-      <!-- ④ COMPARAR -->
-      <div class="tab-panel" id="tab-compare">
-        <div class="tab-intro">
-          <b>Paso 4 — El veredicto.</b> Marca dos o más runs del set y se montan lado a
-          lado, una fila por prompt (misma seed). Lectura: <b>target-*</b> debe mostrar
-          el efecto buscado, <b>general-*</b> debe quedar casi intacto (si se estiliza,
-          la LoRA sangra fuera de su dominio) y <b>stress-*</b> no debe perder manos,
-          poses ni texto.
-        </div>
-
-        <div class="card">
-          <h2>Set a comparar</h2>
-          <select id="compare-set"></select>
-        </div>
-
-        <div class="card" id="runs-card" style="display:none">
-          <h2>Runs del set <span class="spacer"></span>
-              <span class="dim" style="font-size:11px;font-weight:400">
-                marca runs para compararlos en el grid</span></h2>
-          <div id="runs-list"></div>
-          <div id="grid-wrap" style="margin-top:14px"></div>
+        <div id="history-col">
+          <div class="hist-strip" id="hist-strip"></div>
         </div>
       </div>
 
+      <!-- BATERÍA DE PROMPTS (plegable): config fija × N prompts + merge -->
+      <div class="fold" id="fold-battery">
+        <div class="fold-head" data-fold="fold-battery"><span class="caret">▶</span>
+          🔋 Batería de prompts — estresa la config actual con varios prompts</div>
+        <div class="fold-body">
+
+          <div class="card" id="battery-card">
+            <h2>Batería de prompts <span class="spacer"></span>
+                <select id="battery-select" title="Plantilla de batería"></select>
+                <button class="back-btn" id="btn-battery-new">＋ Nueva</button></h2>
+            <div id="battery-hint" class="dim" style="font-size:12px;margin:2px 0"></div>
+            <div id="battery-meta" class="dim" style="font-size:11px;margin-bottom:6px"></div>
+            <div id="battery-prompts"></div>
+            <div class="editor-actions">
+              <button class="btn btn-outline" id="btn-battery-add">＋ Prompt</button>
+              <button class="btn btn-primary" id="btn-battery-save">Guardar</button>
+              <button class="btn btn-outline" id="btn-battery-reset">Restaurar default</button>
+              <button class="btn btn-outline danger" id="btn-battery-delete">Eliminar</button>
+              <div style="flex:1"></div>
+              <button class="btn btn-primary" id="btn-battery-run">▶ Correr contra la config actual</button>
+            </div>
+            <div id="battery-progress" class="card" style="display:none;margin-top:8px">
+              <div class="plabel" id="battery-progress-label"></div>
+              <div class="pbar"><div id="battery-progress-fill"></div></div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- FOOTER: merge de la config afinada → checkpoint derivado (Fase 5) -->
+      <div id="merge-footer">
+        <div id="merge-footer-bar">
+          <div id="mf-summary" class="dim">Inicia una sesión y genera al menos una vez; selecciona ese trabajo para mergear su config.</div>
+          <label class="mf-field">Nombre
+            <input id="merge-name" placeholder="minúsculas-y-guiones" style="width:190px"></label>
+          <label class="mf-field">Etiqueta
+            <input id="merge-label" placeholder="opcional" style="width:160px"></label>
+          <button class="btn btn-primary" id="btn-merge" disabled>⚒ Merge → checkpoint con la config afinada</button>
+        </div>
+        <div id="merge-progress" class="card" style="display:none;margin-top:8px">
+          <div class="plabel" id="merge-progress-label"></div>
+          <div class="pbar"><div id="merge-progress-fill"></div></div>
+        </div>
+        <details id="ckpt-fold" style="margin-top:8px">
+          <summary style="cursor:pointer;font-size:12px;color:var(--text-secondary)">Checkpoints — base y derivados</summary>
+          <div id="ckpt-list" class="dim" style="font-size:13px;margin-top:6px">Cargando…</div>
+        </details>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- popup compartido del slider de bloque -->
+  <div id="chip-pop">
+    <div class="pop-head"><span id="pop-title" class="mono">—</span>
+      <span><span id="pop-val" class="mono">1.00</span></span></div>
+    <label class="pop-on"><input type="checkbox" id="pop-on" checked> activo (mergea este bloque)</label>
+    <input type="range" id="pop-range" min="0" max="2" step="0.05" value="1">
+    <div class="pop-row">
+      <input type="number" id="pop-num" min="0" max="2" step="0.05" value="1">
+      <span class="dim" style="font-size:11px">dosis (0–2, lineal)</span>
     </div>
   </div>
 
@@ -447,13 +507,20 @@
     <div id="lora-picker">
       <div class="lp-head">
         <input id="lp-search" placeholder="buscar por nombre o carpeta…">
+        <div class="lp-controls">
+          <select id="lp-sort" title="orden"></select>
+          <button class="lp-fav-btn" id="lp-fav-only" title="mostrar solo favoritas">★</button>
+        </div>
         <span class="dim" id="lp-count" style="font-size:11px;white-space:nowrap"></span>
         <button class="back-btn" id="lp-close">✕</button>
       </div>
-      <div id="lp-grid"></div>
+      <div id="lp-scroll">
+        <div id="lp-grid"></div>
+        <div id="lp-sentinel"></div>
+      </div>
     </div>
   </div>
 
-  <script src="/static/forge.js"></script>
+  <script src="/static/forge.js?v=8"></script>
 </body>
 </html>

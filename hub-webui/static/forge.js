@@ -5,22 +5,21 @@ const esc = (s) => String(s).replace(/[&<>"']/g,
   (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const mark = (ok) => ok ? '<span class="ok">✔</span>' : '<span class="bad">✘</span>';
 
-const CATEGORIES = ['target', 'general', 'stress'];
-const CAT_LABELS = {
-  target:  'Target — dominio objetivo (render 3D multiestilo)',
-  general: 'General — fuera de dominio (no romper)',
-  stress:  'Stress — manos, multi-personaje, texto, poses',
-};
-const SAMPLING_FIELDS = [
-  ['cfg', 'CFG'], ['steps', 'Steps'], ['sampler', 'Sampler'],
-  ['scheduler', 'Scheduler'], ['width', 'Ancho'], ['height', 'Alto'],
-];
+let runsCache  = [];     // conservado solo para updateTabBadges (badges viejos)
 
-let currentSet = null;   // dict completo del set seleccionado
-let runsCache  = [];     // runs del set seleccionado
-let selectedRuns = new Set();
-let jobTimer = null;
-let showArchived = false;
+// arquitectura activa: gobierna qué checkpoints/LoRAs/sets se ven y con qué
+// switches se explora. Persistida entre recargas.
+let currentArch = localStorage.getItem('forge-arch') || 'zimage';
+let archDefs = [];       // defs completas de /architectures
+const archDefByName = (n) => archDefs.find(a => a.name === n);
+const archDef = () => archDefByName(currentArch) || archDefs[0] || null;
+// arquitectura vigente en el laboratorio: la de la sesión de exploración
+// activa (que puede ser de otra arch), o la seleccionada si no hay sesión
+const labArch = () =>
+  (exploreSession && archDefByName(exploreSession.arch)) || archDef();
+// añade ?arch= (o &arch=) a las rutas que filtran por arquitectura
+const withArch = (path) =>
+  path + (path.includes('?') ? '&' : '?') + 'arch=' + encodeURIComponent(currentArch);
 
 async function api(path, opts = {}) {
   if (opts.body !== undefined) {
@@ -44,10 +43,32 @@ const MF_LABELS = {
   vae: 'VAE',
 };
 
+async function loadArchitectures() {
+  const data = await api('/architectures');
+  archDefs = data.architectures;
+  if (!archDefByName(currentArch)) currentArch = archDefs[0]?.name || 'zimage';
+  const sel = $('arch-select');
+  sel.innerHTML = '';
+  for (const a of archDefs) sel.add(new Option(a.label, a.name));
+  sel.value = currentArch;
+  sel.onchange = () => switchArch(sel.value);
+}
+
+async function switchArch(name) {
+  if (name === currentArch) return;
+  currentArch = name;
+  localStorage.setItem('forge-arch', name);
+  // resetear todo lo dependiente de arquitectura (checkpoints, LoRAs, sets y
+  // el grid de switches son distintos por arch)
+  $('switch-grid').innerHTML = '';
+  await Promise.all([loadStatus(), refreshCheckpoints(), refreshLoras(),
+                     refreshBatteries(false)]);
+  await refreshExplore();
+}
+
 async function loadStatus() {
   try {
-    const [s, mf] = await Promise.all([api('/status'), api('/model-files')]);
-    $('arch-label').textContent = s.arch;
+    const [s, mf] = await Promise.all([api(withArch('/status')), api(withArch('/model-files'))]);
     const pill = $('comfy-pill');
     pill.textContent = 'ComfyUI: ' + (s.comfyui ? 'online' : 'offline');
     pill.className = 'badge ' + (s.comfyui ? 'draft' : '');
@@ -88,7 +109,7 @@ async function saveModelPaths(reset) {
     files[sel.dataset.key] = reset ? '' : sel.value;
   });
   try {
-    await api('/model-files', { method: 'PUT', body: { files } });
+    await api('/model-files', { method: 'PUT', body: { arch: currentArch, files } });
     await loadStatus();
     await refreshCheckpoints();   // la base oficial puede haber cambiado
   } catch (e) { alert('Error guardando paths: ' + e.message); }
@@ -99,243 +120,162 @@ $('btn-status-toggle').onclick = () => {
   el.style.display = el.style.display === 'none' ? '' : 'none';
 };
 
-// ── Lista de sets ───────────────────────────────────────────────────────────
+// ── Batería de prompts (Fase 4) ─────────────────────────────────────────────
 
-async function refreshSets(keepSelection = true) {
-  const data = await api('/sets');
-  setsCache = data.sets;
-  // selector de la pestaña Comparar
-  const cs = $('compare-set');
-  cs.innerHTML = '<option value="">— elige un set —</option>';
-  for (const s of data.sets.filter(s => !s.archived))
-    cs.add(new Option(`${s.name} (${s.n_runs} runs)`, s.name));
-  if (currentSet) cs.value = currentSet.name;
-  updateTabBadges();
-  const el = $('sets-list');
-  const visible = data.sets.filter(s => showArchived || !s.archived);
-  const nArchived = data.sets.length - data.sets.filter(s => !s.archived).length;
-  $('btn-show-archived').textContent = showArchived
-    ? 'ocultar archivados' : `mostrar archivados (${nArchived})`;
-  $('btn-show-archived').style.display = nArchived || showArchived ? '' : 'none';
-  if (!visible.length) {
-    el.innerHTML = '<span class="dim">No hay sets todavía. Crea uno — arranca como borrador editable y se bloquea cuando estés conforme.</span>';
-    return;
+let batteriesCache = [];      // resúmenes de /batteries
+let currentBattery = null;    // dict completo de la batería seleccionada
+const LT_LABELS = { character: 'Personaje', style: 'Estilo', concept: 'Concepto' };
+
+async function refreshBatteries(keepSel = true) {
+  const data = await api('/batteries');
+  batteriesCache = data.batteries;
+  const sel = $('battery-select');
+  const prev = keepSel && currentBattery ? currentBattery.id : sel.value;
+  sel.innerHTML = '';
+  for (const b of batteriesCache) {
+    const lt = LT_LABELS[b.lora_type] || b.lora_type;
+    sel.add(new Option(`${lt} · ${b.style} — ${b.label}${b.modified ? ' ✎' : ''}`, b.id));
   }
-  el.innerHTML = '';
-  for (const s of visible) {
-    const row = document.createElement('div');
-    row.className = 'set-row' + (currentSet && s.name === currentSet.name ? ' active' : '');
-    const cats = CATEGORIES.map(c => `${c[0].toUpperCase()}:${s.categories[c]}`).join(' ');
-    row.innerHTML =
-      `<span class="mono">${esc(s.name)}</span>` +
-      `<span class="badge ${s.locked ? 'locked' : 'draft'}">${s.locked ? '🔒 bloqueado' : 'borrador'}</span>` +
-      (s.archived ? '<span class="badge">📦 archivado</span>' : '') +
-      `<span class="dim">${esc(s.arch)}</span>` +
-      `<span class="dim">${s.n_prompts} prompts (${cats})</span>` +
-      `<span style="flex:1"></span>` +
-      `<span class="dim">${s.n_runs} runs</span>`;
-    row.onclick = () => selectSet(s.name);
-    el.appendChild(row);
-  }
-  if (keepSelection && currentSet) selectSet(currentSet.name, false);
+  if (prev && batteriesCache.some(b => b.id === prev)) sel.value = prev;
+  await selectBattery(sel.value);
 }
 
-$('btn-show-archived').onclick = () => {
-  showArchived = !showArchived;
-  refreshSets();
-};
-
-$('btn-new-set').onclick = async () => {
-  const name = prompt('Nombre del nuevo set (minúsculas, dígitos, guiones):');
-  if (!name) return;
-  try {
-    await api('/sets', { method: 'POST', body: { name: name.trim(), starter: true } });
-    await refreshSets(false);
-    selectSet(name.trim());
-  } catch (e) { alert('Error: ' + e.message); }
-};
-
-// ── Editor ──────────────────────────────────────────────────────────────────
-
-async function selectSet(name, refetch = true) {
-  if (refetch) {
-    currentSet = await api('/sets/' + encodeURIComponent(name));
-    selectedRuns = new Set();
-  }
-  document.querySelectorAll('.set-row').forEach(r => {
-    r.classList.toggle('active', r.querySelector('.mono').textContent === name);
-  });
-  renderEditor();
-  $('compare-set').value = name;
-  // ofrecer los prompts del set en el setup de exploración
-  const fs = $('exp-from-set');
-  fs.innerHTML = '<option value="">— libre —</option>';
-  for (const p of currentSet.prompts)
-    fs.add(new Option(`${currentSet.name} / ${p.id}`, p.id));
-  await refreshRuns();
+async function selectBattery(id) {
+  if (!id) { currentBattery = null; return; }
+  currentBattery = await api('/batteries/' + encodeURIComponent(id));
+  renderBattery();
 }
 
-function renderEditor() {
-  const s = currentSet;
-  $('editor-card').style.display = '';
-  $('editor-title').textContent = s.name;
-  $('editor-badge').innerHTML = s.locked_at
-    ? `<span class="badge locked">🔒 bloqueado ${esc(s.locked_at.slice(0, 10))}</span>`
-    : '<span class="badge draft">borrador — editable</span>';
-
-  const sg = $('sampling-grid');
-  sg.innerHTML = '';
-  for (const [key, label] of SAMPLING_FIELDS) {
-    const lab = document.createElement('label');
-    lab.textContent = label;
-    const inp = document.createElement('input');
-    inp.dataset.key = key;
-    inp.value = s.sampling[key];
-    inp.disabled = !!s.locked_at;
-    lab.appendChild(inp);
-    sg.appendChild(lab);
-  }
-
-  const pe = $('prompts-editor');
+function renderBattery() {
+  const b = currentBattery;
+  if (!b) return;
+  $('battery-hint').textContent = b.hint || '';
+  const lt = LT_LABELS[b.lora_type] || b.lora_type;
+  const origin = !b.is_default ? 'batería propia'
+    : b.is_custom ? 'default modificado' : 'default de fábrica';
+  $('battery-meta').textContent = `${lt} · ${b.style} · ${b.prompts.length} prompts · ${origin}`;
+  const pe = $('battery-prompts');
   pe.innerHTML = '';
-  for (const cat of CATEGORIES) {
-    const title = document.createElement('div');
-    title.className = 'cat-title';
-    title.textContent = CAT_LABELS[cat];
-    pe.appendChild(title);
-    for (const p of s.prompts.filter(p => p.category === cat))
-      pe.appendChild(promptRow(p, !!s.locked_at));
-  }
-
-  const locked = !!s.locked_at;
-  $('btn-save-set').style.display = locked ? 'none' : '';
-  $('btn-lock-set').style.display = locked ? 'none' : '';
-  $('btn-add-prompt').style.display = locked ? 'none' : '';
-  $('btn-delete-set').style.display = locked ? 'none' : '';
-  // archivar: solo tiene sentido en sets bloqueados (los borradores se eliminan)
-  $('btn-archive-set').style.display = locked ? '' : 'none';
-  $('btn-archive-set').textContent = s.archived_at ? 'Desarchivar' : 'Archivar';
+  for (const p of b.prompts) pe.appendChild(batteryPromptRow(p));
+  $('btn-battery-reset').style.display = (b.is_default && b.is_custom) ? '' : 'none';
+  $('btn-battery-delete').style.display = (!b.is_default) ? '' : 'none';
 }
 
-$('btn-archive-set').onclick = async () => {
-  const action = currentSet.archived_at ? 'unarchive' : 'archive';
-  try {
-    currentSet = await api(`/sets/${encodeURIComponent(currentSet.name)}/${action}`,
-                           { method: 'POST' });
-    renderEditor();
-    await refreshSets();
-  } catch (e) { alert('Error: ' + e.message); }
-};
-
-function promptRow(p, locked) {
+function batteryPromptRow(p) {
   const row = document.createElement('div');
   row.className = 'prompt-row';
-
   const id = document.createElement('input');
   id.value = p.id; id.placeholder = 'id'; id.dataset.f = 'id';
-
   const seed = document.createElement('input');
   seed.value = p.seed; seed.placeholder = 'seed'; seed.dataset.f = 'seed';
-
   const txt = document.createElement('textarea');
   txt.value = p.text; txt.placeholder = 'prompt'; txt.dataset.f = 'text';
-
+  const neg = document.createElement('input');
+  neg.value = p.negative || ''; neg.placeholder = 'negative (opcional)'; neg.dataset.f = 'negative';
   const del = document.createElement('button');
   del.className = 'prompt-del'; del.textContent = '✕'; del.title = 'Quitar prompt';
   del.onclick = () => row.remove();
-
-  row.dataset.category = p.category;
-  row.dataset.negative = p.negative || '';
-  for (const el of [id, seed, txt]) el.disabled = locked;
-  if (locked) del.style.display = 'none';
-
-  row.append(id, seed, txt, del);
+  row.append(id, seed, txt, neg, del);
   return row;
 }
 
-function collectEditor() {
-  const sampling = {};
-  for (const inp of $('sampling-grid').querySelectorAll('input'))
-    sampling[inp.dataset.key] = inp.value.trim();
+function collectBattery() {
+  const b = currentBattery;
   const prompts = [];
-  for (const row of $('prompts-editor').querySelectorAll('.prompt-row')) {
+  for (const row of $('battery-prompts').querySelectorAll('.prompt-row')) {
     const get = (f) => row.querySelector(`[data-f="${f}"]`).value;
-    prompts.push({
-      id: get('id').trim(), seed: get('seed').trim(), text: get('text'),
-      category: row.dataset.category, negative: row.dataset.negative,
-    });
+    prompts.push({ id: get('id').trim(), seed: get('seed').trim(),
+                   text: get('text'), negative: get('negative') });
   }
-  return { sampling, prompts };
+  return { id: b.id, label: b.label, lora_type: b.lora_type,
+           style: b.style, hint: b.hint, prompts };
 }
 
-$('btn-add-prompt').onclick = () => {
-  const cat = prompt('Categoría (target / general / stress):', 'target');
-  if (!CATEGORIES.includes(cat)) { if (cat) alert('Categoría inválida'); return; }
-  const rows = [...$('prompts-editor').querySelectorAll('.prompt-row')]
-    .filter(r => r.dataset.category === cat);
-  const n = rows.length + 1;
-  const row = promptRow({
-    id: `${cat}-${String(n).padStart(2, '0')}`, category: cat,
-    seed: Math.floor(Math.random() * 1e9), text: '', negative: '',
-  }, false);
-  if (rows.length) rows[rows.length - 1].after(row);
-  else $('prompts-editor').appendChild(row);
+$('battery-select').onchange = () => selectBattery($('battery-select').value);
+
+$('btn-battery-add').onclick = () => {
+  if (!currentBattery) return;
+  const n = $('battery-prompts').querySelectorAll('.prompt-row').length + 1;
+  $('battery-prompts').appendChild(batteryPromptRow(
+    { id: `prompt-${n}`, seed: Math.floor(Math.random() * 1e9), text: '', negative: '' }));
 };
 
-$('btn-save-set').onclick = async () => {
+$('btn-battery-save').onclick = async () => {
+  if (!currentBattery) return;
   try {
-    currentSet = await api('/sets/' + encodeURIComponent(currentSet.name),
-                           { method: 'PUT', body: collectEditor() });
-    renderEditor();
-    await refreshSets();
+    await api('/batteries', { method: 'POST', body: collectBattery() });
+    await refreshBatteries();
   } catch (e) { alert('Error guardando: ' + e.message); }
 };
 
-$('btn-lock-set').onclick = async () => {
-  if (!confirm(`Bloquear "${currentSet.name}"?\n\nDespués de esto el set es INMUTABLE para siempre (solo clonable). Asegúrate antes: es la vara de medir de todos los merges.`)) return;
+$('btn-battery-reset').onclick = async () => {
+  if (!currentBattery) return;
+  if (!confirm(`Restaurar "${currentBattery.label}" a la plantilla de fábrica? Se pierden tus cambios.`)) return;
   try {
-    const body = collectEditor();
-    await api('/sets/' + encodeURIComponent(currentSet.name), { method: 'PUT', body });
-    currentSet = await api('/sets/' + encodeURIComponent(currentSet.name) + '/lock',
-                           { method: 'POST' });
-    renderEditor();
-    await refreshSets();
-  } catch (e) { alert('Error bloqueando: ' + e.message); }
+    await api('/batteries/' + encodeURIComponent(currentBattery.id), { method: 'DELETE' });
+    await refreshBatteries();
+  } catch (e) { alert('Error: ' + e.message); }
 };
 
-$('btn-clone-set').onclick = async () => {
-  const name = prompt('Nombre del clon (nuevo borrador editable):',
-                      currentSet.name + '-v2');
-  if (!name) return;
+$('btn-battery-delete').onclick = async () => {
+  if (!currentBattery) return;
+  if (!confirm(`Eliminar la batería "${currentBattery.label}"?`)) return;
   try {
-    await api('/sets/' + encodeURIComponent(currentSet.name) + '/clone',
-              { method: 'POST', body: { new_name: name.trim() } });
-    await refreshSets(false);
-    selectSet(name.trim());
-  } catch (e) { alert('Error clonando: ' + e.message); }
+    await api('/batteries/' + encodeURIComponent(currentBattery.id), { method: 'DELETE' });
+    currentBattery = null;
+    await refreshBatteries(false);
+  } catch (e) { alert('Error: ' + e.message); }
 };
 
-$('btn-delete-set').onclick = async () => {
-  const nRuns = runsCache.length;
-  if (nRuns) {
-    // borrar un borrador arrastra sus runs: exigir el nombre, no un simple OK
-    const typed = prompt(
-      `CUIDADO: esto elimina el set "${currentSet.name}" Y sus ${nRuns} run(s) con todas sus imágenes.\n` +
-      `Si solo quieres borrar un run, usa el 🗑 de su fila.\n\n` +
-      `Para confirmar, escribe el nombre exacto del set:`);
-    if (typed !== currentSet.name) {
-      if (typed !== null) alert('Nombre no coincide — no se borra nada.');
-      return;
-    }
-  } else if (!confirm(`Eliminar el borrador "${currentSet.name}"?`)) return;
+$('btn-battery-new').onclick = async () => {
+  const id = prompt('ID de la batería nueva (minúsculas, dígitos, guiones):');
+  if (!id) return;
+  const lora_type = prompt('Tipo de LoRA (character / style / concept):', 'character');
+  if (!['character', 'style', 'concept'].includes(lora_type)) {
+    if (lora_type) alert('tipo inválido'); return; }
+  const style = prompt('Estilo (prosa / tags):', 'prosa');
+  if (!['prosa', 'tags'].includes(style)) { if (style) alert('estilo inválido'); return; }
+  const label = prompt('Etiqueta:', id) || id;
   try {
-    await api('/sets/' + encodeURIComponent(currentSet.name), { method: 'DELETE' });
-    currentSet = null;
-    $('editor-card').style.display = 'none';
-    $('runs-card').style.display = 'none';
-    await refreshSets(false);
-  } catch (e) { alert('Error eliminando: ' + e.message); }
+    await api('/batteries', { method: 'POST', body: {
+      id: id.trim(), label, lora_type, style, hint: '',
+      prompts: [{ id: 'prompt-1', text: 'edítame', negative: '',
+                  seed: Math.floor(Math.random() * 1e9) }] } });
+    await refreshBatteries(false);
+    $('battery-select').value = id.trim();
+    await selectBattery(id.trim());
+  } catch (e) { alert('Error: ' + e.message); }
 };
+
+$('btn-battery-run').onclick = async () => {
+  if (!exploreSession) return alert('Inicia una sesión de exploración primero (define base/LoRA/prompt y config).');
+  if (!currentBattery) return alert('Elige una batería.');
+  if (!confirm(`Correr la batería "${currentBattery.label}" (${currentBattery.prompts.length} prompts) contra la config actual de bloques?\nCada prompt cae al historial como un trabajo.`)) return;
+  try {
+    const { job_id } = await api('/explore/battery', { method: 'POST',
+      body: { battery_id: currentBattery.id, config: collectConfig() } });
+    $('btn-battery-run').disabled = true;
+    $('battery-progress').style.display = '';
+    const timer = setInterval(async () => {
+      let j;
+      try { j = await api('/jobs/' + job_id); } catch (e) { return; }
+      const done = j.item_index + (j.step / Math.max(j.steps_total, 1));
+      const pct = Math.round(100 * done / Math.max(j.total, 1));
+      $('battery-progress-fill').style.width = pct + '%';
+      $('battery-progress-label').textContent =
+        `[${j.item_index + 1}/${j.total}] ${j.prompt_id} — paso ${j.step}/${j.steps_total} (${pct}%)`;
+      if (j.status !== 'running') {
+        clearInterval(timer);
+        $('btn-battery-run').disabled = false;
+        $('battery-progress').style.display = 'none';
+        if (j.status === 'error') alert('Batería fallida: ' + j.error);
+        await refreshExplore();
+      }
+    }, 1000);
+  } catch (e) { alert('Error lanzando la batería: ' + e.message); }
+};
+
+// (Sets de validación retirados de la UI — el backend Python sigue intacto.)
 
 // ── Checkpoints + merge (Fase 3) ────────────────────────────────────────────
 
@@ -344,7 +284,7 @@ let checkpointsCache = [];
 const fmtGB = (b) => b == null ? '' : (b / 1024 ** 3).toFixed(2) + ' GB';
 
 async function refreshCheckpoints() {
-  const data = await api('/checkpoints');
+  const data = await api(withArch('/checkpoints'));
   checkpointsCache = data.checkpoints;
   const el = $('ckpt-list');
   el.innerHTML = '';
@@ -379,38 +319,48 @@ async function refreshCheckpoints() {
     }
     el.appendChild(row);
   }
-  // selects: base del merge + modelo del run
-  const baseSel = $('merge-base');
-  baseSel.innerHTML = '';
-  for (const c of checkpointsCache.filter(c => c.present))
-    baseSel.add(new Option(`${c.name}${c.kind === 'official' ? ' (oficial)' : ''}`, c.name));
-  const runSel = $('run-model');
-  runSel.innerHTML = '';
-  for (const c of checkpointsCache.filter(c => c.present))
-    runSel.add(new Option(`contra: ${c.name}`, c.kind === 'official' ? '' : c.unet_name));
-  const expSel = $('exp-checkpoint');
-  expSel.innerHTML = '';
-  for (const c of checkpointsCache.filter(c => c.present))
-    expSel.add(new Option(`${c.name}${c.kind === 'official' ? ' (oficial)' : ''}`, c.name));
+  // pick buttons visuales de checkpoint (base del merge + checkpoint de la
+  // exploración): default = primer checkpoint presente de la arquitectura
+  const present = checkpointsCache.filter(c => c.present);
+  for (const [inp, btn] of [['exp-checkpoint', 'btn-pick-exp-checkpoint']]) {
+    if (!present.find(c => c.name === $(inp).value))
+      $(inp).value = present[0]?.name || '';
+    renderCkptPickBtn(inp, btn);
+  }
   updateTabBadges();
 }
 
-// ── Picker visual de LoRAs (thumbnails estilo Vault) ───────────────────────
-// Solo se listan LoRAs de la arquitectura activa (header del safetensors +
-// clasificación del Model Vault); sin preview → placeholder genérico.
+const ckptByName = (n) => checkpointsCache.find(c => c.name === n);
+const ckptThumbUrl = (c) => c.has_preview
+  ? `/api/forge/checkpoint-preview?arch=${encodeURIComponent(currentArch)}&name=${encodeURIComponent(c.name)}`
+  : '';
+
+function renderCkptPickBtn(inputId, btnId) {
+  const btn = $(btnId);
+  const c = ckptByName($(inputId).value);
+  if (!c) {
+    btn.innerHTML = '<span class="ph">🧩</span><span class="nm dim">— elegir checkpoint —</span>';
+    return;
+  }
+  const url = ckptThumbUrl(c);
+  btn.innerHTML = (url ? `<img src="${url}">` : '<span class="ph">🧩</span>') +
+    `<span class="nm" title="${esc(c.name)}">${esc(c.name)}</span>`;
+}
+
+// ── Picker visual genérico (thumbnails estilo Vault) ───────────────────────
+// Reutilizado para LoRAs y checkpoints: mismo modal, distinta config. Los
+// LoRAs se listan solo si son de la arquitectura activa; los checkpoints ya
+// vienen filtrados por arquitectura del backend.
 
 let lorasCache = [];        // solo arch_match
-let loraPickerTarget = null;
+let picker = null;          // config del picker abierto (o null)
 
 const loraByFile = (f) => lorasCache.find(l => l.file === f);
-const loraThumb = (l, cls) => l.has_preview
-  ? `<img class="${cls}" loading="lazy" src="/api/forge/lora-preview?file=${encodeURIComponent(l.file)}">`
-  : (cls === 'lp-thumb' ? '<div class="lp-thumb-ph">🧬</div>' : '<span class="ph">🧬</span>');
 
 async function refreshLoras() {
-  const data = await api('/loras');
+  const data = await api(withArch('/loras'));
   lorasCache = data.loras.filter(l => l.arch_match);
-  for (const id of ['merge-lora', 'exp-lora']) {
+  for (const id of ['exp-lora']) {
     if ($(id).value && !loraByFile($(id).value)) $(id).value = '';
     renderLoraPickBtn(id);
   }
@@ -419,77 +369,232 @@ async function refreshLoras() {
 function renderLoraPickBtn(id) {
   const btn = $('btn-pick-' + id);
   const l = loraByFile($(id).value);
-  btn.innerHTML = l
-    ? loraThumb(l, '') + `<span class="nm" title="${esc(l.file)}">${esc(l.name)}</span>`
-    : '<span class="ph">🧬</span><span class="nm dim">— elegir LoRA —</span>';
+  if (!l) {
+    btn.innerHTML = '<span class="ph">🧬</span><span class="nm dim">— elegir LoRA —</span>';
+    return;
+  }
+  const thumb = l.has_preview
+    ? `<img src="/api/forge/lora-preview?file=${encodeURIComponent(l.file)}">`
+    : '<span class="ph">🧬</span>';
+  btn.innerHTML = thumb + `<span class="nm" title="${esc(l.file)}">${esc(l.name)}</span>`;
 }
 
-function openLoraPicker(targetId) {
-  loraPickerTarget = targetId;
+// ── Modal genérico (paginado + carga progresiva) ──
+// Un solo componente para LoRAs y checkpoints. Con 1300+ LoRAs, renderizar de
+// golpe colapsaba el webview: aquí se pinta en lotes (LP_BATCH) con un
+// IntersectionObserver sobre el centinela del final, y el grid usa
+// grid-auto-rows fijo (altura de fila a prueba de colapso).
+const LP_BATCH = 60;
+let lpObserver = null;
+
+function lpEnsureObserver() {
+  if (lpObserver) return;
+  lpObserver = new IntersectionObserver((entries) => {
+    if (entries[0].isIntersecting) lpAppendBatch();
+  }, { root: $('lp-scroll'), rootMargin: '400px' });
+  lpObserver.observe($('lp-sentinel'));
+}
+
+function openPicker(cfg) {
+  picker = cfg;
+  picker.favOnly = false;
+  picker.sort = cfg.sorts[0].key;
   $('lp-search').value = '';
-  renderLoraGrid();
+  $('lp-fav-only').classList.remove('on');
+  const sortSel = $('lp-sort');
+  sortSel.innerHTML = '';
+  for (const s of cfg.sorts) sortSel.add(new Option(s.label, s.key));
+  sortSel.value = picker.sort;
+  lpEnsureObserver();
+  renderPickerGrid();
   $('lora-picker-overlay').classList.add('open');
+  $('lp-scroll').scrollTop = 0;
   $('lp-search').focus();
 }
 
-function closeLoraPicker() { $('lora-picker-overlay').classList.remove('open'); }
+function closePicker() {
+  $('lora-picker-overlay').classList.remove('open');
+  picker = null;
+}
 
-function renderLoraGrid() {
+// filtrado (búsqueda + solo-favoritas) + orden (favoritas primero, luego el
+// criterio elegido)
+function lpComputeList() {
   const q = $('lp-search').value.trim().toLowerCase();
-  const cur = loraPickerTarget ? $(loraPickerTarget).value : '';
-  const list = lorasCache.filter(l => !q ||
-    l.name.toLowerCase().includes(q) ||
-    (l.subfolder || '').toLowerCase().includes(q));
-  $('lp-count').textContent = `${list.length} compatibles`;
-  const grid = $('lp-grid');
-  grid.innerHTML = '';
-  if (!list.length) {
-    grid.innerHTML = `<span class="dim" style="font-size:12px">No hay LoRAs de esta arquitectura${q ? ' que casen con la búsqueda' : ' en el almacén'}.</span>`;
-    return;
-  }
-  for (const l of list) {
-    const card = document.createElement('div');
-    card.className = 'lp-card' + (l.file === cur ? ' selected' : '');
-    card.innerHTML = loraThumb(l, 'lp-thumb') +
-      `<div class="lp-body"><div class="lp-name">${esc(l.name)}</div>` +
-      `<div class="lp-meta">${esc(l.subfolder || '')}${l.rank ? (l.subfolder ? ' · ' : '') + 'r' + l.rank : ''}</div></div>`;
-    card.title = l.file;
-    card.onclick = () => {
-      $(loraPickerTarget).value = l.file;
-      renderLoraPickBtn(loraPickerTarget);
-      closeLoraPicker();
-    };
-    grid.appendChild(card);
+  const cmp = picker.sorts.find(s => s.key === picker.sort).cmp;
+  const list = picker.items.filter(it =>
+    (!q || picker.search(it).includes(q)) &&
+    (!picker.favOnly || it.is_favorite));
+  list.sort((a, b) => ((b.is_favorite ? 1 : 0) - (a.is_favorite ? 1 : 0)) || cmp(a, b));
+  return list;
+}
+
+function lpCard(it) {
+  const url = picker.thumbUrl(it);
+  const card = document.createElement('div');
+  card.className = 'lp-card' + (picker.value(it) === picker.current ? ' selected' : '');
+  card.title = picker.title(it);
+  card.innerHTML =
+    (url ? `<img class="lp-thumb" loading="lazy" src="${url}">`
+         : `<div class="lp-thumb-ph">${picker.icon}</div>`) +
+    `<div class="lp-body"><div class="lp-name">${esc(picker.title(it))}</div>` +
+    `<div class="lp-meta">${esc(picker.meta(it))}</div></div>`;
+  const star = document.createElement('button');
+  star.className = 'lp-star' + (it.is_favorite ? ' on' : '');
+  star.textContent = it.is_favorite ? '★' : '☆';
+  star.title = 'favorita';
+  star.onclick = (e) => { e.stopPropagation(); lpToggleFav(it, star); };
+  card.appendChild(star);
+  card.onclick = () => { picker.onPick(it); closePicker(); };
+  return card;
+}
+
+function lpAppendBatch() {
+  if (!picker) return;
+  const end = Math.min(picker.shown + LP_BATCH, picker.list.length);
+  const frag = document.createDocumentFragment();
+  for (let i = picker.shown; i < end; i++) frag.appendChild(lpCard(picker.list[i]));
+  $('lp-grid').appendChild(frag);
+  picker.shown = end;
+  // si el centinela sigue a la vista tras el lote (lista corta), forzar
+  // re-evaluación del observer para encadenar el siguiente lote
+  if (picker.shown < picker.list.length && lpObserver) {
+    lpObserver.unobserve($('lp-sentinel'));
+    lpObserver.observe($('lp-sentinel'));
   }
 }
 
-$('lp-close').onclick = closeLoraPicker;
-$('lora-picker-overlay').onclick = (e) => {
-  if (e.target.id === 'lora-picker-overlay') closeLoraPicker();
-};
-$('lp-search').oninput = renderLoraGrid;
-$('btn-pick-merge-lora').onclick = () => openLoraPicker('merge-lora');
-$('btn-pick-exp-lora').onclick = () => openLoraPicker('exp-lora');
+function renderPickerGrid() {
+  if (!picker) return;
+  picker.list = lpComputeList();
+  picker.shown = 0;
+  const grid = $('lp-grid');
+  grid.innerHTML = '';
+  $('lp-count').textContent = `${picker.list.length} ${picker.noun}`;
+  if (!picker.list.length) {
+    grid.innerHTML =
+      `<span class="dim" style="font-size:12px;grid-column:1/-1">${esc(picker.empty)}` +
+      `${picker.favOnly ? ' (favoritas)' : ($('lp-search').value.trim() ? ' (con ese filtro)' : '')}</span>`;
+    return;
+  }
+  lpAppendBatch();
+}
 
-$('btn-merge').onclick = async () => {
-  const body = {
-    base: $('merge-base').value,
-    lora: $('merge-lora').value,
-    strength: parseFloat($('merge-strength').value),
-    name: $('merge-name').value.trim(),
-    label: $('merge-label').value.trim(),
-  };
-  if (!body.lora) return alert('No hay LoRA seleccionado.');
-  if (!body.name) return alert('Pon nombre al checkpoint derivado (minúsculas, dígitos, guiones).');
-  if (!(body.strength > 0)) return alert('Strength inválido.');
-  if (!confirm(`Merge completo:\n\n  ${body.base}  ←  ${body.lora}  @ ${body.strength}\n  →  forge_lab/${body.name}.safetensors (~12 GB)\n\nCorre en CPU/RAM (unos minutos). ¿Adelante?`)) return;
+async function lpToggleFav(it, star) {
+  const want = !it.is_favorite;
+  it.is_favorite = want;
+  star.textContent = want ? '★' : '☆';
+  star.classList.toggle('on', want);
   try {
-    const { job_id } = await api('/merge', { method: 'POST', body });
+    await api('/favorites/toggle',
+      { method: 'POST', body: { kind: picker.kind, id: picker.favId(it), on: want } });
+  } catch (e) {
+    it.is_favorite = !want;              // revertir si el backend falla
+    star.textContent = it.is_favorite ? '★' : '☆';
+    star.classList.toggle('on', it.is_favorite);
+    return alert('Error guardando favorita: ' + e.message);
+  }
+  // si estamos filtrando por favoritas y se desmarcó, quitarla de la vista
+  if (picker.favOnly && !want) renderPickerGrid();
+}
+
+const LP_SORT_NAME = { key: 'name', label: 'A → Z',
+                       cmp: (a, b) => a.name.localeCompare(b.name) };
+
+function openLoraPicker(targetId) {
+  openPicker({
+    kind: 'loras', noun: 'compatibles', icon: '🧬', current: $(targetId).value,
+    empty: 'No hay LoRAs de esta arquitectura en el almacén',
+    items: lorasCache,
+    thumbUrl: (l) => l.has_preview
+      ? `/api/forge/lora-preview?file=${encodeURIComponent(l.file)}` : '',
+    title: (l) => l.name,
+    meta: (l) => (l.subfolder || '') + (l.rank ? (l.subfolder ? ' · ' : '') + 'r' + l.rank : ''),
+    value: (l) => l.file,
+    favId: (l) => l.file,
+    search: (l) => (l.name + ' ' + (l.subfolder || '')).toLowerCase(),
+    sorts: [
+      LP_SORT_NAME,
+      { key: 'recent', label: 'recientes', cmp: (a, b) => (b.mtime || 0) - (a.mtime || 0) },
+      { key: 'rank',   label: 'rank',      cmp: (a, b) => (b.rank || 0) - (a.rank || 0) },
+    ],
+    onPick: (l) => { $(targetId).value = l.file; renderLoraPickBtn(targetId); },
+  });
+}
+
+function openCheckpointPicker(inputId, btnId) {
+  openPicker({
+    kind: 'checkpoints', noun: 'checkpoints', icon: '🧩', current: $(inputId).value,
+    empty: 'No hay checkpoints presentes para esta arquitectura',
+    items: checkpointsCache.filter(c => c.present),
+    thumbUrl: ckptThumbUrl,
+    title: (c) => c.name,
+    meta: (c) => (c.kind === 'official' ? 'oficial' : 'derivado') + (c.label ? ' · ' + c.label : ''),
+    value: (c) => c.name,
+    favId: (c) => c.name,
+    search: (c) => (c.name + ' ' + (c.label || '')).toLowerCase(),
+    sorts: [LP_SORT_NAME],
+    onPick: (c) => { $(inputId).value = c.name; renderCkptPickBtn(inputId, btnId); },
+  });
+}
+
+$('lp-close').onclick = closePicker;
+$('lora-picker-overlay').onclick = (e) => {
+  if (e.target.id === 'lora-picker-overlay') closePicker();
+};
+let lpSearchTimer;
+$('lp-search').oninput = () => {
+  clearTimeout(lpSearchTimer);
+  lpSearchTimer = setTimeout(renderPickerGrid, 150);
+};
+$('lp-sort').onchange = () => { picker.sort = $('lp-sort').value; renderPickerGrid(); };
+$('lp-fav-only').onclick = () => {
+  picker.favOnly = !picker.favOnly;
+  $('lp-fav-only').classList.toggle('on', picker.favOnly);
+  renderPickerGrid();
+};
+$('btn-pick-exp-lora').onclick = () => openLoraPicker('exp-lora');
+$('btn-pick-exp-checkpoint').onclick = () => openCheckpointPicker('exp-checkpoint', 'btn-pick-exp-checkpoint');
+
+// Footer de merge (Fase 5): fusiona la config de la generación SELECCIONADA
+// (base+LoRA+strength de la sesión, dosis de bloques del trabajo) → checkpoint.
+$('btn-merge').onclick = async () => {
+  if (!exploreSession || !selectedGen) return;
+  const g = genById(selectedGen);
+  const name = ($('merge-name').value || '').trim();
+  const label = ($('merge-label').value || '').trim();
+  if (!name) return alert('Pon nombre al checkpoint derivado (minúsculas, dígitos, guiones).');
+  const s = exploreSession;
+  if (!confirm(`Merge con la config afinada [${g.summary}]:\n\n  ${s.checkpoint}  ←  ${s.lora.split('/').pop()}  @ ${s.strength}\n  →  forge_lab/${name}.safetensors (~12 GB)\n\nCorre en CPU/RAM (unos minutos). ¿Adelante?`)) return;
+  try {
+    const { job_id } = await api('/explore/merge',
+      { method: 'POST', body: { gen_id: selectedGen, name, label } });
     $('btn-merge').disabled = true;
     $('merge-progress').style.display = '';
     pollMergeJob(job_id);
   } catch (e) { alert('Error lanzando merge: ' + e.message); }
 };
+
+// Habilita el footer según haya un trabajo seleccionado y refleja su config.
+function updateMergeFooter() {
+  const sel = (exploreSession && selectedGen) ? genById(selectedGen) : null;
+  const sum = $('mf-summary');
+  const btn = $('btn-merge');
+  if (!btn) return;
+  if (sel) {
+    const s = exploreSession;
+    sum.classList.add('ready');
+    sum.innerHTML = `Config afinada: <span class="mono">${esc(sel.summary)}</span><br>` +
+      `<span class="dim">${esc(s.checkpoint)} ← ${esc(s.lora.split('/').pop())} @ ${s.strength}</span>`;
+    btn.disabled = false;
+  } else {
+    sum.classList.remove('ready');
+    sum.textContent = exploreSession
+      ? 'Selecciona un trabajo del historial para mergear su config de bloques.'
+      : 'Inicia una sesión y genera al menos una vez; selecciona ese trabajo para mergear su config.';
+    btn.disabled = true;
+  }
+}
 
 const MERGE_PHASES = { map: 'mapeando LoRA', merge: 'mergeando tensores',
                        write: 'escribiendo checkpoint', hash: 'SHA256 de verificación' };
@@ -509,7 +614,7 @@ function pollMergeJob(jobId) {
       if (j.status === 'error') alert('Merge fallido: ' + j.error);
       else {
         $('merge-name').value = ''; $('merge-label').value = '';
-        alert(`Checkpoint "${j.checkpoint.name}" creado (${fmtGB(j.checkpoint.size_bytes)}).\nAhora regenera el set contra él para compararlo con el baseline.`);
+        alert(`Checkpoint "${j.checkpoint.name}" creado (${fmtGB(j.checkpoint.size_bytes)}).\nQueda listado abajo, en "Checkpoints — base y derivados".`);
       }
       await refreshCheckpoints();
     }
@@ -518,7 +623,6 @@ function pollMergeJob(jobId) {
 
 // ── Laboratorio de bloques (Fase 4) ─────────────────────────────────────────
 
-const N_LAYERS = 30;
 let exploreSession = null;
 let selectedGen = null;
 
@@ -527,17 +631,36 @@ async function refreshExplore() {
   exploreSession = data.session;
   updateTabBadges();
   const active = !!exploreSession;
-  $('explore-setup').style.display = active ? 'none' : '';
-  $('explore-session').style.display = active ? '' : 'none';
+  // entradas + config se BLOQUEAN mientras hay sesión (congeladas al arrancar)
+  setInputsLocked(active);
+  $('btn-explore-start').style.display = active ? 'none' : '';
   $('btn-explore-close').style.display = active ? '' : 'none';
-  if (!active) { selectedGen = null; return; }
+  $('btn-explore-clear').style.display =
+    (active && exploreSession.generations.length) ? '' : 'none';
+  $('btn-explore-gen').disabled = !active;
+
+  if (!active) {
+    selectedGen = null;
+    closeChipPop();
+    $('switch-grid').innerHTML = '';
+    $('preset-row').innerHTML = '';
+    $('explore-info').textContent = '';
+    $('explore-actions').style.display = 'none';
+    populateKSampler(archDefaultsSampling());
+    $('compare-wrap').innerHTML =
+      '<div class="viewport-empty">Elige <b>base</b> + <b>LoRA</b> arriba, escribe un prompt y pulsa «🧪 Iniciar sesión». La 1ª generación queda como referencia.</div>';
+    $('hist-strip').innerHTML = '<div class="hist-empty">sin sesión</div>';
+    updateMergeFooter();
+    return;
+  }
 
   const s = exploreSession;
   $('explore-info').innerHTML =
     `<span class="mono">${esc(s.checkpoint)}</span> + ` +
     `<span class="mono">${esc(s.lora.split('/').pop())}</span> @ ${s.strength}` +
-    ` <span class="dim">seed ${s.prompt.seed} · ${s.sampling.steps} steps · cfg ${s.sampling.cfg}</span>` +
-    ` <span class="dim" title="${esc(s.prompt.text)}">"${esc(s.prompt.text.slice(0, 90))}${s.prompt.text.length > 90 ? '…' : ''}"</span>`;
+    ` <span class="dim">seed ${s.prompt.seed} · ${s.sampling.steps} steps · cfg ${s.sampling.cfg}</span>`;
+  populateKSampler(s.sampling);
+  $('exp-prompt').value = s.prompt.text;
 
   if (!$('switch-grid').children.length) buildSwitchGrid();
   if (selectedGen && !s.generations.find(g => g.id === selectedGen))
@@ -548,71 +671,120 @@ async function refreshExplore() {
   renderHistory();
 }
 
+// Cada bloque es un CHIP compacto: muestra su valor numérico encima (distingue
+// "dosis 0.5" de simple on/off) y el slider vive en un POPUP al hacer clic.
 function switchCell(label, key) {
-  const cell = document.createElement('div');
-  cell.className = 'switch-cell';
-  cell.dataset.key = key;
-  const cb = document.createElement('input');
-  cb.type = 'checkbox'; cb.checked = true;
-  const lbl = document.createElement('span');
-  lbl.className = 'lbl'; lbl.textContent = label;
-  const dose = document.createElement('input');
-  dose.type = 'number'; dose.min = '0'; dose.max = '2'; dose.step = '0.05';
-  dose.value = '1';
-  cb.onchange = () => cell.classList.toggle('off', !cb.checked);
-  cell.append(cb, lbl, dose);
-  return cell;
+  const chip = document.createElement('div');
+  chip.className = 'chip';
+  chip.dataset.key = key;
+  chip.dataset.dose = '1';
+  chip.innerHTML = `<span class="chip-val">1.00</span><span class="chip-lbl">${esc(label)}</span>`;
+  chip.onclick = () => openChipPop(chip);
+  return chip;
+}
+
+const chipOn = (chip) => !chip.classList.contains('off');
+
+function paintChip(chip) {
+  const d = parseFloat(chip.dataset.dose) || 0;
+  chip.querySelector('.chip-val').textContent = chipOn(chip) ? d.toFixed(2) : 'off';
+}
+
+function setCell(chip, on) {
+  chip.classList.toggle('off', !on);
+  paintChip(chip);
 }
 
 function buildSwitchGrid() {
   const grid = $('switch-grid');
   grid.innerHTML = '';
-  for (let i = 0; i < N_LAYERS; i++) grid.appendChild(switchCell(String(i), String(i)));
-  grid.appendChild(switchCell('refiners', 'other'));
+  const def = labArch();
+  if (!def) return;
+  for (const sw of def.explore_switches) grid.appendChild(switchCell(sw.label, sw.id));
+  for (const chip of grid.children) paintChip(chip);
+  buildPresetRow(def);
+}
+
+// presets derivados de la arquitectura: genéricos (todo/invertir) + uno por
+// grupo macro de block_groups (enciende solo los switches del grupo)
+function buildPresetRow(def) {
+  const row = $('preset-row');
+  row.innerHTML = '';
+  const cells = () => [...$('switch-grid').children];
+  const mk = (label, title, fn) => {
+    const b = document.createElement('button');
+    b.className = 'back-btn'; b.textContent = label;
+    if (title) b.title = title;
+    b.onclick = fn;
+    row.appendChild(b);
+  };
+  mk('todo ON', '', () => cells().forEach(c => setCell(c, true)));
+  mk('todo OFF', '', () => cells().forEach(c => setCell(c, false)));
+  mk('invertir', '', () => cells().forEach(c => setCell(c, !chipOn(c))));
+  for (const g of def.groups || []) {
+    const ids = new Set(g.blocks);
+    const short = g.label.split(/[\s/]/)[0].toLowerCase();
+    mk('solo ' + short, g.description || g.label,
+       () => cells().forEach(c => setCell(c, ids.has(c.dataset.key))));
+  }
 }
 
 function collectConfig() {
-  const layers = {};
+  const blocks = {};
   let other = 0;
-  for (const cell of $('switch-grid').children) {
-    const on = cell.querySelector('input[type=checkbox]').checked;
-    const d = on ? parseFloat(cell.querySelector('input[type=number]').value) || 0 : 0;
-    if (cell.dataset.key === 'other') other = d;
-    else layers[cell.dataset.key] = d;
+  for (const chip of $('switch-grid').children) {
+    const d = chipOn(chip) ? (parseFloat(chip.dataset.dose) || 0) : 0;
+    if (chip.dataset.key === 'other') other = d;
+    else blocks[chip.dataset.key] = d;
   }
-  return { layers, other };
+  return { blocks, other };
 }
 
 function applyConfig(cfg) {
-  for (const cell of $('switch-grid').children) {
-    const d = cell.dataset.key === 'other' ? cfg.other : (cfg.layers[cell.dataset.key] ?? 0);
-    const cb = cell.querySelector('input[type=checkbox]');
-    cb.checked = d > 0;
-    cell.querySelector('input[type=number]').value = d > 0 ? d : 1;
-    cell.classList.toggle('off', !(d > 0));
+  const blocks = cfg.blocks || {};
+  for (const chip of $('switch-grid').children) {
+    const d = chip.dataset.key === 'other' ? (cfg.other || 0) : (blocks[chip.dataset.key] ?? 0);
+    chip.dataset.dose = d > 0 ? String(d) : '1';
+    chip.classList.toggle('off', !(d > 0));
+    paintChip(chip);
   }
 }
 
-document.querySelectorAll('#explore-session .preset-row button').forEach(btn => {
-  btn.onclick = () => {
-    for (const cell of $('switch-grid').children) {
-      const key = cell.dataset.key;
-      const i = key === 'other' ? -1 : parseInt(key, 10);
-      const cb = cell.querySelector('input[type=checkbox]');
-      let on;
-      switch (btn.dataset.preset) {
-        case 'all-on':  on = true; break;
-        case 'all-off': on = false; break;
-        case 'early':   on = i >= 0 && i <= 9; break;
-        case 'mid':     on = i >= 10 && i <= 19; break;
-        case 'late':    on = i >= 20 && i <= 29; break;
-        case 'invert':  on = !cb.checked; break;
-      }
-      cb.checked = on;
-      cell.classList.toggle('off', !on);
-    }
-  };
-});
+// ── Popup del slider de un chip (compartido) ────────────────────────────
+let popChip = null;
+function openChipPop(chip) {
+  popChip = chip;
+  document.querySelectorAll('.chip.editing').forEach(c => c.classList.remove('editing'));
+  chip.classList.add('editing');
+  const d = parseFloat(chip.dataset.dose) || 1;
+  $('pop-title').textContent = chip.querySelector('.chip-lbl').textContent;
+  $('pop-on').checked = chipOn(chip);
+  $('pop-range').value = d;
+  $('pop-num').value = d;
+  $('pop-val').textContent = d.toFixed(2);
+  const pop = $('chip-pop');
+  pop.classList.add('open');
+  const r = chip.getBoundingClientRect();
+  const pw = 230, ph = pop.offsetHeight || 160;
+  let left = r.left, top = r.bottom + 6;
+  if (left + pw > window.innerWidth - 8) left = window.innerWidth - pw - 8;
+  if (top + ph > window.innerHeight - 8) top = r.top - ph - 6;
+  pop.style.left = Math.max(8, left) + 'px';
+  pop.style.top = Math.max(8, top) + 'px';
+}
+function closeChipPop() {
+  $('chip-pop').classList.remove('open');
+  if (popChip) popChip.classList.remove('editing');
+  popChip = null;
+}
+function popApply(dose, on) {
+  if (!popChip) return;
+  dose = Math.min(2, Math.max(0, dose || 0));
+  popChip.dataset.dose = String(dose);
+  popChip.classList.toggle('off', !on);
+  $('pop-val').textContent = dose.toFixed(2);
+  paintChip(popChip);
+}
 
 function genById(id) { return exploreSession.generations.find(g => g.id === id); }
 
@@ -635,11 +807,16 @@ function renderCompare() {
   $('compare-wrap').innerHTML = html ||
     '<span class="dim" style="font-size:12px">Sin generaciones todavía. Configura los bloques y pulsa "Generar variante" — la primera será la referencia.</span>';
   $('explore-actions').style.display = sel ? '' : 'none';
+  updateMergeFooter();
 }
 
 function renderHistory() {
   const strip = $('hist-strip');
   strip.innerHTML = '';
+  if (!exploreSession.generations.length) {
+    strip.innerHTML = '<div class="hist-empty">sin trabajos aún</div>';
+    return;
+  }
   for (const g of exploreSession.generations) {
     const item = document.createElement('div');
     item.className = 'hist-item' +
@@ -654,19 +831,36 @@ function renderHistory() {
       renderCompare();
       renderHistory();
     };
+    const del = document.createElement('button');
+    del.className = 'hist-del';
+    del.textContent = '🗑';
+    del.title = 'Borrar este trabajo';
+    del.onclick = async (e) => {
+      e.stopPropagation();
+      if (!confirm(`Borrar el trabajo [${g.summary}] (imagen incluida)?`)) return;
+      try {
+        await api('/explore/generation/' + encodeURIComponent(g.id), { method: 'DELETE' });
+        if (selectedGen === g.id) selectedGen = null;
+        await refreshExplore();
+      } catch (err) { alert('Error: ' + err.message); }
+    };
+    item.appendChild(del);
     strip.appendChild(item);
   }
 }
 
 $('btn-explore-start').onclick = async () => {
   const body = {
+    arch: currentArch,
     checkpoint: $('exp-checkpoint').value,
     lora: $('exp-lora').value,
     strength: parseFloat($('exp-strength').value),
     prompt: $('exp-prompt').value,
     negative: '',
     seed: parseInt($('exp-seed').value, 10) || 424242,
+    sampling: collectKSampler(),   // KSampler del panel izquierdo (editable pre-sesión)
   };
+  if (!body.checkpoint) return alert('No hay checkpoint base seleccionado.');
   if (!body.lora) return alert('No hay LoRA seleccionado.');
   if (!body.prompt.trim()) return alert('Escribe un prompt (o elige uno del set).');
   try {
@@ -676,20 +870,30 @@ $('btn-explore-start').onclick = async () => {
   } catch (e) { alert('Error: ' + e.message); }
 };
 
+// Nueva sesión: descarta la actual (config + trabajos) para reconfigurar
+// base/LoRA/prompt. Los trabajos persisten hasta aquí; se pregunta antes.
 $('btn-explore-close').onclick = async () => {
   const n = exploreSession ? exploreSession.generations.length : 0;
-  if (!confirm(`Cerrar la sesión de exploración?\nSe borran sus ${n} imagen(es) temporales. La config ganadora solo sobrevive si hiciste merge o confirmación con set.`)) return;
+  if (!confirm(n
+    ? `Iniciar una sesión NUEVA descarta la actual y borra sus ${n} trabajo(s) (imágenes incluidas).\nLa config ganadora solo sobrevive si hiciste merge o confirmación con set.\n\n¿Continuar?`
+    : '¿Descartar la sesión actual para reconfigurar?')) return;
   try {
     await api('/explore/session', { method: 'DELETE' });
+    selectedGen = null;
     await refreshExplore();
   } catch (e) { alert('Error: ' + e.message); }
 };
 
-$('exp-from-set').onchange = () => {
-  const pid = $('exp-from-set').value;
-  if (!pid || !currentSet) return;
-  const p = currentSet.prompts.find(x => x.id === pid);
-  if (p) { $('exp-prompt').value = p.text; $('exp-seed').value = p.seed; }
+// Vaciar historial: borra todos los trabajos pero CONSERVA la sesión/config
+$('btn-explore-clear').onclick = async () => {
+  const n = exploreSession ? exploreSession.generations.length : 0;
+  if (!n) return;
+  if (!confirm(`Vaciar el historial: se borran los ${n} trabajo(s) de esta sesión (imágenes incluidas).\nLa sesión y su config (base/LoRA/prompt) se conservan para seguir generando. ¿Seguir?`)) return;
+  try {
+    await api('/explore/clear', { method: 'POST' });
+    selectedGen = null;
+    await refreshExplore();
+  } catch (e) { alert('Error: ' + e.message); }
 };
 
 $('btn-explore-gen').onclick = async () => {
@@ -724,174 +928,6 @@ $('btn-explore-ref').onclick = async () => {
   } catch (e) { alert('Error: ' + e.message); }
 };
 
-$('btn-explore-confirm').onclick = async () => {
-  if (!selectedGen) return;
-  const setName = currentSet ? currentSet.name : 'zimage-base';
-  const g = genById(selectedGen);
-  const label = prompt(
-    `Doble confirmación: regenerar el set "${setName}" completo en runtime con la config\n[${g.summary}]\n\nEl run SÍ se guarda (evidencia). Etiqueta del run:`,
-    `explore ${g.summary.slice(0, 40)}`);
-  if (label === null) return;
-  try {
-    const { job_id } = await api('/explore/confirm',
-      { method: 'POST', body: { set_name: setName, gen_id: selectedGen, label } });
-    $('btn-run-set').disabled = true;
-    $('run-progress').style.display = '';
-    pollJob(job_id);
-  } catch (e) { alert('Error: ' + e.message); }
-};
-
-$('btn-explore-merge').onclick = async () => {
-  if (!selectedGen) return;
-  const g = genById(selectedGen);
-  const name = prompt(
-    `Merge final con la config [${g.summary}]\n(misma matemática que el preview — dosis lineal)\n\nNombre del checkpoint derivado (minúsculas, dígitos, guiones):`);
-  if (!name) return;
-  const label = prompt('Etiqueta:', g.summary) || '';
-  try {
-    const { job_id } = await api('/explore/merge',
-      { method: 'POST', body: { gen_id: selectedGen, name: name.trim(), label } });
-    $('btn-merge').disabled = true;
-    $('merge-progress').style.display = '';
-    pollMergeJob(job_id);
-  } catch (e) { alert('Error lanzando merge: ' + e.message); }
-};
-
-// ── Regeneración ────────────────────────────────────────────────────────────
-
-$('btn-run-set').onclick = async () => {
-  const draft = !currentSet.locked_at;
-  const model = $('run-model').value || null;
-  const against = model ? model.split(/[\\/]/).pop().replace(/\.safetensors$/, '')
-                        : 'base oficial';
-  const label = prompt(
-    (draft ? 'AVISO: el set es un BORRADOR — el run se marcará como prueba de calibración, no sirve para comparar merges.\n\n' : '') +
-    `Regenerar contra: ${against}\n\nEtiqueta del run (ej. "baseline de-turbo"):`,
-    model ? against : '');
-  if (label === null) return;
-  try {
-    const { job_id } = await api('/sets/' + encodeURIComponent(currentSet.name) + '/run',
-                                 { method: 'POST', body: { label, model } });
-    $('btn-run-set').disabled = true;
-    $('run-progress').style.display = '';
-    pollJob(job_id);
-  } catch (e) { alert('Error lanzando run: ' + e.message); }
-};
-
-function pollJob(jobId) {
-  clearInterval(jobTimer);
-  jobTimer = setInterval(async () => {
-    let j;
-    try { j = await api('/jobs/' + jobId); }
-    catch (e) { return; }
-    const done = j.prompt_index + (j.step / Math.max(j.steps_total, 1));
-    const pct = Math.round(100 * done / Math.max(j.total, 1));
-    $('run-progress-fill').style.width = pct + '%';
-    $('run-progress-label').textContent =
-      `[${j.prompt_index + 1}/${j.total}] ${j.prompt_id}  —  paso ${j.step}/${j.steps_total}  (${pct}%)`;
-    if (j.status !== 'running') {
-      clearInterval(jobTimer);
-      $('btn-run-set').disabled = false;
-      $('run-progress').style.display = 'none';
-      if (j.status === 'error') alert('Run fallido: ' + j.error);
-      else selectedRuns.add(j.run_id);
-      await refreshSets();
-      await refreshRuns();
-    }
-  }, 1500);
-}
-
-// ── Runs + grid comparativo ─────────────────────────────────────────────────
-
-async function refreshRuns() {
-  if (!currentSet) return;
-  const data = await api('/sets/' + encodeURIComponent(currentSet.name) + '/runs');
-  runsCache = data.runs;
-  updateTabBadges();
-  $('runs-card').style.display = '';
-  const el = $('runs-list');
-  if (!runsCache.length) {
-    el.innerHTML = '<span class="dim" style="font-size:12px">Sin runs todavía. "Regenerar set" genera todas las imágenes contra el modelo actual.</span>';
-    $('grid-wrap').innerHTML = '';
-    return;
-  }
-  el.innerHTML = '';
-  for (const r of runsCache) {
-    const row = document.createElement('div');
-    row.className = 'run-row';
-    const cb = document.createElement('input');
-    cb.type = 'checkbox';
-    cb.checked = selectedRuns.has(r.run_id);
-    cb.onchange = () => {
-      cb.checked ? selectedRuns.add(r.run_id) : selectedRuns.delete(r.run_id);
-      renderGrid();
-    };
-    row.appendChild(cb);
-    const fpOk = r.fingerprint === currentSet.fingerprint;
-    row.insertAdjacentHTML('beforeend',
-      `<span class="mono">${esc(r.run_id)}</span>` +
-      (r.draft ? '<span class="badge">calibración</span>'
-               : `<span class="badge locked" title="fingerprint ${fpOk ? 'coincide con el set' : 'NO coincide — set distinto'}">${fpOk ? 'válido' : '⚠ otro fingerprint'}</span>`) +
-      `<span>${esc(r.label || '')}</span>` +
-      `<span class="dim mono">${esc(r.model)}</span>` +
-      `<span style="flex:1"></span>` +
-      `<span class="dim">${r.results.length} imgs · ${Math.round(r.seconds)}s</span>`);
-    const del = document.createElement('button');
-    del.className = 'prompt-del';
-    del.textContent = '🗑';
-    del.title = 'Borrar este run (imágenes incluidas)';
-    del.onclick = async (ev) => {
-      ev.stopPropagation();
-      if (!confirm(`Borrar el run ${r.run_id} (${r.results.length} imágenes)?\nEl set no se toca; solo se libera el espacio de este run.`)) return;
-      try {
-        await api(`/runs/${encodeURIComponent(currentSet.name)}/${encodeURIComponent(r.run_id)}`,
-                  { method: 'DELETE' });
-        selectedRuns.delete(r.run_id);
-        await refreshSets();
-        await refreshRuns();
-      } catch (e) { alert('Error borrando run: ' + e.message); }
-    };
-    row.appendChild(del);
-    el.appendChild(row);
-  }
-  renderGrid();
-}
-
-function renderGrid() {
-  const wrap = $('grid-wrap');
-  const runs = runsCache.filter(r => selectedRuns.has(r.run_id));
-  if (!runs.length) { wrap.innerHTML = ''; return; }
-
-  // filas = unión de prompt_ids en orden del set (o del run si el set cambió)
-  const ids = currentSet.prompts.map(p => p.id);
-  for (const r of runs)
-    for (const res of r.results)
-      if (!ids.includes(res.prompt_id)) ids.push(res.prompt_id);
-
-  let html = '<table class="result-grid"><tr><th class="rowh">prompt</th>';
-  for (const r of runs)
-    html += `<th><span class="mono">${esc(r.run_id)}</span><br>${esc(r.label || r.model)}</th>`;
-  html += '</tr>';
-  for (const pid of ids) {
-    const p = currentSet.prompts.find(x => x.id === pid);
-    html += `<tr><th class="rowh"><span class="mono">${esc(pid)}</span>` +
-            (p ? `<br><span class="dim">seed ${p.seed}</span><br><span class="dim" style="font-weight:400">${esc(p.text.slice(0, 130))}${p.text.length > 130 ? '…' : ''}</span>` : '') +
-            '</th>';
-    for (const r of runs) {
-      const res = r.results.find(x => x.prompt_id === pid);
-      if (res) {
-        const url = `/api/forge/runs/${encodeURIComponent(currentSet.name)}/${encodeURIComponent(r.run_id)}/${encodeURIComponent(res.image)}`;
-        html += `<td><img loading="lazy" src="${url}" onclick="window.open('${url}','_blank')"></td>`;
-      } else {
-        html += '<td><span class="cell-missing">—</span></td>';
-      }
-    }
-    html += '</tr>';
-  }
-  html += '</table>';
-  wrap.innerHTML = html;
-}
-
 // ── Pestañas por fase ───────────────────────────────────────────────────────
 
 let setsCache = [];
@@ -907,30 +943,82 @@ function switchTab(name) {
 document.querySelectorAll('.tab-btn').forEach(b =>
   b.onclick = () => switchTab(b.dataset.tab));
 
+// Badges de las viejas pestañas: ya no existen en el layout de workbench;
+// tolerante a elementos ausentes (se mantiene por si vuelven como indicadores).
 function updateTabBadges() {
+  const set = (id, txt, title) => {
+    const el = $(id); if (!el) return;
+    el.textContent = txt; if (title !== undefined) el.title = title;
+  };
   const active = setsCache.filter(s => !s.archived);
   const baselineReady = active.some(s => s.locked && s.n_runs > 0);
-  $('tb-sets').textContent = baselineReady ? '✔' : (active.length ? '…' : '');
-  $('tb-sets').title = baselineReady
-    ? 'hay set bloqueado con baseline' : 'falta bloquear un set o generar su baseline';
-  $('tb-lab').textContent = exploreSession ? '●' : '';
-  $('tb-lab').title = exploreSession ? 'sesión de exploración activa' : '';
+  set('tb-sets', baselineReady ? '✔' : (active.length ? '…' : ''),
+      baselineReady ? 'hay set bloqueado con baseline' : 'falta bloquear un set o generar su baseline');
+  set('tb-lab', exploreSession ? '●' : '', exploreSession ? 'sesión de exploración activa' : '');
   const nDeriv = checkpointsCache.filter(c => c.kind === 'derived' && c.present).length;
-  $('tb-merge').textContent = nDeriv ? String(nDeriv) : '';
-  $('tb-merge').title = nDeriv ? `${nDeriv} checkpoint(s) derivado(s)` : '';
-  $('tb-compare').textContent = runsCache.length ? String(runsCache.length) : '';
-  $('tb-compare').title = runsCache.length ? `${runsCache.length} run(s) del set seleccionado` : '';
+  set('tb-merge', nDeriv ? String(nDeriv) : '', nDeriv ? `${nDeriv} checkpoint(s) derivado(s)` : '');
+  set('tb-compare', runsCache.length ? String(runsCache.length) : '',
+      runsCache.length ? `${runsCache.length} run(s) del set seleccionado` : '');
 }
 
-$('compare-set').onchange = () => {
-  if ($('compare-set').value) selectSet($('compare-set').value);
+// ── KSampler + plegables + popup de chips (rediseño) ────────────────────────
+const KS_FIELDS = ['cfg', 'steps', 'sampler', 'scheduler', 'width', 'height'];
+
+function archDefaultsSampling() {
+  return ((labArch() || archDef() || {}).sampling_defaults) || {};
+}
+function populateKSampler(s) {
+  s = s || {};
+  for (const k of KS_FIELDS) {
+    const el = $('ks-' + k);
+    if (el && s[k] !== undefined && s[k] !== null) el.value = s[k];
+  }
+}
+function collectKSampler() {
+  return {
+    cfg: parseFloat($('ks-cfg').value) || 0,
+    steps: parseInt($('ks-steps').value, 10) || 0,
+    sampler: $('ks-sampler').value.trim(),
+    scheduler: $('ks-scheduler').value.trim(),
+    width: parseInt($('ks-width').value, 10) || 0,
+    height: parseInt($('ks-height').value, 10) || 0,
+  };
+}
+function setInputsLocked(locked) {
+  for (const id of ['exp-strength', 'exp-seed', 'exp-from-set', 'exp-prompt',
+                    ...KS_FIELDS.map(k => 'ks-' + k)]) {
+    const el = $(id); if (el) el.disabled = locked;
+  }
+  $('btn-pick-exp-checkpoint').disabled = locked;
+  $('btn-pick-exp-lora').disabled = locked;
+  const lb = $('lock-badge'); if (lb) lb.style.display = locked ? '' : 'none';
+}
+
+$('ks-toggle').onclick = () => $('ksampler-panel').classList.toggle('collapsed');
+document.querySelectorAll('.fold-head').forEach(h =>
+  h.onclick = () => $(h.dataset.fold).classList.toggle('open'));
+
+$('pop-range').oninput = () => {
+  const v = parseFloat($('pop-range').value);
+  $('pop-num').value = v; $('pop-on').checked = true; popApply(v, true);
 };
+$('pop-num').oninput = () => {
+  const v = parseFloat($('pop-num').value) || 0;
+  $('pop-range').value = v; $('pop-on').checked = true; popApply(v, true);
+};
+$('pop-on').onchange = () => popApply(parseFloat($('pop-num').value) || 0, $('pop-on').checked);
+document.addEventListener('mousedown', (e) => {
+  if (!$('chip-pop').classList.contains('open')) return;
+  if ($('chip-pop').contains(e.target) || e.target.closest('.chip')) return;
+  closeChipPop();
+});
 
 // ── Init ────────────────────────────────────────────────────────────────────
 
-switchTab(localStorage.getItem('forge-tab') || 'sets');
-loadStatus();
-refreshSets(false);
-refreshCheckpoints();
-refreshLoras();
-refreshExplore();
+async function init() {
+  await loadArchitectures();   // debe ir primero: fija currentArch y el selector
+  await Promise.all([loadStatus(), refreshBatteries(false),
+                     refreshCheckpoints(), refreshLoras()]);
+  await refreshExplore();
+}
+init();
