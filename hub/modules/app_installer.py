@@ -382,21 +382,35 @@ def install_npm_deps(app_dir: str, app_config: dict, logger=None) -> bool:
             if logger:
                 logger.warn("npm", f"No se pudo leer package.json: {e}")
 
-    if logger:
-        logger.info("npm", "Compilando build de producción (npm run build)...")
-    try:
-        if _run_streamed([npm, "run", "build"], cwd=work_dir, env=env,
-                         logger=logger, tag="npm", timeout=900) != 0:
-            if logger:
-                logger.error("npm", "npm run build falló")
-            return False
-    except (subprocess.TimeoutExpired, OSError, FileNotFoundError) as e:
+    # No todas las apps npm tienen paso de build (p. ej. un server Express
+    # plano solo con "start"/"dev") — correrlo solo si el script existe.
+    has_build_script = False
+    if os.path.isfile(package_json):
+        try:
+            with open(package_json, "r", encoding="utf-8") as f:
+                pkg = json.load(f)
+            has_build_script = "build" in pkg.get("scripts", {})
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    if has_build_script:
         if logger:
-            logger.error("npm", f"build error: {e}")
-        return False
+            logger.info("npm", "Compilando build de producción (npm run build)...")
+        try:
+            if _run_streamed([npm, "run", "build"], cwd=work_dir, env=env,
+                             logger=logger, tag="npm", timeout=900) != 0:
+                if logger:
+                    logger.error("npm", "npm run build falló")
+                return False
+        except (subprocess.TimeoutExpired, OSError, FileNotFoundError) as e:
+            if logger:
+                logger.error("npm", f"build error: {e}")
+            return False
+    elif logger:
+        logger.info("npm", "Sin script 'build' en package.json — se omite (app sin paso de build)")
 
     if logger:
-        logger.success("npm", "Dependencias Node instaladas y build lista")
+        logger.success("npm", "Dependencias Node instaladas y lista para lanzar")
     return True
 
 

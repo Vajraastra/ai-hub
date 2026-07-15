@@ -110,6 +110,25 @@
             "default_port": 8188,
             "auto_open_browser": true,
             "extra_args": ["--use-pytorch-cross-attention"]
+        },
+        "anima-standalone-trainer": {
+            "id": "anima-standalone-trainer",
+            "name": "Anima Standalone Trainer",
+            "description": "Trainer de LoRA para Anima con UI web (Node.js + sd-scripts embebido). Control completo de hiperparámetros: lr, alpha, scheduler, flow_shift, resume.",
+            "repo": "https://github.com/gazingstars123/Anima-Standalone-Trainer",
+            "branch": "main",
+            "python_version": "3.12",
+            "use_uv": true,
+            "install_deps": false,
+            "launch_type": "npm",
+            "launch_script": "start",
+            "launch_subdir": "training-ui",
+            "post_install_py": "scripts/install_standalone_trainer.py",
+            "model_map": {},
+            "output_map": { "method": "none" },
+            "default_port": 3000,
+            "auto_open_browser": false,
+            "extra_args": []
         }
     },
     "utilities": {
