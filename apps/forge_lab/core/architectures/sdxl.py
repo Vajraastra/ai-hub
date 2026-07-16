@@ -25,10 +25,22 @@ LoRA estándar no los toca.)  Cada SpatialTransformer (use_linear=True en
 SDXL, todo Linear): proj_in, proj_out y por cada transformer_block attn1 y
 attn2 (to_q/to_k/to_v/to_out.0) + ff.net.0.proj / ff.net.2.
 
+Además de la atención, un LoCon (LyCORIS con conv_dim>0) entrena las capas
+conv/ResNet y los embeddings globales (72 módulos, censados contra el
+checkpoint real 2026-07-16): in_layers.2 / emb_layers.1 / out_layers.3 /
+skip_connection de cada ResNet, los down/upsamplers, input_blocks.0.0,
+out.2 y time_embed / label_emb. En la exploración se agrupan en 4
+pseudo-bloques (conv_input / conv_mid / conv_output / embeddings) porque
+la comunidad no dosifica conv por bloque individual; para el merge cada
+grupo expande a sus prefijos de tensor reales y los bloques de atención se
+refinan a su SpatialTransformer (.1) para que su dosis no sangre a los
+ResNets vecinos (.0/.2) ahora que también están mapeados.
+
 LoRAs soportados: formato kohya (lora_unet_*.lora_down/lora_up + alpha), el
-de prácticamente todo Civitai. Las claves de text encoder (lora_te1_/
-lora_te2_) se SALTAN por política (ignored_lora_prefixes) — nunca se
-mergean; el nodo selectivo las apaga también en runtime.
+de prácticamente todo Civitai, atención sola o con conv (LoCon). Las claves
+de text encoder (lora_te1_/lora_te2_) se SALTAN por política
+(ignored_lora_prefixes) — nunca se mergean; el nodo selectivo las apaga
+también en runtime.
 """
 from .base import ArchAdapter, BlockGroup, SamplingDefaults
 
@@ -50,6 +62,45 @@ _NODE_NAMES = {
     "middle_block": "unet_mid",
     **{f"output_blocks.{i}": f"output_{i}" for i in range(6)},
 }
+
+# Pseudo-bloques conv/emb (LoCon) → prefijos de tensor reales que cubre cada
+# uno (sin container_prefix; los entiende el merge worker). El id coincide
+# con el nombre de input del nodo selectivo.
+_CONV_GROUPS: dict[str, tuple[str, ...]] = {
+    "conv_input": tuple(f"input_blocks.{n}.0" for n in range(9)),
+    "conv_mid": ("middle_block.0", "middle_block.2"),
+    "conv_output": tuple(f"output_blocks.{n}.0" for n in range(9))
+                   + ("output_blocks.2.2", "output_blocks.5.2", "out.2"),
+    "embeddings": ("time_embed", "label_emb"),
+}
+_CONV_LABELS = {"conv_input": "CONV-IN", "conv_mid": "CONV-MID",
+                "conv_output": "CONV-OUT", "embeddings": "EMB"}
+
+
+def _conv_module_paths() -> list[str]:
+    """Los 72 módulos conv/ResNet/emb del UNet SDXL que entrena un LoCon
+    (solo pesos con par lora down/up posible: convs y linears, nunca norms).
+    skip_connection existe solo donde cambia el canal."""
+    paths = ["input_blocks.0.0"]                       # conv de entrada
+    for n in (1, 2, 4, 5, 7, 8):                       # ResNets del encoder
+        base = f"input_blocks.{n}.0"
+        paths += [f"{base}.in_layers.2", f"{base}.emb_layers.1",
+                  f"{base}.out_layers.3"]
+        if n in (4, 7):
+            paths.append(f"{base}.skip_connection")
+    paths += ["input_blocks.3.0.op", "input_blocks.6.0.op"]  # downsamplers
+    for m in (0, 2):                                   # ResNets del bottleneck
+        base = f"middle_block.{m}"
+        paths += [f"{base}.in_layers.2", f"{base}.emb_layers.1",
+                  f"{base}.out_layers.3"]
+    for n in range(9):                                 # ResNets del decoder
+        base = f"output_blocks.{n}.0"
+        paths += [f"{base}.in_layers.2", f"{base}.emb_layers.1",
+                  f"{base}.out_layers.3", f"{base}.skip_connection"]
+    paths += ["output_blocks.2.2.conv", "output_blocks.5.2.conv",  # upsamplers
+              "out.2", "time_embed.0", "time_embed.2",
+              "label_emb.0.0", "label_emb.0.2"]
+    return paths
 
 
 class SdxlAdapter(ArchAdapter):
@@ -104,6 +155,14 @@ class SdxlAdapter(ArchAdapter):
                             "output_1 el más fuerte para estilo/color, "
                             "output_3 caras; 4–5 detalle fino.",
             ),
+            BlockGroup(
+                id="conv", label="Conv / ResNet (LoCon)",
+                blocks=list(_CONV_GROUPS),
+                description="Capas conv/ResNet y embeddings que solo "
+                            "entrenan los LoCon (LyCORIS). En LoRAs de "
+                            "atención pura no tienen efecto: textura y "
+                            "detalle de bajo nivel cuando existen.",
+            ),
         ]
 
     def forbidden_zones(self) -> list[str]:
@@ -133,6 +192,8 @@ class SdxlAdapter(ArchAdapter):
                         add(f"{tb}.{attn}.{proj}")
                 add(f"{tb}.ff.net.0.proj")
                 add(f"{tb}.ff.net.2")
+        for path in _conv_module_paths():   # conv/ResNet/emb (LoCon)
+            add(path)
         return m
 
     # ── Exploración (SDXLSelectiveLoRALoader) ─────────────────────────────
@@ -144,7 +205,8 @@ class SdxlAdapter(ArchAdapter):
                   **{f"output_blocks.{i}": f"OUT{i}" for i in range(6)}}
         # sin "other": los TE se apagan por política y el resto de claves
         # no tendría equivalente en el merge (preview ≠ fichero)
-        return [{"id": b, "label": labels[b]} for b in _BLOCKS]
+        return ([{"id": b, "label": labels[b]} for b in _BLOCKS]
+                + [{"id": g, "label": _CONV_LABELS[g]} for g in _CONV_GROUPS])
 
     def selective_node_inputs(self, config: dict, exponent: int) -> dict:
         out = {
@@ -159,11 +221,23 @@ class SdxlAdapter(ArchAdapter):
             name = _NODE_NAMES[b]
             out[name] = d > 0
             out[f"{name}_str"] = round(d ** (1 / exponent), 6) if d > 0 else 1.0
+        for g in _CONV_GROUPS:      # los pseudo-bloques conv/emb del nodo
+            d = config["blocks"].get(g, 0.0)
+            out[g] = d > 0
+            out[f"{g}_str"] = round(d ** (1 / exponent), 6) if d > 0 else 1.0
         return out
 
     def config_to_merge_blocks(self, config: dict) -> dict[str, float]:
-        return dict(sorted(
-            (b, d) for b, d in config["blocks"].items() if d > 0))
+        # atención → su SpatialTransformer (.1): con los ResNets (.0/.2) ya
+        # mapeados, el prefijo de bloque entero mezclaría dosis de atención
+        # y conv. Los grupos conv expanden a sus prefijos reales.
+        out: dict[str, float] = {}
+        for b, d in config["blocks"].items():
+            if d <= 0:
+                continue
+            for prefix in _CONV_GROUPS.get(b, (f"{b}.1",)):
+                out[prefix] = d
+        return dict(sorted(out.items()))
 
     def sampling_defaults(self) -> SamplingDefaults:
         return SamplingDefaults(

@@ -371,6 +371,7 @@ async function refreshLoras() {
 function renderLoraPickBtn(id) {
   const btn = $('btn-pick-' + id);
   const l = loraByFile($(id).value);
+  if (id === 'exp-lora') refreshTriggers();
   if (!l) {
     btn.innerHTML = '<span class="ph">🧬</span><span class="nm dim">— elegir LoRA —</span>';
     return;
@@ -380,6 +381,89 @@ function renderLoraPickBtn(id) {
     : '<span class="ph">🧬</span>';
   btn.innerHTML = thumb + `<span class="nm" title="${esc(l.file)}">${esc(l.name)}</span>`;
 }
+
+// ── Trigger words del LoRA (chips sobre el prompt) ──────────────────────────
+// Fuente (backend /lora/triggers): sidecars de Civitai/Lora-Manager o los tags
+// más frecuentes del dataset (kohya). Clic = añade/quita la palabra del
+// prompt; con sesión activa el prompt está congelado y los chips solo
+// informan (marcan cuáles ya están dentro).
+let triggerLora = null;      // lora cuya respuesta está pintada
+
+// la sesión puede correr sobre una copia alias: los sidecars viven junto al
+// LoRA ORIGINAL (lora_source)
+const triggerLoraFile = () => exploreSession
+  ? (exploreSession.lora_source || exploreSession.lora)
+  : $('exp-lora').value;
+
+async function refreshTriggers() {
+  const file = triggerLoraFile();
+  const strip = $('trigger-strip');
+  if (!file) {
+    triggerLora = null;
+    strip.style.display = 'none';
+    strip.innerHTML = '';
+    return;
+  }
+  if (file === triggerLora) { paintTriggerState(); return; }
+  triggerLora = file;
+  let data = { words: [], source: null };
+  try { data = await api('/lora/triggers?file=' + encodeURIComponent(file)); }
+  catch (_) { /* sin triggers: se oculta la franja */ }
+  if (triggerLora !== file) return;   // respuesta tardía: ya se pidió otro LoRA
+  strip.innerHTML = '';
+  if (!data.words || !data.words.length) {
+    strip.style.display = 'none';
+    return;
+  }
+  const srcLabel = { civitai: 'Civitai', 'lora-manager': 'Civitai',
+                     dataset: 'dataset' }[data.source] || data.source;
+  const src = document.createElement('span');
+  src.className = 'trig-src';
+  src.textContent = `⚡ triggers · ${srcLabel}`;
+  src.title = 'Palabras de activación del LoRA — clic para añadir/quitar del prompt';
+  strip.appendChild(src);
+  for (const w of data.words) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'trig-chip';
+    b.textContent = w;
+    b.onclick = () => toggleTrigger(w);
+    strip.appendChild(b);
+  }
+  strip.style.display = '';
+  paintTriggerState();
+}
+
+const promptHasWord = (text, w) => text.toLowerCase().includes(w.toLowerCase());
+
+function paintTriggerState() {
+  const text = $('exp-prompt').value;
+  const frozen = !!exploreSession;
+  for (const b of $('trigger-strip').querySelectorAll('.trig-chip')) {
+    b.classList.toggle('in-prompt', promptHasWord(text, b.textContent));
+    b.disabled = frozen;
+    b.title = frozen ? 'prompt congelado durante la sesión' : b.textContent;
+  }
+}
+
+function toggleTrigger(w) {
+  if (exploreSession) return;
+  const ta = $('exp-prompt');
+  let t = ta.value;
+  if (promptHasWord(t, w)) {
+    // quitar la aparición literal comiéndose la coma/espacio de delante
+    const re = new RegExp('(,\\s*)?' + w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+    t = t.replace(re, '').replace(/^\s*,\s*/, '').replace(/ {2,}/g, ' ').trim();
+  } else {
+    // tags (sdxl) se encadenan con coma; la prosa (zimage) con espacio
+    const sep = (labArch() && labArch().name === 'zimage') ? ' ' : ', ';
+    t = t.trim() ? t.replace(/[,\s]+$/, '') + sep + w : w;
+  }
+  ta.value = t;
+  paintTriggerState();
+}
+
+$('exp-prompt').addEventListener('input', paintTriggerState);
 
 // ── Modal genérico (paginado + carga progresiva) ──
 // Un solo componente para LoRAs y checkpoints. Con 1300+ LoRAs, renderizar de
@@ -655,6 +739,7 @@ async function refreshExplore() {
   gb.textContent = active ? '▶ Generar' : '▶ Generar (prueba)';
   gb.title = active ? ''
     : 'Calibración pre-lock: la imagen NO se guarda en el historial';
+  refreshTriggers();   // el LoRA vigente puede venir de la sesión o del picker
 
   if (!active) {
     selectedGen = null;
@@ -680,6 +765,7 @@ async function refreshExplore() {
     ` <span class="dim">seed ${s.prompt.seed} · ${s.sampling.steps} steps · cfg ${s.sampling.cfg}</span>`;
   populateKSampler(s.sampling);
   $('exp-prompt').value = s.prompt.text;
+  paintTriggerState();   // el prompt congelado acaba de fijarse
 
   if (!$('switch-grid').children.length) buildSwitchGrid();
   if (selectedGen && !s.generations.find(g => g.id === selectedGen))

@@ -35,6 +35,7 @@ from forge_lab.core import explore
 from forge_lab.core import model_config
 from forge_lab.core import favorites
 from forge_lab.core import battery
+from forge_lab.core import lora_triggers
 from forge_lab.core.battery import BatteryError
 from forge_lab.core.favorites import FavoritesError
 from forge_lab.core.validation_set import ValidationSet, ValidationSetError, LockedError
@@ -324,6 +325,17 @@ async def loras_list(arch: str = "zimage"):
         l["is_favorite"] = l["file"] in fav
     loras.sort(key=lambda e: (not e["arch_match"], e["name"].lower()))
     return {"loras": loras}
+
+
+@forge_router.get("/lora/triggers")
+async def lora_triggers_get(file: str):
+    """Trigger words del LoRA: sidecars de Civitai/Lora-Manager o, en su
+    defecto, los tags más frecuentes del dataset de entrenamiento (kohya).
+    Barato (JSON + header), con cache por mtime en el módulo."""
+    try:
+        return lora_triggers.triggers_for(_models_root(), file)
+    except lora_triggers.TriggerError as e:
+        raise HTTPException(404, str(e))
 
 
 @forge_router.get("/lora-preview")

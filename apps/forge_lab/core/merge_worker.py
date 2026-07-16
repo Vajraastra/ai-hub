@@ -11,6 +11,10 @@ Matemática (idéntica a la carga runtime de ComfyUI):
     scale = alpha / rank  si el módulo trae tensor alpha (formato kohya),
             1.0           si no (formato PEFT sin alpha, p. ej. ai-toolkit)
 
+Capas conv (LoCon/LyCORIS): lora_down (r, in, kh, kw) y lora_up (out, r, 1, 1)
+se aplanan a 2D (flatten desde dim 1), se multiplican y el delta se re-forma
+a la shape del tensor base — réplica exacta de calculate_weight() de ComfyUI.
+
 Formatos de fichero LoRA soportados:
   - PEFT/diffusers: <prefijo>modulo.lora_A.weight / .lora_B.weight, con
     prefijo contenedor diffusion_model. / transformer. (Z-Image y cía.)
@@ -159,20 +163,29 @@ def main(job_path: str):
                 for module, sl, dose in deltas[k]:
                     A = lf.get_tensor(pairs[module]["A"]).to(torch.float32)
                     B = lf.get_tensor(pairs[module]["B"]).to(torch.float32)
-                    if A.dim() != 2 or B.dim() != 2:
+                    if A.dim() not in (2, 4) or B.dim() not in (2, 4):
                         fail(f"{module}: tensores LoRA de dim {A.dim()}/"
-                             f"{B.dim()} (¿LoCon/conv?) — no soportado")
+                             f"{B.dim()} — no soportado")
                     scale = 1.0
                     if "alpha" in pairs[module]:
                         alpha = float(lf.get_tensor(pairs[module]["alpha"]))
                         scale = alpha / A.shape[0]   # rank = filas de lora_down
-                    d = (strength * dose * scale) * (B @ A)
+                    # conv (LoCon): down (r, in, kh, kw) y up (out, r, 1, 1)
+                    # se aplanan a 2D y el delta se re-forma al tensor base —
+                    # réplica exacta de calculate_weight() de ComfyUI
+                    d = (strength * dose * scale) * (B.flatten(start_dim=1)
+                                                     @ A.flatten(start_dim=1))
                     if sl is None:
                         if d.shape != t.shape:
-                            fail(f"{module}: delta {tuple(d.shape)} ≠ "
-                                 f"tensor base {tuple(t.shape)} ({k})")
+                            if d.numel() != t.numel():
+                                fail(f"{module}: delta {tuple(d.shape)} ≠ "
+                                     f"tensor base {tuple(t.shape)} ({k})")
+                            d = d.reshape(t.shape)
                         t += d
                     else:
+                        if A.dim() != 2 or B.dim() != 2:
+                            fail(f"{module}: franja con tensores conv — "
+                                 "no soportado")
                         dim, start, size = sl
                         want = list(t.shape)
                         want[dim] = size

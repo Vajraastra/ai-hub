@@ -17,24 +17,37 @@ Renombrar claves de un safetensors no necesita torch: se reescribe el header
 JSON (mismos dtype/shape/data_offsets) y se copia el bloque de datos tal
 cual, byte a byte. Stdlib puro.
 
-Correspondencia (tabla cerrada, verificada contra la colección real el
-2026-07-16 — una sola huella de indexado en 82 ficheros):
+Correspondencia de atención (tabla cerrada, verificada contra la colección
+real el 2026-07-16 — una sola huella de indexado en 82 ficheros):
   down_blocks.1.attentions.{0,1}   → input_blocks.{4,5}.1    (640, depth 2)
   down_blocks.2.attentions.{0,1}   → input_blocks.{7,8}.1    (1280, depth 10)
   mid_block.attentions.0           → middle_block.1          (1280, depth 10)
   up_blocks.0.attentions.{0,1,2}   → output_blocks.{0,1,2}.1 (1280, depth 10)
   up_blocks.1.attentions.{0,1,2}   → output_blocks.{3,4,5}.1 (640, depth 2)
 
+Correspondencia conv/ResNet/emb (LoCon; añadida s60, censo real 52 ficheros):
+  down_blocks.i.resnets.j          → input_blocks.{1+3i+j}.0
+  down_blocks.{0,1}.downsamplers.0.conv → input_blocks.{3,6}.0.op
+  mid_block.resnets.{0,1}          → middle_block.{0,2}
+  up_blocks.i.resnets.j            → output_blocks.{3i+j}.0
+  up_blocks.{0,1}.upsamplers.0.conv → output_blocks.{2,5}.2.conv
+  conv_in / conv_out               → input_blocks.0.0 / out.2
+  time_embedding.linear_{1,2}      → time_embed.{0,2}
+  add_embedding.linear_{1,2}       → label_emb.0.{0,2}
+  (subs de resnet: conv1→in_layers.2, conv2→out_layers.3,
+   time_emb_proj→emb_layers.1, conv_shortcut→skip_connection — shortcut
+   solo donde cambia el canal: input 4/7 y todo el decoder)
+
 Guard de impostores: un LoRA SD1.5 usa las mismas rutas diffusers con otros
 bloques (down 0–3, up 1–3), depth 1 y cross-attention de 768 (SDXL: 2048).
 Los bloques fuera de tabla ya no traducen; además se comprueban dims del
 header (attn1.to_q out ∈ {640,1280} según bloque, attn2.to_k in == 2048).
 
-Política all-or-nothing: cualquier módulo UNet no traducible (conv/LoCon,
-resnets, embeddings) aborta la conversión — el nodo selectivo no tiene
-toggles para esos bloques y aplicarlo "a medias" rompería la garantía
-preview ≡ merge. Los prefijos de text encoder se conservan tal cual (la
-política ya los apaga en nodo y merge).
+Política all-or-nothing: cualquier módulo UNet no traducible (fuera del
+mapa SDXL: otros bloques, DoRA, formatos raros) aborta la conversión —
+aplicar "a medias" rompería la garantía preview ≡ merge. Los prefijos de
+text encoder se conservan tal cual (la política ya los apaga en nodo y
+merge).
 """
 import hashlib
 import json
@@ -62,6 +75,40 @@ _ST_MAP: list[tuple[str, str, int, int]] = [
     ("output_blocks.4.1", "up_blocks.1.attentions.1", 2, 640),
     ("output_blocks.5.1", "up_blocks.1.attentions.2", 2, 640),
 ]
+
+# módulos conv/ResNet/emb (LoCon): (kohya, diffusers), correspondencia 1:1
+_RESNET_SUBS = (("in_layers.2", "conv1"), ("out_layers.3", "conv2"),
+                ("emb_layers.1", "time_emb_proj"))
+
+
+def _conv_map() -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = [
+        ("input_blocks.0.0", "conv_in"), ("out.2", "conv_out"),
+        ("time_embed.0", "time_embedding.linear_1"),
+        ("time_embed.2", "time_embedding.linear_2"),
+        ("label_emb.0.0", "add_embedding.linear_1"),
+        ("label_emb.0.2", "add_embedding.linear_2"),
+        ("input_blocks.3.0.op", "down_blocks.0.downsamplers.0.conv"),
+        ("input_blocks.6.0.op", "down_blocks.1.downsamplers.0.conv"),
+        ("output_blocks.2.2.conv", "up_blocks.0.upsamplers.0.conv"),
+        ("output_blocks.5.2.conv", "up_blocks.1.upsamplers.0.conv"),
+    ]
+    for i in range(3):                      # ResNets del encoder
+        for j in range(2):
+            k, d = f"input_blocks.{1 + 3*i + j}.0", f"down_blocks.{i}.resnets.{j}"
+            pairs += [(f"{k}.{ks}", f"{d}.{ds}") for ks, ds in _RESNET_SUBS]
+            if i > 0 and j == 0:            # cambio de canal: input 4.0 y 7.0
+                pairs.append((f"{k}.skip_connection", f"{d}.conv_shortcut"))
+    for j in (0, 1):                        # ResNets del bottleneck
+        k, d = f"middle_block.{2*j}", f"mid_block.resnets.{j}"
+        pairs += [(f"{k}.{ks}", f"{d}.{ds}") for ks, ds in _RESNET_SUBS]
+    for i in range(3):                      # ResNets del decoder (todos con skip)
+        for j in range(3):
+            k, d = f"output_blocks.{3*i + j}.0", f"up_blocks.{i}.resnets.{j}"
+            pairs += [(f"{k}.{ks}", f"{d}.{ds}") for ks, ds in _RESNET_SUBS]
+            pairs.append((f"{k}.skip_connection", f"{d}.conv_shortcut"))
+    return pairs
+
 
 _SUFFIXES = (".alpha", ".lora_down.weight", ".lora_up.weight",
              ".lora_A.weight", ".lora_B.weight")
@@ -95,6 +142,8 @@ def _module_map() -> dict[str, str]:
             subs.append(f"{tb}.ff.net.2")
         for s in subs:
             m[_flat(f"{diff}.{s}")] = _flat(f"{kohya}.{s}")
+    for kohya, diff in _conv_map():         # conv/ResNet/emb (LoCon)
+        m[_flat(diff)] = _flat(kohya)
     return m
 
 
@@ -150,8 +199,8 @@ def translate_keys(hdr: dict) -> dict[str, str]:
                 n_conv += 1
             untranslatable.append(k)
     if untranslatable:
-        extra = (f" ({n_conv} de conv/resnet: LoCon sin soporte)"
-                 if n_conv else "")
+        extra = (f" ({n_conv} de conv/resnet fuera del mapa SDXL — "
+                 "¿SD1.5 u otro UNet?)" if n_conv else "")
         raise LoraAliasError(
             f"{len(untranslatable)} claves UNet sin traducción a kohya"
             f"{extra} — p. ej. {untranslatable[0]!r}")

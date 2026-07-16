@@ -19,7 +19,11 @@ Niveles (acumulativos, de barato a caro):
   3  runtime (ComfyUI :8188)  muestra pequeña: genera con el nodo selectivo
                               todo-ON vs todo-OFF con la copia convertida y
                               exige diff de píxeles > umbral (detector del
-                              fallo mudo de la s56). Necesita ComfyUI+GPU.
+                              fallo mudo de la s56). Si el LoRA trae claves
+                              conv (LoCon), un tercer render SOLO-conv
+                              (atención apagada) vs todo-OFF verifica que
+                              las claves conv fluyen de verdad por el nodo.
+                              Necesita ComfyUI+GPU con el nodo recargado.
 
 Uso (venv del hub):
   python alias_battery.py --level 2                # niveles 0..2
@@ -89,7 +93,8 @@ def level0() -> tuple[int, dict]:
         ok(f"los {len(mmap)} destinos existen en lora_key_map() de sdxl")
 
     # conteo exacto: 5 transformers depth-2 (22 módulos) + 6 depth-10 (102)
-    expect = 5 * 22 + 6 * 102
+    # + 72 conv/ResNet/emb (LoCon, s60)
+    expect = 5 * 22 + 6 * 102 + 72
     if len(mmap) != expect:
         errors += fail(f"tabla con {len(mmap)} módulos, esperados {expect}")
     else:
@@ -308,24 +313,62 @@ async def level3(models_root: Path, converted: list[dict], sample: int,
         except ImportError:
             return -1.0 if a == b else 999.0   # sin PIL: igualdad de bytes
 
+    from forge_lab.core.architectures.sdxl import _CONV_GROUPS
+    key_map = adapter.lora_key_map()
+    conv_prefixes = tuple(p for pfx in _CONV_GROUPS.values() for p in pfx)
+
+    def conv_modules(hdr) -> int:
+        """Módulos del LoRA que aterrizan en capas conv/emb (LoCon)."""
+        try:
+            pairs, _ = collect_pairs([k for k in hdr if k != "__metadata__"],
+                                     adapter.ignored_lora_prefixes)
+        except LoraFormatError:
+            return 0
+        n = 0
+        for m in pairs:
+            tgt = key_map.get(m)
+            if not tgt:
+                continue
+            bare = tgt[0][len("model.diffusion_model."):-len(".weight")]
+            if any(bare == p or bare.startswith(p + ".") for p in conv_prefixes):
+                n += 1
+        return n
+
+    all_off = {"blocks": {b: 0.0 for b in adapter.list_blocks()}, "other": 0.0}
+    conv_only = {"blocks": {**{b: 0.0 for b in adapter.list_blocks()},
+                            **{g: 1.0 for g in _CONV_GROUPS}}, "other": 0.0}
     for item in converted[:sample]:
         rel = item["file"]
         alias_rel = lora_alias.alias_rel_path(rel)
         hdr, _ = read_header(models_root / "loras" / alias_rel)
         exponent = adapter.dose_exponent(
             lora_has_alpha=any(k.endswith(".alpha") for k in hdr))
+        n_conv = conv_modules(hdr)
         try:
             img_on = await render(alias_rel, explore.full_config("sdxl"), exponent)
-            off = {"blocks": {b: 0.0 for b in adapter.list_blocks()}, "other": 0.0}
-            img_off = await render(alias_rel, off, exponent)
+            img_off = await render(alias_rel, all_off, exponent)
             d = pixel_diff(img_on, img_off)
             applied = d > 0.5 or d == 999.0
-            results.append({"file": rel, "mean_abs_diff": round(d, 3),
-                            "applied": applied})
+            entry = {"file": rel, "mean_abs_diff": round(d, 3),
+                     "applied": applied, "conv_modules": n_conv}
             if applied:
                 ok(f"{rel}: el LoRA convertido SÍ altera la imagen (diff {d:.2f})")
             else:
                 errors += fail(f"{rel}: diff {d:.3f} — ¿fallo mudo?")
+            if n_conv and applied:
+                # LoCon: las claves conv deben fluir por sus toggles nuevos
+                img_conv = await render(alias_rel, conv_only, exponent)
+                dc = pixel_diff(img_conv, img_off)
+                conv_applied = dc > 0.5 or dc == 999.0
+                entry.update({"conv_only_diff": round(dc, 3),
+                              "conv_applied": conv_applied})
+                if conv_applied:
+                    ok(f"    └ solo-conv ({n_conv} módulos) también altera "
+                       f"(diff {dc:.2f})")
+                else:
+                    errors += fail(f"    └ solo-conv diff {dc:.3f} — las "
+                                   "claves conv NO fluyen (¿nodo viejo?)")
+            results.append(entry)
         except Exception as e:
             errors += fail(f"{rel}: {type(e).__name__}: {e}")
             results.append({"file": rel, "error": str(e)})

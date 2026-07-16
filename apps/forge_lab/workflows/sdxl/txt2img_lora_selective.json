@@ -1,5 +1,5 @@
 {
-  "_comment": "SDXL txt2img + SDXLSelectiveLoRALoader (exploración por bloques, Fase 4). Placeholders: model (ckpt_name), lora, lora_strength, prompt, negative, seed, steps, cfg, sampler, scheduler, width, height. Los toggles/dosis por bloque los inyecta explore.py mutando inputs del nodo 10 — el nodo escala TODOS los tensores del bloque, así que la strength actúa al cuadrado (o al cubo si el LoRA trae alpha) sobre el delta; explore.py pasa dosis**(1/exponente). text_encoder_1/2 y other_weights van SIEMPRE OFF (política: el merge nunca toca los TE; preview ≡ fichero).",
+  "_comment": "SDXL txt2img + SDXLSelectiveLoRALoader (exploración por bloques, Fase 4). Placeholders: model (ckpt_name), lora, lora_strength, prompt, negative, seed, steps, cfg, sampler, scheduler, width, height. Los toggles/dosis por bloque (11 de atención + conv_input/conv_mid/conv_output/embeddings para LoCon) los inyecta explore.py mutando inputs del nodo 10 — el nodo escala TODOS los tensores del bloque, así que la strength actúa al cuadrado (o al cubo si el LoRA trae alpha) sobre el delta; explore.py pasa dosis**(1/exponente). text_encoder_1/2 y other_weights van SIEMPRE OFF (política: el merge nunca toca los TE; preview ≡ fichero).",
   "1": {
     "class_type": "CheckpointLoaderSimple",
     "inputs": { "ckpt_name": "{{model}}" }
