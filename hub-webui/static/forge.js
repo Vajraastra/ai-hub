@@ -64,6 +64,8 @@ async function switchArch(name) {
   await Promise.all([loadStatus(), refreshCheckpoints(), refreshLoras(),
                      refreshBatteries(false)]);
   await refreshExplore();
+  // cambiar de arch SÍ resetea el KSampler a los defaults de la nueva
+  if (!exploreSession) populateKSampler(archDefaultsSampling());
 }
 
 async function loadStatus() {
@@ -565,7 +567,7 @@ $('btn-merge').onclick = async () => {
   const label = ($('merge-label').value || '').trim();
   if (!name) return alert('Pon nombre al checkpoint derivado (minúsculas, dígitos, guiones).');
   const s = exploreSession;
-  if (!confirm(`Merge con la config afinada [${g.summary}]:\n\n  ${s.checkpoint}  ←  ${s.lora.split('/').pop()}  @ ${s.strength}\n  →  forge_lab/${name}.safetensors (~12 GB)\n\nCorre en CPU/RAM (unos minutos). ¿Adelante?`)) return;
+  if (!confirm(`Merge con la config afinada [${g.summary}]:\n\n  ${s.checkpoint}  ←  ${sessLoraName(s)}  @ ${s.strength}\n  →  forge_lab/${name}.safetensors (~12 GB)\n\nCorre en CPU/RAM (unos minutos). ¿Adelante?`)) return;
   try {
     const { job_id } = await api('/explore/merge',
       { method: 'POST', body: { gen_id: selectedGen, name, label } });
@@ -585,7 +587,7 @@ function updateMergeFooter() {
     const s = exploreSession;
     sum.classList.add('ready');
     sum.innerHTML = `Config afinada: <span class="mono">${esc(sel.summary)}</span><br>` +
-      `<span class="dim">${esc(s.checkpoint)} ← ${esc(s.lora.split('/').pop())} @ ${s.strength}</span>`;
+      `<span class="dim">${esc(s.checkpoint)} ← ${esc(sessLoraName(s))} @ ${s.strength}</span>`;
     btn.disabled = false;
   } else {
     sum.classList.remove('ready');
@@ -625,10 +627,22 @@ function pollMergeJob(jobId) {
 
 let exploreSession = null;
 let selectedGen = null;
+let draftTs = null;   // mtime del último draft de calibración (pre-lock)
+
+// Pane del draft de calibración: imagen efímera, fuera del historial
+function draftPane() {
+  const url = '/api/forge/explore/draft-image?ts=' + draftTs;
+  return `<div class="compare-pane">
+    <h3>Calibración (no se guarda)</h3>
+    <img src="${url}" onclick="window.open('${url}','_blank')">
+    <div class="cfg">pre-lock · LoRA al 100% en todos los bloques</div>
+  </div>`;
+}
 
 async function refreshExplore() {
   const data = await api('/explore/session');
   exploreSession = data.session;
+  draftTs = data.draft ? data.draft.ts : null;
   updateTabBadges();
   const active = !!exploreSession;
   // entradas + config se BLOQUEAN mientras hay sesión (congeladas al arrancar)
@@ -637,7 +651,10 @@ async function refreshExplore() {
   $('btn-explore-close').style.display = active ? '' : 'none';
   $('btn-explore-clear').style.display =
     (active && exploreSession.generations.length) ? '' : 'none';
-  $('btn-explore-gen').disabled = !active;
+  const gb = $('btn-explore-gen');
+  gb.textContent = active ? '▶ Generar' : '▶ Generar (prueba)';
+  gb.title = active ? ''
+    : 'Calibración pre-lock: la imagen NO se guarda en el historial';
 
   if (!active) {
     selectedGen = null;
@@ -646,10 +663,12 @@ async function refreshExplore() {
     $('preset-row').innerHTML = '';
     $('explore-info').textContent = '';
     $('explore-actions').style.display = 'none';
-    populateKSampler(archDefaultsSampling());
-    $('compare-wrap').innerHTML =
-      '<div class="viewport-empty">Elige <b>base</b> + <b>LoRA</b> arriba, escribe un prompt y pulsa «🧪 Iniciar sesión». La 1ª generación queda como referencia.</div>';
-    $('hist-strip').innerHTML = '<div class="hist-empty">sin sesión</div>';
+    // defaults del KSampler solo si está virgen: un refresh tras cada draft
+    // no debe pisar los valores que el usuario está calibrando
+    if (!$('ks-cfg').value) populateKSampler(archDefaultsSampling());
+    $('compare-wrap').innerHTML = draftTs ? draftPane() :
+      '<div class="viewport-empty">Elige <b>base</b> + <b>LoRA</b> arriba y calibra libremente prompt y KSampler con «▶ Generar (prueba)» — esas imágenes NO se guardan.<br>Cuando estés convencido, pulsa «🔒 Lock sesión»: la config se congela y cada generación pasa al historial (la 1ª queda como referencia).</div>';
+    $('hist-strip').innerHTML = '<div class="hist-empty">sin lock — nada se guarda</div>';
     updateMergeFooter();
     return;
   }
@@ -657,7 +676,7 @@ async function refreshExplore() {
   const s = exploreSession;
   $('explore-info').innerHTML =
     `<span class="mono">${esc(s.checkpoint)}</span> + ` +
-    `<span class="mono">${esc(s.lora.split('/').pop())}</span> @ ${s.strength}` +
+    `<span class="mono">${esc(sessLoraName(s))}</span> @ ${s.strength}` +
     ` <span class="dim">seed ${s.prompt.seed} · ${s.sampling.steps} steps · cfg ${s.sampling.cfg}</span>`;
   populateKSampler(s.sampling);
   $('exp-prompt').value = s.prompt.text;
@@ -788,6 +807,10 @@ function popApply(dose, on) {
 
 function genById(id) { return exploreSession.generations.find(g => g.id === id); }
 
+// Nombre legible del LoRA de la sesión: el original de la colección si la
+// sesión corre sobre una copia alias (conversión diffusers→kohya).
+function sessLoraName(s) { return (s.lora_source || s.lora).split('/').pop(); }
+
 function comparePane(title, gen, extraClass = '') {
   if (!gen) return '';
   const url = '/api/forge/explore/image/' + encodeURIComponent(gen.id);
@@ -849,7 +872,9 @@ function renderHistory() {
   }
 }
 
-$('btn-explore-start').onclick = async () => {
+// Entradas actuales del workbench (compartidas por el lock y la calibración
+// pre-lock). Devuelve null (con alert) si falta algo.
+function collectSessionBody() {
   const body = {
     arch: currentArch,
     checkpoint: $('exp-checkpoint').value,
@@ -858,11 +883,17 @@ $('btn-explore-start').onclick = async () => {
     prompt: $('exp-prompt').value,
     negative: '',
     seed: parseInt($('exp-seed').value, 10) || 424242,
-    sampling: collectKSampler(),   // KSampler del panel izquierdo (editable pre-sesión)
+    sampling: collectKSampler(),   // KSampler del panel izquierdo (editable pre-lock)
   };
-  if (!body.checkpoint) return alert('No hay checkpoint base seleccionado.');
-  if (!body.lora) return alert('No hay LoRA seleccionado.');
-  if (!body.prompt.trim()) return alert('Escribe un prompt (o elige uno del set).');
+  if (!body.checkpoint) { alert('No hay checkpoint base seleccionado.'); return null; }
+  if (!body.lora) { alert('No hay LoRA seleccionado.'); return null; }
+  if (!body.prompt.trim()) { alert('Escribe un prompt.'); return null; }
+  return body;
+}
+
+$('btn-explore-start').onclick = async () => {
+  const body = collectSessionBody();
+  if (!body) return;
   try {
     await api('/explore/session', { method: 'POST', body });
     $('switch-grid').innerHTML = '';   // reconstruir con todo ON
@@ -896,10 +927,19 @@ $('btn-explore-clear').onclick = async () => {
   } catch (e) { alert('Error: ' + e.message); }
 };
 
+// Generar: con sesión → trabajo del historial; sin sesión → draft de
+// calibración (misma tubería, imagen efímera que no entra al historial)
 $('btn-explore-gen').onclick = async () => {
   try {
-    const { job_id } = await api('/explore/generate',
-                                 { method: 'POST', body: { config: collectConfig() } });
+    let job_id;
+    if (exploreSession) {
+      ({ job_id } = await api('/explore/generate',
+                              { method: 'POST', body: { config: collectConfig() } }));
+    } else {
+      const body = collectSessionBody();
+      if (!body) return;
+      ({ job_id } = await api('/explore/draft', { method: 'POST', body }));
+    }
     $('btn-explore-gen').disabled = true;
     $('explore-progress').style.display = '';
     const timer = setInterval(async () => {
@@ -913,7 +953,7 @@ $('btn-explore-gen').onclick = async () => {
         $('btn-explore-gen').disabled = false;
         $('explore-progress').style.display = 'none';
         if (j.status === 'error') alert('Generación fallida: ' + j.error);
-        else selectedGen = j.gen.id;
+        else if (j.gen) selectedGen = j.gen.id;
         await refreshExplore();
       }
     }, 1000);
@@ -967,11 +1007,33 @@ const KS_FIELDS = ['cfg', 'steps', 'sampler', 'scheduler', 'width', 'height'];
 function archDefaultsSampling() {
   return ((labArch() || archDef() || {}).sampling_defaults) || {};
 }
+async function loadSamplingOptions() {
+  const opts = await api('/sampling_options');
+  fillKsSelect($('ks-sampler'), opts.samplers);
+  fillKsSelect($('ks-scheduler'), opts.schedulers);
+}
+function fillKsSelect(sel, values) {
+  const prev = sel.value;
+  sel.innerHTML = values.map(v => `<option>${esc(v)}</option>`).join('');
+  if (prev) setKsSelect(sel, prev);
+}
+// Fija el valor aunque no esté en la lista (sesión guardada con un sampler
+// que esta instalación ya no ofrece, o fallback con ComfyUI caído).
+function setKsSelect(sel, value) {
+  if (![...sel.options].some(o => o.value === value)) {
+    const o = document.createElement('option');
+    o.textContent = value;
+    sel.appendChild(o);
+  }
+  sel.value = value;
+}
 function populateKSampler(s) {
   s = s || {};
   for (const k of KS_FIELDS) {
     const el = $('ks-' + k);
-    if (el && s[k] !== undefined && s[k] !== null) el.value = s[k];
+    if (!el || s[k] === undefined || s[k] === null) continue;
+    if (el.tagName === 'SELECT') setKsSelect(el, String(s[k]));
+    else el.value = s[k];
   }
 }
 function collectKSampler() {
@@ -1017,7 +1079,7 @@ document.addEventListener('mousedown', (e) => {
 
 async function init() {
   await loadArchitectures();   // debe ir primero: fija currentArch y el selector
-  await Promise.all([loadStatus(), refreshBatteries(false),
+  await Promise.all([loadStatus(), loadSamplingOptions(), refreshBatteries(false),
                      refreshCheckpoints(), refreshLoras()]);
   await refreshExplore();
 }

@@ -74,6 +74,12 @@ async def architectures():
     return {"architectures": out}
 
 
+@forge_router.get("/sampling_options")
+async def sampling_options():
+    """Samplers/schedulers válidos según el KSampler de la instalación."""
+    return await _comfy.get_sampler_options()
+
+
 @forge_router.get("/status")
 async def status(arch: str = "zimage"):
     """Diagnóstico Fase 0: ComfyUI vivo + modelos presentes + nodos requeridos."""
@@ -482,7 +488,7 @@ class ExploreRefBody(BaseModel):
 
 @forge_router.get("/explore/session")
 async def explore_session_get():
-    return {"session": explore.get_session()}
+    return {"session": explore.get_session(), "draft": explore.get_draft()}
 
 
 @forge_router.post("/explore/session")
@@ -583,6 +589,54 @@ async def explore_generate(body: ExploreGenerateBody):
     return {"job_id": job_id}
 
 
+async def _explore_draft_job(job: dict, body: ExploreSessionBody, ckpt: dict):
+    def on_progress(step, total):
+        job.update({"step": step, "steps_total": total})
+    try:
+        job["draft"] = await explore.generate_draft(
+            _comfy, arch=body.arch, checkpoint=ckpt["name"],
+            model=ckpt["unet_name"], lora=body.lora, strength=body.strength,
+            prompt=body.prompt, negative=body.negative, seed=body.seed,
+            sampling=body.sampling, models_root=_models_root(),
+            on_progress=on_progress)
+        job["status"] = "done"
+    except Exception as e:
+        job["status"] = "error"
+        job["error"] = str(e)
+
+
+@forge_router.post("/explore/draft")
+async def explore_draft(body: ExploreSessionBody):
+    """Calibración pre-lock: genera con las entradas dadas (LoRA a dosis 1.0
+    en todos los bloques) SIN sesión y SIN guardar en el historial — la
+    imagen sobrescribe draft.png en cada prueba. Permite afinar prompt y
+    KSampler antes de hacer lock."""
+    if any(j["status"] == "running" for j in _jobs.values()):
+        raise HTTPException(409, "ya hay un job en curso")
+    if not await _comfy.health_check():
+        raise HTTPException(503, "ComfyUI no responde en :8188 — arráncalo desde el Hub")
+    try:
+        ckpt = _merger.get_checkpoint(body.checkpoint, body.arch)
+        if not ckpt["present"]:
+            raise MergeError(f"el checkpoint {body.checkpoint!r} no está en disco")
+    except MergeError as e:
+        raise HTTPException(400, str(e))
+    job_id = uuid.uuid4().hex[:12]
+    job = {"id": job_id, "type": "explore-draft", "status": "running",
+           "step": 0, "steps_total": int((body.sampling or {}).get("steps") or 0),
+           "draft": None, "error": None}
+    _jobs[job_id] = job
+    asyncio.create_task(_explore_draft_job(job, body, ckpt))
+    return {"job_id": job_id}
+
+
+@forge_router.get("/explore/draft-image")
+async def explore_draft_image():
+    if not explore.DRAFT_FILE.is_file():
+        raise HTTPException(404, "sin imagen de calibración")
+    return FileResponse(explore.DRAFT_FILE)
+
+
 async def _explore_confirm_job(job: dict, vs: ValidationSet, session: dict,
                                config: dict, label: str):
     def on_progress(p: dict):
@@ -594,7 +648,7 @@ async def _explore_confirm_job(job: dict, vs: ValidationSet, session: dict,
                                  arch)
         template["10"]["inputs"].update(explore.node_inputs(
             config, arch, session.get("dose_exponent", 2)))
-        lora_name = Path(session["lora"]).name
+        lora_name = Path(session.get("lora_source") or session["lora"]).name
         desc = (f"{session['checkpoint']} + {lora_name} @ "
                 f"{session['strength']} "
                 f"[{explore.config_summary(config, arch)}]")
@@ -661,7 +715,10 @@ async def explore_merge(body: dict):
         raise HTTPException(400, str(e))
     return await merge_start(MergeBody(
         arch=session["arch"], base=session["checkpoint"],
-        lora=session["lora"], strength=session["strength"],
+        # si la sesión corre sobre una copia alias (diffusers→kohya), el
+        # linaje del derivado referencia el LoRA original de la colección
+        lora=session.get("lora_source") or session["lora"],
+        strength=session["strength"],
         name=str(body.get("name", "")), label=str(body.get("label", "")),
         blocks=blocks))
 

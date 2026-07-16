@@ -1,8 +1,11 @@
 """
 Sesión de exploración por bloques (Fase 4) — el laboratorio de switches.
 
-Flujo (visión del usuario, sesión 2026-07-04):
-  1. Se fija checkpoint + LoRA + prompt + seed + sampling → sesión.
+Flujo (visión del usuario, sesión 2026-07-04; calibración añadida 2026-07-16):
+  0. CALIBRACIÓN (pre-lock): se puede generar libremente para afinar prompt y
+     KSampler ANTES de fijar la sesión. Esas imágenes no entran al historial:
+     viven en draft.png y cada prueba sobrescribe la anterior.
+  1. Se fija checkpoint + LoRA + prompt + seed + sampling → sesión (lock).
   2. Primera generación = REFERENCIA (con la config de bloques que sea).
   3. Se cambian switches/dosis por bloque → generar → comparar contra la
      referencia. Iterar hasta dar con la config deseada.
@@ -43,6 +46,7 @@ from .comfy_client import load_workflow
 
 EXPLORE_DIR = Path(__file__).parent.parent / "data" / "explore_tmp"
 _SESSION_FILE = EXPLORE_DIR / "session.json"
+DRAFT_FILE = EXPLORE_DIR / "draft.png"
 
 
 class ExploreError(Exception):
@@ -170,16 +174,14 @@ def _validate_lora_coverage(hdr: dict, adapter):
             "silencio y el merge abortaría, así que la sesión se rechaza")
 
 
-def create_session(arch: str, checkpoint: str, model: str, lora: str,
+def _build_session(arch: str, checkpoint: str, model: str, lora: str,
                    strength: float, prompt: str, negative: str, seed: int,
-                   sampling: dict | None = None,
-                   models_root: Path | None = None) -> dict:
-    """Arranca una sesión nueva (borra la anterior, imágenes incluidas).
-
-    checkpoint: nombre en el registro (para el merge final).
-    model: unet/ckpt_name que entiende ComfyUI. lora: ruta relativa posix.
-    models_root: almacén global; si se da, se lee el header del LoRA para
-    fijar el exponente de dosis (3 con alpha, 2 sin él)."""
+                   sampling: dict | None,
+                   models_root: Path | None) -> dict:
+    """Valida las entradas y arma el dict de sesión SIN tocar disco.
+    Compartido entre el lock (create_session) y la calibración pre-lock
+    (generate_draft): mismas validaciones → misma garantía de que el LoRA
+    aplica de verdad (coverage, exponente de dosis)."""
     adapter = get_adapter(arch)
     if not str(prompt).strip():
         raise ExploreError("prompt vacío")
@@ -187,24 +189,38 @@ def create_session(arch: str, checkpoint: str, model: str, lora: str,
         raise ExploreError(f"strength {strength} fuera de rango (0–2]")
 
     exponent = 2
+    lora_source = None
     if models_root is not None:
         from .merge import _read_st_header
         lora_path = Path(models_root) / "loras" / lora
         if not lora_path.is_file():
             raise ExploreError(f"no existe el LoRA {lora!r}")
         hdr, _ = _read_st_header(lora_path)
+        if adapter.name == "sdxl":
+            # naming diffusers → conversión al vuelo a kohya canónico; el
+            # resto de la sesión (nodo selectivo Y merge) consume la copia
+            from .lora_alias import LoraAliasError, ensure_alias, needs_alias
+            if needs_alias(hdr):
+                try:
+                    lora_source, lora = lora, ensure_alias(
+                        Path(models_root), lora)
+                except LoraAliasError as e:
+                    raise ExploreError(
+                        f"LoRA con naming diffusers no convertible: {e}")
+                lora_path = Path(models_root) / "loras" / lora
+                hdr, _ = _read_st_header(lora_path)
         exponent = adapter.dose_exponent(
             lora_has_alpha=any(k.endswith(".alpha") for k in hdr))
         _validate_lora_coverage(hdr, adapter)
 
-    clear_session()
-    session = {
+    return {
         "id": uuid.uuid4().hex[:8],
         "created_at": _now(),
         "arch": arch,
         "checkpoint": checkpoint,
         "model": model,
         "lora": lora,
+        "lora_source": lora_source,     # original si `lora` es copia alias
         "strength": float(strength),
         "dose_exponent": exponent,
         "prompt": {"text": str(prompt).strip(),
@@ -214,8 +230,51 @@ def create_session(arch: str, checkpoint: str, model: str, lora: str,
         "reference": None,
         "generations": [],
     }
+
+
+def create_session(arch: str, checkpoint: str, model: str, lora: str,
+                   strength: float, prompt: str, negative: str, seed: int,
+                   sampling: dict | None = None,
+                   models_root: Path | None = None) -> dict:
+    """Arranca una sesión nueva (borra la anterior, imágenes y draft de
+    calibración incluidos).
+
+    checkpoint: nombre en el registro (para el merge final).
+    model: unet/ckpt_name que entiende ComfyUI. lora: ruta relativa posix.
+    models_root: almacén global; si se da, se lee el header del LoRA para
+    fijar el exponente de dosis (3 con alpha, 2 sin él)."""
+    session = _build_session(arch, checkpoint, model, lora, strength, prompt,
+                             negative, seed, sampling, models_root)
+    clear_session()
     _save(session)
     return session
+
+
+def get_draft() -> dict | None:
+    """Última imagen de calibración pre-lock, si existe."""
+    if DRAFT_FILE.is_file():
+        return {"ts": int(DRAFT_FILE.stat().st_mtime)}
+    return None
+
+
+async def generate_draft(comfy, *, arch: str, checkpoint: str, model: str,
+                         lora: str, strength: float, prompt: str,
+                         negative: str = "", seed: int = 0,
+                         sampling: dict | None = None,
+                         models_root: Path | None = None,
+                         on_progress: Callable[[int, int], None] | None = None
+                         ) -> dict:
+    """Calibración pre-lock: genera con las mismas validaciones y workflow que
+    una sesión (LoRA a dosis 1.0 en todos los bloques) pero SIN sesión y SIN
+    persistir en el historial — la imagen sobrescribe draft.png en cada
+    prueba. Sirve para afinar prompt y KSampler antes del lock."""
+    session = _build_session(arch, checkpoint, model, lora, strength, prompt,
+                             negative, seed, sampling, models_root)
+    png, _, secs = await _render(session, full_config(arch),
+                                 session["prompt"], comfy, on_progress)
+    EXPLORE_DIR.mkdir(parents=True, exist_ok=True)
+    DRAFT_FILE.write_bytes(png)
+    return {"seconds": secs, "ts": int(DRAFT_FILE.stat().st_mtime)}
 
 
 def delete_generation(gen_id: str) -> dict:

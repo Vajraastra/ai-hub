@@ -157,7 +157,10 @@ class MergeOrchestrator:
         out = []
         if not base.exists():
             return out
+        from .lora_alias import ALIAS_SUBDIR
         for p in sorted(base.rglob("*.safetensors")):
+            if p.relative_to(base).parts[0] == ALIAS_SUBDIR:
+                continue    # copias de conversión diffusers→kohya (cache)
             st = p.stat()
             # arch va en la llave: la entrada cacheada depende de la
             # arquitectura consultada (arch_match, base_model…)
@@ -341,7 +344,21 @@ class MergeOrchestrator:
         lora_path = self.models_root / "loras" / lora_file
         if not lora_path.is_file():
             raise MergeError(f"no existe el LoRA {lora_file!r}")
-        _, lora_meta = _read_st_header(lora_path)
+        lora_hdr, lora_meta = _read_st_header(lora_path)
+
+        # naming diffusers → el worker consume la copia kohya-canónica (la
+        # misma que usaría el preview); el registro conserva el original
+        lora_alias_rel = None
+        if arch == "sdxl":
+            from .lora_alias import LoraAliasError, ensure_alias, needs_alias
+            if needs_alias(lora_hdr):
+                try:
+                    lora_alias_rel = await asyncio.to_thread(
+                        ensure_alias, self.models_root, lora_file)
+                except LoraAliasError as e:
+                    raise MergeError(
+                        f"LoRA con naming diffusers no convertible: {e}")
+                lora_path = self.models_root / "loras" / lora_alias_rel
 
         out_rel = f"{DERIVED_SUBDIR}/{name}.safetensors"
         out_path = self.models_root / weights_root / out_rel
@@ -358,6 +375,7 @@ class MergeOrchestrator:
                 "forge_lab.arch": arch,
                 "forge_lab.base": base_entry["name"],
                 "forge_lab.lora": lora_file,
+                "forge_lab.lora_alias": lora_alias_rel or "",
                 "forge_lab.lora_hash": lora_meta.get("sshs_model_hash") or "",
                 "forge_lab.strength": strength,
                 "forge_lab.blocks": (

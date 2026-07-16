@@ -65,6 +65,18 @@ class ComfyClient:
         except Exception:
             return False
 
+    async def get_sampler_options(self) -> dict:
+        """Listas de samplers/schedulers del KSampler instalado (fallback si
+        ComfyUI está caído: mínimos universales, la UI los completa luego)."""
+        try:
+            info = await self._get("/object_info/KSampler")
+            req = info["KSampler"]["input"]["required"]
+            return {"samplers": req["sampler_name"][0],
+                    "schedulers": req["scheduler"][0]}
+        except Exception:
+            return {"samplers": ["euler", "euler_ancestral", "dpmpp_2m", "dpmpp_sde"],
+                    "schedulers": ["normal", "karras", "exponential", "simple"]}
+
     async def get_models(self, folder: str) -> list[str]:
         """folder: diffusion_models | loras | vae | text_encoders ..."""
         try:

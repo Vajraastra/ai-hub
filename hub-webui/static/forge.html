@@ -121,7 +121,7 @@
     .ks-body { display:flex; flex-direction:column; gap:8px; margin-top:12px; }
     .ks-body label { display:flex; flex-direction:column; gap:3px; font-size:11px;
       color:var(--text-secondary); }
-    .ks-body input {
+    .ks-body input, .ks-body select {
       background:var(--bg-input,#14141c); border:1px solid var(--border);
       color:var(--text-primary); border-radius:5px; padding:5px 7px; font-size:12px; }
 
@@ -135,6 +135,9 @@
       background:var(--bg-card); border:1px solid var(--border); border-radius:8px;
       padding:12px 14px; display:flex; gap:10px; align-items:flex-end;
     }
+    #gen-col { display:flex; flex-direction:column; gap:6px; align-self:stretch;
+               justify-content:flex-end; }
+    #gen-col .btn { white-space:nowrap; }
     #test-prompt textarea {
       flex:1; resize:vertical; min-height:52px; max-height:200px;
       background:var(--bg-input,#14141c); border:1px solid var(--border);
@@ -381,7 +384,6 @@
         <span id="explore-info"></span>
         <span id="lock-badge" class="badge locked" style="display:none"
               title="Entradas, prompt y KSampler quedan congelados mientras dura la sesión">🔒 prompt + config congelados</span>
-        <button class="btn btn-primary" id="btn-explore-start">🧪 Iniciar sesión</button>
         <button class="back-btn" id="btn-explore-clear" style="display:none">🗑 Vaciar historial</button>
         <button class="back-btn danger" id="btn-explore-close" style="display:none">✎ Nueva sesión</button>
       </div>
@@ -400,8 +402,8 @@
           <div class="ks-body">
             <label>CFG <input id="ks-cfg" type="number" step="0.5"></label>
             <label>Steps <input id="ks-steps" type="number"></label>
-            <label>Sampler <input id="ks-sampler"></label>
-            <label>Scheduler <input id="ks-scheduler"></label>
+            <label>Sampler <select id="ks-sampler"></select></label>
+            <label>Scheduler <select id="ks-scheduler"></select></label>
             <label>Ancho <input id="ks-width" type="number" step="8"></label>
             <label>Alto <input id="ks-height" type="number" step="8"></label>
           </div>
@@ -412,8 +414,12 @@
             <div class="compare-wrap" id="compare-wrap"></div>
           </div>
           <div id="test-prompt">
-            <textarea id="exp-prompt" placeholder="Prompt de prueba (se congela al iniciar la sesión)…"></textarea>
-            <button class="btn btn-primary" id="btn-explore-gen" disabled>▶ Generar</button>
+            <textarea id="exp-prompt" placeholder="Prompt de prueba (calibra libremente; se congela al hacer lock)…"></textarea>
+            <div id="gen-col">
+              <button class="btn btn-outline" id="btn-explore-start"
+                      title="Congela base/LoRA/prompt/KSampler; a partir del lock cada generación se guarda en el historial">🔒 Lock sesión</button>
+              <button class="btn btn-primary" id="btn-explore-gen">▶ Generar</button>
+            </div>
           </div>
           <div id="explore-progress" style="display:none">
             <div class="plabel" id="explore-progress-label"></div>
@@ -521,6 +527,6 @@
     </div>
   </div>
 
-  <script src="/static/forge.js?v=8"></script>
+  <script src="/static/forge.js?v=10"></script>
 </body>
 </html>
