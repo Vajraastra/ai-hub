@@ -141,6 +141,35 @@ def clear_session():
         shutil.rmtree(EXPLORE_DIR)
 
 
+def _validate_lora_coverage(hdr: dict, adapter):
+    """Rechaza al crear la sesión los LoRAs que el nodo selectivo aplicaría a
+    medias o NO aplicaría (fallo MUDO: devuelve el modelo sin tocar y la
+    exploración genera siempre la misma imagen — bug reportado 2026-07-14 con
+    un LoRA solo-TE en sdxl). Mismo contrato que el merge_worker: claves TE
+    se saltan por política; cualquier módulo sin mapeo en la arquitectura
+    aborta (la garantía preview runtime ≡ fichero no se puede sostener)."""
+    from .lora_format import LoraFormatError, collect_pairs
+    try:
+        pairs, skipped = collect_pairs(
+            [k for k in hdr if k != "__metadata__"],
+            adapter.ignored_lora_prefixes)
+    except LoraFormatError as e:
+        raise ExploreError(f"LoRA no soportado: {e}")
+    if not pairs:
+        raise ExploreError(
+            f"este LoRA solo entrena text encoders ({len(skipped)} módulos "
+            f"TE): Forge Lab nunca aplica los TE (política preview ≡ merge), "
+            "así que no habría nada que explorar ni mergear — elige otro LoRA")
+    key_map = adapter.lora_key_map()
+    unmapped = sorted(m for m in pairs if m not in key_map)
+    if unmapped:
+        raise ExploreError(
+            f"{len(unmapped)}/{len(pairs)} módulos del LoRA no mapean al "
+            f"UNet de {adapter.name!r} (p. ej. {unmapped[0]!r}): naming no "
+            "soportado (¿diffusers/LoCon?) — el preview los descartaría en "
+            "silencio y el merge abortaría, así que la sesión se rechaza")
+
+
 def create_session(arch: str, checkpoint: str, model: str, lora: str,
                    strength: float, prompt: str, negative: str, seed: int,
                    sampling: dict | None = None,
@@ -166,6 +195,7 @@ def create_session(arch: str, checkpoint: str, model: str, lora: str,
         hdr, _ = _read_st_header(lora_path)
         exponent = adapter.dose_exponent(
             lora_has_alpha=any(k.endswith(".alpha") for k in hdr))
+        _validate_lora_coverage(hdr, adapter)
 
     clear_session()
     session = {

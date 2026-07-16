@@ -52,13 +52,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from architectures import get_adapter  # noqa: E402  (stdlib puro)
-
-# Prefijos contenedor del formato PEFT según la herramienta de entrenamiento
-# (mismos que acepta ComfyUI en model_lora_keys_unet). El formato kohya
-# conserva su prefijo (lora_unet_…) como parte del nombre de módulo.
-_PEFT_PREFIXES = ("diffusion_model.", "transformer.")
-_PEFT_SUFFIXES = {".lora_A.weight": "A", ".lora_B.weight": "B"}
-_KOHYA_SUFFIXES = {".lora_down.weight": "A", ".lora_up.weight": "B"}
+from lora_format import LoraFormatError, collect_pairs  # noqa: E402
 
 
 def fail(msg: str):
@@ -68,43 +62,6 @@ def fail(msg: str):
 
 def progress(phase: str, done: int, total: int):
     print(json.dumps({"phase": phase, "done": done, "total": total}), flush=True)
-
-
-def collect_pairs(lora_keys, ignored_prefixes):
-    """Agrupa claves del LoRA por módulo → {"A": key, "B": key, "alpha": key?}.
-    Devuelve (pairs, skipped_policy): los módulos con prefijo ignorable
-    (text encoders en sdxl) se apartan en vez de tratarse como error."""
-    pairs: dict[str, dict] = {}
-    skipped: set[str] = set()
-    strays = []
-    for k in lora_keys:
-        if ".dora_" in k or k.endswith(".diff") or k.endswith(".diff_b"):
-            fail(f"clave {k!r}: formato DoRA/diff no soportado")
-        if k.endswith(".alpha"):
-            module, part = k[: -len(".alpha")], "alpha"
-        else:
-            suffix = next((s for s in {**_PEFT_SUFFIXES, **_KOHYA_SUFFIXES}
-                           if k.endswith(s)), None)
-            if suffix is None:
-                strays.append(k)
-                continue
-            module = k[: -len(suffix)]
-            part = (_PEFT_SUFFIXES.get(suffix) or _KOHYA_SUFFIXES[suffix])
-        if any(module.startswith(p) for p in ignored_prefixes):
-            skipped.add(module)
-            continue
-        for p in _PEFT_PREFIXES:
-            if module.startswith(p):
-                module = module[len(p):]
-                break
-        pairs.setdefault(module, {})[part] = k
-    if strays:
-        fail(f"claves LoRA con formato desconocido: {strays[:5]}"
-             f"{' …' if len(strays) > 5 else ''}")
-    for module, parts in pairs.items():
-        if not {"A", "B"} <= set(parts):
-            fail(f"módulo {module!r}: par lora down/up incompleto")
-    return pairs, skipped
 
 
 def main(job_path: str):
@@ -129,8 +86,11 @@ def main(job_path: str):
     # ── 1. Mapear el LoRA contra el checkpoint ────────────────────────────
     with safe_open(lora_path, framework="pt", device="cpu") as lf:
         lora_keys = list(lf.keys())
-    pairs, skipped_policy = collect_pairs(lora_keys,
-                                          adapter.ignored_lora_prefixes)
+    try:
+        pairs, skipped_policy = collect_pairs(lora_keys,
+                                              adapter.ignored_lora_prefixes)
+    except LoraFormatError as e:
+        fail(str(e))
     if not pairs:
         fail("el LoRA solo contiene claves saltadas por política "
              "(¿LoRA de text encoder puro?)")
