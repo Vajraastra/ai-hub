@@ -175,6 +175,23 @@ async def setup_status():
             _save_status(updated)
             return updated
 
+    # El cache dice ready, pero el venv de ComfyUI puede cambiar por fuera
+    # (p. ej. venv recreado en la mudanza a Windows: los nodos siguen en disco
+    # pero sus paquetes pip ya no están y fallan al importar — pasó con
+    # piexif/impact-pack, 2026-07-16). Re-probar en vivo los nodos que el
+    # cache da por instalados; si alguno dejó de cargar, ready=False dispara
+    # el setup, cuya auto-reparación reinstala los requirements del nodo.
+    if status.get("ready"):
+        from setup import _load_registry
+        registry = _load_registry()
+        installed_ids = set(status.get("installed_node_ids", []))
+        broken = [e["id"] for e in
+                  registry.get("required", []) + registry.get("enhanced", [])
+                  if e["id"] in installed_ids
+                  and not await _comfy.probe_node(e["probe_node"])]
+        if broken:
+            return {**status, "ready": False, "broken_nodes": broken}
+
     return status
 
 
