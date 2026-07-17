@@ -732,6 +732,8 @@ function pollMergeJob(jobId) {
 let exploreSession = null;
 let selectedGen = null;
 let draftTs = null;   // mtime del último draft de calibración (pre-lock)
+let hasBaseImage = false;   // ¿existe base.png (checkpoint sin LoRA) de la sesión?
+let lockedCompareGen = null;   // id fijado en el slider derecho (null = modo "últimas 2")
 
 // Pane del draft de calibración: imagen efímera, fuera del historial
 function draftPane() {
@@ -744,13 +746,26 @@ function draftPane() {
 }
 
 async function refreshExplore() {
+  const wasActive = !!exploreSession;
   const data = await api('/explore/session');
   exploreSession = data.session;
   draftTs = data.draft ? data.draft.ts : null;
+  hasBaseImage = !!data.has_base;
   updateTabBadges();
   const active = !!exploreSession;
   // entradas + config se BLOQUEAN mientras hay sesión (congeladas al arrancar)
   setInputsLocked(active);
+  $('btn-inputs-toggle').style.display = active ? '' : 'none';
+  if (active && !wasActive) {
+    // al bloquear la sesión: colapsar base/LoRA y prompt (ya congelados, redundantes
+    // con el resumen de #run-bar) — se pueden reabrir con sus controles para verificar
+    $('inputs-bar').classList.add('collapsed');
+    $('btn-inputs-toggle').textContent = '▸ Ver base/LoRA';
+    $('prompt-fold').classList.remove('open');
+  } else if (!active) {
+    $('inputs-bar').classList.remove('collapsed');
+    $('prompt-fold').classList.add('open');
+  }
   $('btn-explore-start').style.display = active ? 'none' : '';
   $('btn-explore-close').style.display = active ? '' : 'none';
   $('btn-explore-clear').style.display =
@@ -763,6 +778,7 @@ async function refreshExplore() {
 
   if (!active) {
     selectedGen = null;
+    lockedCompareGen = null;
     closeChipPop();
     $('switch-grid').innerHTML = '';
     $('preset-row').innerHTML = '';
@@ -931,8 +947,72 @@ function comparePane(title, gen, extraClass = '') {
   const url = '/api/fusion/explore/image/' + encodeURIComponent(gen.id);
   return `<div class="compare-pane ${extraClass}">
     <h3>${title}</h3>
-    <img src="${url}" onclick="window.open('${url}','_blank')">
+    <div class="ba-zoom single"><img class="ba-img" src="${url}"></div>
     <div class="cfg">${esc(gen.summary)} · ${Math.round(gen.seconds)}s</div>
+  </div>`;
+}
+
+// Markup genérico del slider antes/después (2 imágenes + divisor + labels) —
+// reusado por la Referencia (sin/con LoRA) y por el comparador de la derecha
+// (últimas 2 generaciones / fijada vs última). Ver initBeforeAfter().
+function imageCompareSlider(leftUrl, leftLabel, rightUrl, rightLabel) {
+  return `<div class="ba-slider">
+    <div class="ba-zoom">
+      <img class="ba-img ba-base" src="${leftUrl}">
+      <img class="ba-img ba-over" src="${rightUrl}">
+    </div>
+    <div class="ba-handle"></div>
+    <span class="ba-label ba-label-l">${esc(leftLabel)}</span>
+    <span class="ba-label ba-label-r">${esc(rightLabel)}</span>
+  </div>`;
+}
+
+// Referencia con base.png (checkpoint sin LoRA, misma sesión).
+function compareSlider(gen) {
+  if (!gen) return '';
+  const url = '/api/fusion/explore/image/' + encodeURIComponent(gen.id);
+  return `<div class="compare-pane">
+    <h3>Referencia 📌</h3>
+    ${imageCompareSlider('/api/fusion/explore/base-image', 'Sin LoRA', url, 'Con LoRA')}
+    <div class="cfg">${esc(gen.summary)} · ${Math.round(gen.seconds)}s</div>
+  </div>`;
+}
+
+// Viewer derecho: por defecto compara las últimas 2 generaciones (para ver
+// diferencias finas entre iteraciones consecutivas). Con "🔒 Fijar" se
+// congela la imagen de la izquierda y la derecha sigue mostrando siempre la
+// última generación (para comparar contra un punto de referencia fijo
+// mientras se siguen probando variantes); "🔓 Quitar fijado" vuelve al modo
+// por defecto.
+function rightComparePane() {
+  const gens = (exploreSession && exploreSession.generations) || [];
+  if (lockedCompareGen && !genById(lockedCompareGen)) lockedCompareGen = null;
+  if (!gens.length || (gens.length < 2 && !lockedCompareGen)) return '';
+  const last = gens[gens.length - 1];
+  const lastUrl = '/api/fusion/explore/image/' + encodeURIComponent(last.id);
+
+  if (lockedCompareGen) {
+    const locked = genById(lockedCompareGen);
+    const lockedUrl = '/api/fusion/explore/image/' + encodeURIComponent(locked.id);
+    return `<div class="compare-pane">
+      <div class="compare-pane-head">
+        <h3>Fijada vs última</h3>
+        <button class="btn-icon" id="btn-compare-lock" title="Quitar fijado (vuelve a comparar las últimas 2)">🔓 Quitar fijado</button>
+      </div>
+      ${imageCompareSlider(lockedUrl, 'Fijada', lastUrl, 'Última')}
+      <div class="cfg">${esc(locked.summary)} → ${esc(last.summary)}</div>
+    </div>`;
+  }
+
+  const prev = gens[gens.length - 2];
+  const prevUrl = '/api/fusion/explore/image/' + encodeURIComponent(prev.id);
+  return `<div class="compare-pane">
+    <div class="compare-pane-head">
+      <h3>Últimas 2</h3>
+      <button class="btn-icon" id="btn-compare-lock" title="Fijar la izquierda y comparar contra las próximas generaciones">🔒 Fijar</button>
+    </div>
+    ${imageCompareSlider(prevUrl, 'Penúltima', lastUrl, 'Última')}
+    <div class="cfg">${esc(prev.summary)} → ${esc(last.summary)}</div>
   </div>`;
 }
 
@@ -940,12 +1020,118 @@ function renderCompare() {
   const s = exploreSession;
   const ref = s.reference ? genById(s.reference) : null;
   const sel = selectedGen ? genById(selectedGen) : null;
-  let html = comparePane('Referencia 📌', ref);
-  if (sel && (!ref || sel.id !== ref.id)) html += comparePane('Seleccionada', sel);
+  let html = ref ? (hasBaseImage ? compareSlider(ref) : comparePane('Referencia 📌', ref)) : '';
+  html += rightComparePane();
   $('compare-wrap').innerHTML = html ||
     '<span class="dim" style="font-size:12px">Sin generaciones todavía. Configura los bloques y pulsa "Generar variante" — la primera será la referencia.</span>';
   $('explore-actions').style.display = sel ? '' : 'none';
   updateMergeFooter();
+  initCompareInteractions();
+}
+
+// ── Slider antes/después + zoom/pan estilo Photoshop ────────────────────────
+
+function initCompareInteractions() {
+  const wrap = $('compare-wrap');
+  wrap.querySelectorAll('.ba-slider').forEach(initBeforeAfter);
+  wrap.querySelectorAll('.ba-zoom.single').forEach(el => initZoomPan(el));
+  const lockBtn = wrap.querySelector('#btn-compare-lock');
+  if (lockBtn) lockBtn.onclick = () => {
+    if (lockedCompareGen) {
+      lockedCompareGen = null;
+    } else {
+      const gens = exploreSession.generations;
+      const prev = gens[gens.length - 2];
+      lockedCompareGen = prev ? prev.id : null;
+    }
+    renderCompare();
+  };
+}
+
+function initBeforeAfter(slider) {
+  const zoom = slider.querySelector('.ba-zoom');
+  const over = slider.querySelector('.ba-over');
+  const handle = slider.querySelector('.ba-handle');
+  const setPct = (pct) => {
+    pct = Math.min(100, Math.max(0, pct));
+    over.style.clipPath = `inset(0 0 0 ${pct}%)`;
+    handle.style.left = pct + '%';
+  };
+  setPct(50);
+  let dragging = false;
+  const move = (e) => {
+    if (!dragging) return;
+    const r = zoom.getBoundingClientRect();
+    setPct(100 * (e.clientX - r.left) / r.width);
+  };
+  slider.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    dragging = true;
+    move(e);
+    e.preventDefault();
+  });
+  document.addEventListener('pointermove', move);
+  document.addEventListener('pointerup', () => { dragging = false; });
+  // solo zoom por rueda (centrado al cursor); el arrastre mueve el divisor,
+  // no la imagen.
+  initZoomPan(zoom, { pannable: false });
+}
+
+function initZoomPan(el, opts = {}) {
+  const pannable = opts.pannable !== false;
+  const state = { scale: 1, tx: 0, ty: 0 };
+  const apply = () => {
+    el.style.transformOrigin = '0 0';
+    el.style.transform = `translate(${state.tx}px, ${state.ty}px) scale(${state.scale})`;
+    el.classList.toggle('zoomed', state.scale > 1);
+  };
+  el.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const r = el.getBoundingClientRect();
+    const mx = e.clientX - r.left, my = e.clientY - r.top;
+    const prev = state.scale;
+    const next = Math.min(6, Math.max(1, prev * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
+    state.tx = mx - (mx - state.tx) * (next / prev);
+    state.ty = my - (my - state.ty) * (next / prev);
+    state.scale = next;
+    if (next === 1) { state.tx = 0; state.ty = 0; }
+    apply();
+  }, { passive: false });
+  el.addEventListener('dblclick', () => {
+    state.scale = 1; state.tx = 0; state.ty = 0; apply();
+  });
+  if (pannable) {
+    let panning = false, moved = false, startX, startY, startTx, startTy;
+    el.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      panning = true; moved = false;
+      startX = e.clientX; startY = e.clientY;
+      startTx = state.tx; startTy = state.ty;
+      el.classList.add('panning');
+      el.setPointerCapture(e.pointerId);
+    });
+    el.addEventListener('pointermove', (e) => {
+      if (!panning) return;
+      const dx = e.clientX - startX, dy = e.clientY - startY;
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) moved = true;
+      if (state.scale > 1) {
+        state.tx = startTx + dx; state.ty = startTy + dy;
+        apply();
+      }
+    });
+    const endPan = () => {
+      if (!panning) return;
+      panning = false;
+      el.classList.remove('panning');
+      if (!moved && state.scale === 1) {
+        const img = el.querySelector('img');
+        if (img) window.open(img.src, '_blank');
+      }
+    };
+    el.addEventListener('pointerup', endPan);
+    el.addEventListener('pointerleave', endPan);
+  }
+  apply();
 }
 
 function renderHistory() {
@@ -1026,6 +1212,7 @@ $('btn-explore-close').onclick = async () => {
   try {
     await api('/explore/session', { method: 'DELETE' });
     selectedGen = null;
+    lockedCompareGen = null;
     await refreshExplore();
   } catch (e) { alert('Error: ' + e.message); }
 };
@@ -1038,6 +1225,7 @@ $('btn-explore-clear').onclick = async () => {
   try {
     await api('/explore/clear', { method: 'POST' });
     selectedGen = null;
+    lockedCompareGen = null;
     await refreshExplore();
   } catch (e) { alert('Error: ' + e.message); }
 };
@@ -1185,6 +1373,10 @@ function setInputsLocked(locked) {
 }
 
 $('ks-toggle').onclick = () => $('ksampler-panel').classList.toggle('collapsed');
+$('btn-inputs-toggle').onclick = () => {
+  const collapsed = $('inputs-bar').classList.toggle('collapsed');
+  $('btn-inputs-toggle').textContent = collapsed ? '▸ Ver base/LoRA' : '▾ Ocultar base/LoRA';
+};
 document.querySelectorAll('.fold-head').forEach(h =>
   h.onclick = () => $(h.dataset.fold).classList.toggle('open'));
 

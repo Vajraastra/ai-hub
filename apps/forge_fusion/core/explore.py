@@ -47,6 +47,7 @@ from .comfy_client import load_workflow
 EXPLORE_DIR = Path(__file__).parent.parent / "data" / "explore_tmp"
 _SESSION_FILE = EXPLORE_DIR / "session.json"
 DRAFT_FILE = EXPLORE_DIR / "draft.png"
+BASE_FILE = EXPLORE_DIR / "base.png"
 
 
 class ExploreError(Exception):
@@ -332,6 +333,15 @@ def image_path(gen_id: str) -> Path:
     return p
 
 
+def base_image_path() -> Path:
+    """Imagen del checkpoint SIN LoRA (misma sesión: checkpoint+prompt+
+    sampling+seed), usada como comparación en el slider de la referencia.
+    Generada perezosamente por generate() en la primera generación."""
+    if not BASE_FILE.is_file():
+        raise ExploreError("no hay imagen base (sin LoRA) generada aún")
+    return BASE_FILE
+
+
 async def _render(session: dict, config: dict, prompt: dict,
                   comfy,
                   on_progress: Callable[[int, int], None] | None = None
@@ -386,13 +396,36 @@ def _append_generation(gen: dict, png: bytes) -> dict:
 async def generate(comfy, config: dict,
                    on_progress: Callable[[int, int], None] | None = None) -> dict:
     """Genera una variante con la config dada (prompt fijo de la sesión) y la
-    añade al historial. La primera generación queda como referencia."""
+    añade al historial. La primera generación queda como referencia.
+
+    Además, si todavía no existe base.png (checkpoint puro, sin LoRA — misma
+    sesión: prompt/sampling/seed), la genera de paso una única vez para que
+    el frontend pueda comparar la referencia contra "sin LoRA" en un slider.
+    Se reutiliza para el resto de la sesión (no depende de la config de
+    bloques)."""
     session = get_session()
     if not session:
         raise ExploreError("no hay sesión de exploración activa")
     arch = session["arch"]
+    steps = session["sampling"].get("steps", 1) or 1
+    need_base = not BASE_FILE.is_file()
+    total = steps * 2 if need_base else steps
+
+    if need_base:
+        def base_progress(step, _total):
+            if on_progress:
+                on_progress(step, total)
+        base_png, _, _ = await _render(
+            session, {"blocks": {}, "other": 0.0}, session["prompt"],
+            comfy, base_progress)
+        EXPLORE_DIR.mkdir(parents=True, exist_ok=True)
+        BASE_FILE.write_bytes(base_png)
+
+    def main_progress(step, _total):
+        if on_progress:
+            on_progress((steps if need_base else 0) + step, total)
     png, config, secs = await _render(session, config, session["prompt"],
-                                      comfy, on_progress)
+                                      comfy, main_progress)
     gen = {"id": uuid.uuid4().hex[:8], "config": config,
            "summary": config_summary(config, arch),
            "seconds": secs, "created_at": _now()}

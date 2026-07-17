@@ -97,6 +97,8 @@
       padding:12px 18px; background:var(--bg-card); border:1px solid var(--border);
       border-radius:8px;
     }
+    #inputs-bar .in-fields { display:flex; align-items:flex-end; gap:14px; flex-wrap:wrap; }
+    #inputs-bar.collapsed .in-fields { display:none; }
     #inputs-bar .in-field { display:flex; flex-direction:column; gap:3px;
       font-size:11px; color:var(--text-secondary); }
     #inputs-bar input[type=number], #inputs-bar select {
@@ -131,15 +133,15 @@
       background:var(--bg-card); border:1px solid var(--border); border-radius:8px;
       padding:14px; min-height:300px;
     }
-    #test-prompt {
+    #run-bar {
       background:var(--bg-card); border:1px solid var(--border); border-radius:8px;
-      padding:12px 14px; display:flex; gap:10px; align-items:flex-end;
+      padding:10px 14px; display:flex; align-items:center; gap:12px; flex-wrap:wrap;
     }
-    #gen-col { display:flex; flex-direction:column; gap:6px; align-self:stretch;
-               justify-content:flex-end; }
-    #gen-col .btn { white-space:nowrap; }
-    #prompt-col { flex:1; min-width:0; display:flex; flex-direction:column; gap:7px; }
-    #test-prompt textarea {
+    #run-bar .btn { white-space:nowrap; }
+    #run-bar .grow { flex:1; min-width:8px; }
+    #run-bar #explore-progress { flex:1 1 260px; min-width:200px; }
+    #prompt-col { min-width:0; gap:7px; }
+    #prompt-fold textarea {
       width:100%; resize:vertical; min-height:52px; max-height:320px;
       background:var(--bg-input,#14141c); border:1px solid var(--border);
       color:var(--text-primary); border-radius:6px; padding:8px 10px; font-size:13px;
@@ -227,12 +229,46 @@
     .compare-pane { flex:0 1 420px; min-width:280px; max-width:520px; }
     .compare-pane h3 { font-size:11px; font-weight:600; letter-spacing:.5px;
                        text-transform:uppercase; color:var(--text-dim); margin-bottom:6px; }
+    .compare-pane-head { display:flex; align-items:center; justify-content:space-between;
+                         gap:8px; margin-bottom:6px; }
+    .compare-pane-head h3 { margin-bottom:0; }
+    .btn-icon { border:1px solid var(--border); background:var(--bg-input,#14141c);
+               color:var(--text-secondary); border-radius:6px; padding:2px 8px;
+               font-size:11px; cursor:pointer; white-space:nowrap; }
+    .btn-icon:hover { border-color:var(--accent-purple); color:var(--text-primary); }
     .compare-pane img { width:100%; border-radius:6px; cursor:zoom-in;
                         border:1px solid var(--border); }
     .compare-pane .cfg { font-size:11px; color:var(--text-secondary); margin-top:4px;
                          font-family:'JetBrains Mono',monospace; }
     .viewport-empty { font-size:12px; color:var(--text-dim); padding:40px 8px;
                       text-align:center; }
+
+    /* comparador con/sin LoRA (slider antes/después) + zoom Photoshop */
+    .ba-slider { position:relative; overflow:hidden; border-radius:6px;
+                 border:1px solid var(--border); user-select:none; }
+    .ba-zoom { position:relative; width:100%; touch-action:none; cursor:default; }
+    .ba-zoom.zoomed { cursor:grab; }
+    .ba-zoom.panning { cursor:grabbing; }
+    .ba-img { display:block; width:100%; pointer-events:none; }
+    .ba-base { position:relative; }
+    .ba-over { position:absolute; inset:0; height:100%; object-fit:cover;
+               clip-path:inset(0 0 0 50%); }
+    .ba-handle { position:absolute; top:0; bottom:0; left:50%; width:2px;
+                 background:var(--accent-purple); cursor:ew-resize;
+                 transform:translateX(-1px); }
+    .ba-handle::after { content:''; position:absolute; top:50%; left:50%;
+                        width:22px; height:22px; border-radius:50%;
+                        background:var(--accent-purple);
+                        transform:translate(-50%,-50%);
+                        box-shadow:0 0 0 3px rgba(0,0,0,.35); }
+    .ba-label { position:absolute; top:6px; font-size:10px; padding:2px 6px;
+                border-radius:4px; background:rgba(0,0,0,.55); color:#fff;
+                pointer-events:none; z-index:2; }
+    .ba-label-l { left:6px; }
+    .ba-label-r { right:6px; }
+    .compare-pane .ba-zoom.single { overflow:hidden; border-radius:6px;
+                                    border:1px solid var(--border); cursor:zoom-in; }
+    .compare-pane .ba-zoom.single.zoomed { cursor:grab; }
     .hist-strip { display:flex; gap:8px; }
     .hist-item { flex:0 0 auto; cursor:pointer; border:2px solid transparent;
                  border-radius:6px; padding:2px; }
@@ -387,22 +423,24 @@
         <div id="status-content">Cargando…</div>
       </div>
 
-      <!-- ENTRADAS: base + lora + arranque (cabecera del workspace) -->
+      <!-- ENTRADAS: base + lora + arranque (cabecera del workspace, colapsable tras el lock) -->
       <div id="inputs-bar">
-        <div class="in-field">Base (checkpoint)
-          <input type="hidden" id="exp-checkpoint">
-          <button type="button" class="lora-pick" id="btn-pick-exp-checkpoint"></button></div>
-        <div class="in-field">LoRA
-          <input type="hidden" id="exp-lora">
-          <button type="button" class="lora-pick" id="btn-pick-exp-lora"></button></div>
-        <div class="in-field">Strength
-          <input id="exp-strength" type="number" step="0.05" min="0.05" max="2" value="1.0" style="width:72px"></div>
-        <div class="in-field">Seed
-          <input id="exp-seed" type="number" value="424242" style="width:110px"></div>
+        <div class="in-fields" id="inputs-fields">
+          <div class="in-field">Base (checkpoint)
+            <input type="hidden" id="exp-checkpoint">
+            <button type="button" class="lora-pick" id="btn-pick-exp-checkpoint"></button></div>
+          <div class="in-field">LoRA
+            <input type="hidden" id="exp-lora">
+            <button type="button" class="lora-pick" id="btn-pick-exp-lora"></button></div>
+          <div class="in-field">Strength
+            <input id="exp-strength" type="number" step="0.05" min="0.05" max="2" value="1.0" style="width:72px"></div>
+          <div class="in-field">Seed
+            <input id="exp-seed" type="number" value="424242" style="width:110px"></div>
+        </div>
         <div class="grow"></div>
-        <span id="explore-info"></span>
         <span id="lock-badge" class="badge locked" style="display:none"
               title="Entradas, prompt y KSampler quedan congelados mientras dura la sesión">🔒 prompt + config congelados</span>
+        <button class="back-btn" id="btn-inputs-toggle" style="display:none">▸ Ver base/LoRA</button>
         <button class="back-btn" id="btn-explore-clear" style="display:none">🗑 Vaciar historial</button>
         <button class="back-btn danger" id="btn-explore-close" style="display:none">✎ Nueva sesión</button>
       </div>
@@ -432,25 +470,34 @@
           <div id="viewport">
             <div class="compare-wrap" id="compare-wrap"></div>
           </div>
-          <div id="test-prompt">
-            <div id="prompt-col">
+
+          <!-- Controles de generación: separados de las imágenes, siempre visibles -->
+          <div id="run-bar">
+            <button class="btn btn-outline" id="btn-explore-start"
+                    title="Congela base/LoRA/prompt/KSampler; a partir del lock cada generación se guarda en el historial">🔒 Lock sesión</button>
+            <button class="btn btn-primary" id="btn-explore-gen">▶ Generar</button>
+            <span id="explore-info"></span>
+            <div class="grow"></div>
+            <div id="explore-progress" style="display:none">
+              <div class="plabel" id="explore-progress-label"></div>
+              <div class="progress-row">
+                <div class="pbar"><div id="explore-progress-fill"></div></div>
+                <button class="btn btn-outline btn-cancel" id="btn-explore-cancel"
+                        title="Failsafe: si el contador no arranca (0/N), cancela el job y libera el candado para relanzar">✕ Cancelar</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Prompt: colapsable tras el lock (deja de ocupar espacio; reabrir para verificar) -->
+          <div class="fold open" id="prompt-fold">
+            <div class="fold-head" data-fold="prompt-fold"><span class="caret">▶</span>
+              📝 Prompt</div>
+            <div class="fold-body" id="prompt-col">
               <div id="trigger-strip" style="display:none"></div>
               <textarea id="exp-prompt" placeholder="Prompt de prueba (calibra libremente; se congela al hacer lock)…"></textarea>
             </div>
-            <div id="gen-col">
-              <button class="btn btn-outline" id="btn-explore-start"
-                      title="Congela base/LoRA/prompt/KSampler; a partir del lock cada generación se guarda en el historial">🔒 Lock sesión</button>
-              <button class="btn btn-primary" id="btn-explore-gen">▶ Generar</button>
-            </div>
           </div>
-          <div id="explore-progress" style="display:none">
-            <div class="plabel" id="explore-progress-label"></div>
-            <div class="progress-row">
-              <div class="pbar"><div id="explore-progress-fill"></div></div>
-              <button class="btn btn-outline btn-cancel" id="btn-explore-cancel"
-                      title="Failsafe: si el contador no arranca (0/N), cancela el job y libera el candado para relanzar">✕ Cancelar</button>
-            </div>
-          </div>
+
           <div id="blocks-panel">
             <div class="blocks-head">
               <span class="blocks-title">Bloques</span>

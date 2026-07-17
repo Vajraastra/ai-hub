@@ -307,7 +307,12 @@ async def job_cancel(job_id: str):
         # el merge corre en un proceso CPU aparte: cancelar el task lo dejaría
         # huérfano escribiendo el checkpoint a medias
         raise HTTPException(409, "el merge no se puede cancelar")
-    await _comfy.interrupt()
+    try:
+        # timeout defensivo: si ComfyUI no responde, igual hay que soltar el
+        # candado de "job en curso" — si no, el cancelar tampoco cancela nada
+        await asyncio.wait_for(_comfy.interrupt(), timeout=5)
+    except asyncio.TimeoutError:
+        pass
     task = _job_tasks.get(job_id)
     if task and not task.done():
         task.cancel()
@@ -543,7 +548,8 @@ class ExploreRefBody(BaseModel):
 
 @fusion_router.get("/explore/session")
 async def explore_session_get():
-    return {"session": explore.get_session(), "draft": explore.get_draft()}
+    return {"session": explore.get_session(), "draft": explore.get_draft(),
+            "has_base": explore.BASE_FILE.is_file()}
 
 
 @fusion_router.post("/explore/session")
@@ -606,6 +612,16 @@ async def explore_clear():
 async def explore_image(gen_id: str):
     try:
         return FileResponse(explore.image_path(gen_id))
+    except ExploreError as e:
+        raise HTTPException(404, str(e))
+
+
+@fusion_router.get("/explore/base-image")
+async def explore_base_image():
+    """Imagen del checkpoint puro (sin LoRA) de la sesión activa, usada como
+    comparación en el slider de la Referencia."""
+    try:
+        return FileResponse(explore.base_image_path())
     except ExploreError as e:
         raise HTTPException(404, str(e))
 

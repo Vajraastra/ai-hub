@@ -86,9 +86,10 @@ class ComfyClient:
         except Exception:
             return []
 
-    async def queue_prompt(self, workflow: dict) -> tuple[str, str]:
+    async def queue_prompt(self, workflow: dict, client_id: str | None = None
+                           ) -> tuple[str, str]:
         """Envía el workflow a ComfyUI. Retorna (prompt_id, client_id)."""
-        client_id = str(uuid.uuid4())
+        client_id = client_id or str(uuid.uuid4())
         payload   = {"prompt": workflow, "client_id": client_id}
         resp      = await self._post("/prompt", payload)
         prompt_id = resp.get("prompt_id")
@@ -102,53 +103,66 @@ class ComfyClient:
         except Exception:
             pass
 
+    @staticmethod
+    async def _consume_ws(
+        ws: aiohttp.ClientWebSocketResponse,
+        prompt_id: str,
+        on_progress: Callable[[int, int], None] | None = None,
+    ) -> dict:
+        """Lee mensajes de un WebSocket YA conectado hasta que `prompt_id`
+        termine. Llama on_progress(step, total) en cada avance. Retorna el
+        output del nodo SaveImage: {"images": [{"filename": ...}]}."""
+        async for msg in ws:
+            if msg.type == aiohttp.WSMsgType.TEXT:
+                data = json.loads(msg.data)
+                mtype = data.get("type")
+
+                if mtype == "progress":
+                    d = data.get("data", {})
+                    if d.get("prompt_id") == prompt_id and on_progress:
+                        on_progress(d.get("value", 0), d.get("max", 1))
+
+                elif mtype == "executed":
+                    d = data.get("data", {})
+                    if d.get("prompt_id") == prompt_id:
+                        output = d.get("output") or {}
+                        if "images" in output:
+                            return output
+                        # nodo sin imágenes, seguir esperando
+
+                elif mtype == "execution_error":
+                    d = data.get("data", {})
+                    if d.get("prompt_id") == prompt_id:
+                        raise ComfyError(
+                            d.get("exception_message", "Error desconocido en ComfyUI")
+                        )
+
+                elif mtype == "execution_interrupted":
+                    raise ComfyError("Generación cancelada por el usuario")
+
+            elif msg.type in (aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSED):
+                raise ComfyError("WebSocket cerrado inesperadamente")
+
+        raise ComfyError("WebSocket cerrado sin resultado")
+
     async def wait_for_completion(
         self,
         prompt_id: str,
         client_id: str,
         on_progress: Callable[[int, int], None] | None = None,
     ) -> dict:
-        """
-        Conecta al WebSocket y espera a que el prompt termine.
-        Llama on_progress(step, total) en cada avance.
-        Retorna el output del nodo SaveImage: {"images": [{"filename": ...}]}.
-        """
+        """Conecta al WebSocket y espera a que el prompt termine. Solo válido
+        si el prompt se encoló DESPUÉS de que este método abra la conexión —
+        si no, ComfyUI puede terminar (y hasta cachear el resultado) antes de
+        que nos suscribamos y el mensaje "executed" se pierde para siempre
+        (job clavado sin progreso). `run_workflow` evita la carrera abriendo
+        el WebSocket antes de encolar; este método queda para compatibilidad
+        cuando el prompt ya se encoló por otra vía."""
         async with aiohttp.ClientSession() as session:
             async with session.ws_connect(
                 f"{self.ws_url}?clientId={client_id}"
             ) as ws:
-                async for msg in ws:
-                    if msg.type == aiohttp.WSMsgType.TEXT:
-                        data = json.loads(msg.data)
-                        mtype = data.get("type")
-
-                        if mtype == "progress":
-                            d = data.get("data", {})
-                            if d.get("prompt_id") == prompt_id and on_progress:
-                                on_progress(d.get("value", 0), d.get("max", 1))
-
-                        elif mtype == "executed":
-                            d = data.get("data", {})
-                            if d.get("prompt_id") == prompt_id:
-                                output = d.get("output") or {}
-                                if "images" in output:
-                                    return output
-                                # nodo sin imágenes, seguir esperando
-
-                        elif mtype == "execution_error":
-                            d = data.get("data", {})
-                            if d.get("prompt_id") == prompt_id:
-                                raise ComfyError(
-                                    d.get("exception_message", "Error desconocido en ComfyUI")
-                                )
-
-                        elif mtype == "execution_interrupted":
-                            raise ComfyError("Generación cancelada por el usuario")
-
-                    elif msg.type in (aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSED):
-                        raise ComfyError("WebSocket cerrado inesperadamente")
-
-        raise ComfyError("WebSocket cerrado sin resultado")
+                return await self._consume_ws(ws, prompt_id, on_progress)
 
     async def get_image_bytes(
         self, filename: str, subfolder: str = "", folder_type: str = "output"
@@ -195,11 +209,24 @@ class ComfyClient:
         params: dict,
         on_progress: Callable[[int, int], None] | None = None,
     ) -> bytes:
-        """Sustituye params, encola, espera y devuelve los bytes PNG."""
-        built     = self.build_workflow(workflow, params)
-        pid, cid  = await self.queue_prompt(built)
-        output    = await self.wait_for_completion(pid, cid, on_progress)
-        img_info  = output["images"][0]
+        """Sustituye params, espera y devuelve los bytes PNG.
+
+        El WebSocket se conecta ANTES de encolar el prompt (no después): si
+        se encola primero, ComfyUI puede ejecutar (o servir de cache) el
+        workflow completo antes de que nos suscribamos, y el "executed" que
+        cierra la espera se pierde — el job queda clavado en 0/N para
+        siempre, sin importar step/steps_total ni el botón Cancelar (síntoma
+        reportado 2026-07-17: la 2ª generación de una sesión se atasca,
+        justo el caso más propenso a cache-hit de ComfyUI)."""
+        built = self.build_workflow(workflow, params)
+        client_id = str(uuid.uuid4())
+        async with aiohttp.ClientSession() as session:
+            async with session.ws_connect(
+                f"{self.ws_url}?clientId={client_id}"
+            ) as ws:
+                prompt_id, _ = await self.queue_prompt(built, client_id)
+                output = await self._consume_ws(ws, prompt_id, on_progress)
+        img_info = output["images"][0]
         return await self.get_image_bytes(
             img_info["filename"],
             img_info.get("subfolder", ""),
