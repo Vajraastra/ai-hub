@@ -6,6 +6,11 @@ const esc = (s) => String(s).replace(/[&<>"']/g,
 const mark = (ok) => ok ? '<span class="ok">✔</span>' : '<span class="bad">✘</span>';
 
 let runsCache  = [];     // conservado solo para updateTabBadges (badges viejos)
+// true tras la primera vez que el KSampler recibe valores (defaults o de
+// sesión). No usar "¿está vacío el campo?" como señal de virginidad: el
+// navegador a veces restaura el valor de UN input number en un reload
+// (bfcache) y no otros, dejando steps/width/height vacíos para siempre.
+let ksPopulated = false;
 
 // arquitectura activa: gobierna qué checkpoints/LoRAs/sets se ven y con qué
 // switches se explora. Persistida entre recargas.
@@ -285,6 +290,17 @@ let checkpointsCache = [];
 
 const fmtGB = (b) => b == null ? '' : (b / 1024 ** 3).toFixed(2) + ' GB';
 
+// Los bloques de un checkpoint derivado se guardan como dict {bloque: peso}
+// (p. ej. {"middle_block.1": 1.0}), NO como array. Antes se hacía
+// c.blocks.join(', ') directo → "join is not a function" en cuanto había un
+// derivado con dict, lo que reventaba init() entero y dejaba el KSampler vacío.
+function fmtDerivedBlocks(blocks) {
+  if (Array.isArray(blocks)) return blocks.join(', ');
+  if (blocks && typeof blocks === 'object')
+    return Object.entries(blocks).map(([k, v]) => v === 1 ? k : `${k}@${v}`).join(', ');
+  return '';
+}
+
 async function refreshCheckpoints() {
   const data = await api(withArch('/checkpoints'));
   checkpointsCache = data.checkpoints;
@@ -295,7 +311,7 @@ async function refreshCheckpoints() {
     row.className = 'ckpt-row';
     const lineage = c.kind === 'derived'
       ? `${esc(c.base.name)} ← ${esc(c.lora.file)} @ ${c.lora.strength}` +
-        (c.blocks ? ` · bloques: ${esc(c.blocks.join(', '))}` : '') +
+        (c.blocks ? ` · bloques: ${esc(fmtDerivedBlocks(c.blocks))}` : '') +
         ` · ${esc((c.created_at || '').slice(0, 16).replace('T', ' '))}`
       : '';
     row.innerHTML =
@@ -786,7 +802,7 @@ async function refreshExplore() {
     $('explore-actions').style.display = 'none';
     // defaults del KSampler solo si está virgen: un refresh tras cada draft
     // no debe pisar los valores que el usuario está calibrando
-    if (!$('ks-cfg').value) populateKSampler(archDefaultsSampling());
+    if (!ksPopulated) populateKSampler(archDefaultsSampling());
     $('compare-wrap').innerHTML = draftTs ? draftPane() :
       '<div class="viewport-empty">Elige <b>base</b> + <b>LoRA</b> arriba y calibra libremente prompt y KSampler con «▶ Generar (prueba)» — esas imágenes NO se guardan.<br>Cuando estés convencido, pulsa «🔒 Lock sesión»: la config se congela y cada generación pasa al historial (la 1ª queda como referencia).</div>';
     $('hist-strip').innerHTML = '<div class="hist-empty">sin lock — nada se guarda</div>';
@@ -1189,6 +1205,9 @@ function collectSessionBody() {
   if (!body.checkpoint) { alert('No hay checkpoint base seleccionado.'); return null; }
   if (!body.lora) { alert('No hay LoRA seleccionado.'); return null; }
   if (!body.prompt.trim()) { alert('Escribe un prompt.'); return null; }
+  const s = body.sampling;
+  if (s.steps < 1) { alert('KSampler: Steps vacío o inválido.'); return null; }
+  if (s.width < 16 || s.height < 16) { alert('KSampler: Ancho/Alto vacíos o inválidos.'); return null; }
   return body;
 }
 
@@ -1351,6 +1370,7 @@ function populateKSampler(s) {
     if (el.tagName === 'SELECT') setKsSelect(el, String(s[k]));
     else el.value = s[k];
   }
+  ksPopulated = true;
 }
 function collectKSampler() {
   return {
@@ -1399,8 +1419,14 @@ document.addEventListener('mousedown', (e) => {
 
 async function init() {
   await loadArchitectures();   // debe ir primero: fija currentArch y el selector
-  await Promise.all([loadStatus(), loadSamplingOptions(), refreshBatteries(false),
-                     refreshCheckpoints(), refreshLoras()]);
+  // allSettled, no all: un fallo al pintar un panel secundario (checkpoints,
+  // loras, status, baterías) NO debe abortar init y dejar sin ejecutar
+  // refreshExplore(), que es quien restaura la sesión y puebla el KSampler
+  // (bug 2026-07-17: c.blocks.join reventaba y el KSampler quedaba vacío).
+  const res = await Promise.allSettled([loadStatus(), loadSamplingOptions(),
+    refreshBatteries(false), refreshCheckpoints(), refreshLoras()]);
+  for (const r of res)
+    if (r.status === 'rejected') console.error('init: panel secundario falló:', r.reason);
   await refreshExplore();
 }
 init();

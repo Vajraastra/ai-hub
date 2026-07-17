@@ -249,6 +249,17 @@ def _spawn(coro, job: dict | None = None) -> asyncio.Task:
     return task
 
 
+def _reject_if_job_running():
+    """Un job a la vez. El 409 nombra al job que bloquea: un mensaje genérico
+    ya llevó a perseguir causas fantasma (BITACORA s69) cuando el bloqueo era
+    un job zombi en 'running'."""
+    j = next((j for j in _jobs.values() if j["status"] == "running"), None)
+    if j:
+        raise HTTPException(
+            409, f"ya hay un job en curso: {j['type']} {j['id']} — "
+                 "cancélalo o espera a que termine")
+
+
 async def _run_set_job(job: dict, vs: ValidationSet, model: str | None,
                        label: str):
     def on_progress(p: dict):
@@ -497,8 +508,7 @@ async def merge_start(body: MergeBody):
     """Merge como job en background. Corre en CPU en proceso aparte:
     ComfyUI no hace falta y la GPU queda libre; aun así se serializa con
     los runs para no confundir el seguimiento (un job a la vez)."""
-    if any(j["status"] == "running" for j in _jobs.values()):
-        raise HTTPException(409, "ya hay un job en curso")
+    _reject_if_job_running()
     # validaciones síncronas baratas antes de aceptar el job
     try:
         _merger.get_checkpoint(body.base, body.arch)
@@ -643,8 +653,7 @@ async def explore_generate(body: ExploreGenerateBody):
     session = explore.get_session()
     if not session:
         raise HTTPException(404, "no hay sesión de exploración activa")
-    if any(j["status"] == "running" for j in _jobs.values()):
-        raise HTTPException(409, "ya hay un job en curso")
+    _reject_if_job_running()
     if not await _comfy.health_check():
         raise HTTPException(503, "ComfyUI no responde en :8188 — arráncalo desde el Hub")
     try:
@@ -682,8 +691,7 @@ async def explore_draft(body: ExploreSessionBody):
     en todos los bloques) SIN sesión y SIN guardar en el historial — la
     imagen sobrescribe draft.png en cada prueba. Permite afinar prompt y
     KSampler antes de hacer lock."""
-    if any(j["status"] == "running" for j in _jobs.values()):
-        raise HTTPException(409, "ya hay un job en curso")
+    _reject_if_job_running()
     if not await _comfy.health_check():
         raise HTTPException(503, "ComfyUI no responde en :8188 — arráncalo desde el Hub")
     try:
@@ -751,8 +759,7 @@ async def explore_confirm(body: ExploreConfirmBody):
     if gen is None:
         raise HTTPException(404, f"no existe la generación {body.gen_id!r}")
     vs = _vs_or_404(body.set_name)
-    if any(j["status"] == "running" for j in _jobs.values()):
-        raise HTTPException(409, "ya hay un job en curso")
+    _reject_if_job_running()
     if not await _comfy.health_check():
         raise HTTPException(503, "ComfyUI no responde en :8188 — arráncalo desde el Hub")
     job_id = uuid.uuid4().hex[:12]
@@ -892,8 +899,7 @@ async def explore_battery(body: BatteryRunBody):
     session = explore.get_session()
     if not session:
         raise HTTPException(404, "no hay sesión de exploración activa")
-    if any(j["status"] == "running" for j in _jobs.values()):
-        raise HTTPException(409, "ya hay un job en curso")
+    _reject_if_job_running()
     if not await _comfy.health_check():
         raise HTTPException(503, "ComfyUI no responde en :8188 — arráncalo desde el Hub")
     try:

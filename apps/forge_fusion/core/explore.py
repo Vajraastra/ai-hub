@@ -188,6 +188,14 @@ def _build_session(arch: str, checkpoint: str, model: str, lora: str,
         raise ExploreError("prompt vacío")
     if not 0.0 < float(strength) <= 2.0:
         raise ExploreError(f"strength {strength} fuera de rango (0–2]")
+    effective_sampling = sampling or vars(adapter.sampling_defaults())
+    if int(effective_sampling.get("steps") or 0) < 1:
+        raise ExploreError("sampling.steps vacío o inválido (mínimo 1) — "
+                            "revisa el KSampler")
+    if (int(effective_sampling.get("width") or 0) < 16
+            or int(effective_sampling.get("height") or 0) < 16):
+        raise ExploreError("sampling.width/height vacíos o inválidos "
+                            "(mínimo 16) — revisa el KSampler")
 
     exponent = 2
     lora_source = None
@@ -227,7 +235,7 @@ def _build_session(arch: str, checkpoint: str, model: str, lora: str,
         "prompt": {"text": str(prompt).strip(),
                    "negative": str(negative or "").strip(),
                    "seed": int(seed)},
-        "sampling": sampling or vars(adapter.sampling_defaults()),
+        "sampling": effective_sampling,
         "reference": None,
         "generations": [],
     }
