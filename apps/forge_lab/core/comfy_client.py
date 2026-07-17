@@ -43,7 +43,9 @@ class ComfyClient:
     async def _post(self, path: str, payload: dict) -> dict:
         async with aiohttp.ClientSession() as s:
             async with s.post(f"{self.base_url}{path}", json=payload) as r:
-                r.raise_for_status()
+                if r.status >= 400:
+                    body = await r.text()
+                    raise ComfyError(f"{r.status} {r.reason} en {path}: {body}")
                 return await r.json()
 
     # ── API pública ────────────────────────────────────────────────────────
