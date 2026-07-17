@@ -7,9 +7,10 @@ implementando la misma interfaz ArchAdapter.
 from .base import ArchAdapter, BlockGroup, SamplingDefaults
 from .zimage import ZImageAdapter
 from .sdxl import SdxlAdapter
+from .anima import AnimaAdapter
 
 _ADAPTERS: dict[str, ArchAdapter] = {
-    a.name: a for a in [ZImageAdapter(), SdxlAdapter()]
+    a.name: a for a in [ZImageAdapter(), SdxlAdapter(), AnimaAdapter()]
 }
 
 SUPPORTED_ARCHITECTURES = list(_ADAPTERS)

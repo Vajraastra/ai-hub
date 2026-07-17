@@ -80,7 +80,7 @@ _DEFAULTS: dict[str, dict] = {
         ],
     },
     "character-tags": {
-        "id": "character-tags", "label": "Personaje · tags (SDXL)",
+        "id": "character-tags", "label": "Personaje · tags (SDXL/Anima)",
         "lora_type": "character", "style": "tags",
         "hint": "Etiquetas booru. Ajusta 1girl/1boy y añade el trigger del "
                 "LoRA si lo requiere.",
@@ -126,7 +126,7 @@ _DEFAULTS: dict[str, dict] = {
         ],
     },
     "style-tags": {
-        "id": "style-tags", "label": "Estilo · tags (SDXL)",
+        "id": "style-tags", "label": "Estilo · tags (SDXL/Anima)",
         "lora_type": "style", "style": "tags",
         "hint": "Contenidos variados en etiquetas booru para juzgar el estilo, "
                 "no un personaje concreto.",
@@ -168,7 +168,7 @@ _DEFAULTS: dict[str, dict] = {
         ],
     },
     "concept-tags": {
-        "id": "concept-tags", "label": "Concepto · tags (SDXL)",
+        "id": "concept-tags", "label": "Concepto · tags (SDXL/Anima)",
         "lora_type": "concept", "style": "tags",
         "hint": "Reemplaza CONCEPT por el trigger del LoRA. Etiquetas booru.",
         "prompts": [

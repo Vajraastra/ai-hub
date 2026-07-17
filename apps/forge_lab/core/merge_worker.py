@@ -84,6 +84,22 @@ def main(job_path: str):
     forbidden = adapter.forbidden_zones()
     cprefix = adapter.container_prefix
 
+    # variantes de contenedor (anima: "net." en la base oficial,
+    # "model.diffusion_model." en aesthetic): detectar la del fichero base
+    # y re-apuntar los targets del key_map antes de mapear
+    with safe_open(base_path, framework="pt", device="cpu") as bf:
+        base_key_set = set(bf.keys())
+    if cprefix and not any(k.startswith(cprefix) for k in base_key_set):
+        for var in getattr(adapter, "container_prefix_variants", ()):
+            if any(k.startswith(var) for k in base_key_set):
+                key_map = {m: (var + t[len(cprefix):], sl)
+                           for m, (t, sl) in key_map.items()}
+                cprefix = var
+                break
+        else:
+            fail(f"el fichero base no usa el prefijo {cprefix!r} de "
+                 f"{adapter.name!r} ni ninguna variante conocida")
+
     def strip_container(key: str) -> str:
         return key[len(cprefix):] if cprefix and key.startswith(cprefix) else key
 

@@ -64,6 +64,13 @@ class ArchAdapter(ABC):
     #: fichero base ("" = claves desnudas; sdxl: "model.diffusion_model.")
     container_prefix: str = ""
 
+    #: prefijos alternativos que usan ALGUNOS ficheros base de la misma
+    #: arquitectura (anima: la base oficial va con "net." y la aesthetic con
+    #: "model.diffusion_model."). El merge worker detecta cuál usa el fichero
+    #: y re-apunta los targets del lora_key_map; el runtime de ComfyUI ya
+    #: normaliza cualquiera de los dos al cargar.
+    container_prefix_variants: tuple[str, ...] = ()
+
     #: False = una sola base oficial (la de model_files); True = cualquier
     #: fichero de weights_root (fuera de forge_lab/) es base elegible
     multi_base: bool = False

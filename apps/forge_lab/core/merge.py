@@ -104,7 +104,9 @@ class MergeOrchestrator:
         """Detección de arquitectura por las claves/shapes del header.
         zimage: claves diffusers del S3-DiT (lora_A de entrada 3840/256).
         sdxl: formato kohya del UNet LDM con cross-attention de 2048
-        (attn2.to_k entra desde el pooled CLIP-L+G; en SD15 sería 768)."""
+        (attn2.to_k entra desde el pooled CLIP-L+G; en SD15 sería 768).
+        anima: bloques del DiT Cosmos 2B con q_proj de entrada 2048 (Wan
+        también usa blocks.N pero sus proyecciones son q/k/v sin _proj)."""
         if arch == "zimage":
             for k, v in hdr.items():
                 if k.startswith("diffusion_model.layers.") and ".lora_A." in k:
@@ -113,6 +115,14 @@ class MergeOrchestrator:
             for k, v in hdr.items():
                 if (k.startswith("lora_unet_") and "attn2_to_k" in k
                         and k.endswith(".lora_down.weight")):
+                    return v.get("shape", [None, None])[1] == 2048
+        elif arch == "anima":
+            for k, v in hdr.items():
+                if ((k.startswith("lora_unet_blocks_")
+                     and "self_attn_q_proj" in k
+                     and k.endswith(".lora_down.weight"))
+                    or (k.startswith("diffusion_model.blocks.")
+                        and ".self_attn.q_proj.lora_A." in k)):
                     return v.get("shape", [None, None])[1] == 2048
         return False
 
@@ -130,6 +140,14 @@ class MergeOrchestrator:
             if (k.startswith("model.diffusion_model.layers.")
                     or k.startswith("layers.")):
                 return "zimage"
+        # anima: DiT Cosmos con llm_adapter integrado (misma firma que usa la
+        # detección de ComfyUI); un cosmos-predict2 pelado (sin llm_adapter)
+        # NO es base anima. Dos variantes de contenedor: "net." (base
+        # oficial) y "model.diffusion_model." (aesthetic de HF).
+        for k in keys:
+            if (k.startswith("net.llm_adapter.")
+                    or k.startswith("model.diffusion_model.llm_adapter.")):
+                return "anima"
         return ""
 
     def _checkpoint_arch(self, path: Path) -> str:
