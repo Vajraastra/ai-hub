@@ -325,7 +325,10 @@ async function refreshCheckpoints() {
   // exploración): default = primer checkpoint presente de la arquitectura
   const present = checkpointsCache.filter(c => c.present);
   for (const [inp, btn] of [['exp-checkpoint', 'btn-pick-exp-checkpoint']]) {
-    if (!present.find(c => c.name === $(inp).value))
+    // con sesión activa manda la sesión: el default pisaría el checkpoint
+    // congelado al recargar la página (bug 2026-07-17)
+    if (exploreSession) $(inp).value = exploreSession.checkpoint;
+    else if (!present.find(c => c.name === $(inp).value))
       $(inp).value = present[0]?.name || '';
     renderCkptPickBtn(inp, btn);
   }
@@ -341,6 +344,13 @@ function renderCkptPickBtn(inputId, btnId) {
   const btn = $(btnId);
   const c = ckptByName($(inputId).value);
   if (!c) {
+    // sesión de otra arch: su checkpoint no está en la cache de la arch
+    // visible, pero el nombre congelado debe verse igual (sin thumbnail)
+    if (exploreSession && $(inputId).value === exploreSession.checkpoint) {
+      const n = exploreSession.checkpoint;
+      btn.innerHTML = `<span class="ph">🧩</span><span class="nm" title="${esc(n)}">${esc(n)}</span>`;
+      return;
+    }
     btn.innerHTML = '<span class="ph">🧩</span><span class="nm dim">— elegir checkpoint —</span>';
     return;
   }
@@ -363,7 +373,10 @@ async function refreshLoras() {
   const data = await api(withArch('/loras'));
   lorasCache = data.loras.filter(l => l.arch_match);
   for (const id of ['exp-lora']) {
-    if ($(id).value && !loraByFile($(id).value)) $(id).value = '';
+    // con sesión activa manda la sesión (mismo motivo que en checkpoints);
+    // se muestra el LoRA original: sus sidecars/thumbnail viven junto a él
+    if (exploreSession) $(id).value = exploreSession.lora_source || exploreSession.lora;
+    else if ($(id).value && !loraByFile($(id).value)) $(id).value = '';
     renderLoraPickBtn(id);
   }
 }
@@ -373,6 +386,13 @@ function renderLoraPickBtn(id) {
   const l = loraByFile($(id).value);
   if (id === 'exp-lora') refreshTriggers();
   if (!l) {
+    // sesión de otra arch: mismo fallback que en checkpoints
+    const sessLora = exploreSession && (exploreSession.lora_source || exploreSession.lora);
+    if (sessLora && $(id).value === sessLora) {
+      const n = sessLora.split('/').pop().replace(/\.safetensors$/i, '');
+      btn.innerHTML = `<span class="ph">🧬</span><span class="nm" title="${esc(sessLora)}">${esc(n)}</span>`;
+      return;
+    }
     btn.innerHTML = '<span class="ph">🧬</span><span class="nm dim">— elegir LoRA —</span>';
     return;
   }
@@ -759,6 +779,15 @@ async function refreshExplore() {
   }
 
   const s = exploreSession;
+  // restaurar el workbench desde la sesión: al recargar página/hub los pickers
+  // arrancan con defaults y quedarían congelados mostrando modelos que NO son
+  // los de la sesión (bug 2026-07-17); prompt y KSampler ya se restauraban
+  $('exp-checkpoint').value = s.checkpoint;
+  renderCkptPickBtn('exp-checkpoint', 'btn-pick-exp-checkpoint');
+  $('exp-lora').value = s.lora_source || s.lora;
+  renderLoraPickBtn('exp-lora');
+  $('exp-strength').value = s.strength;
+  $('exp-seed').value = s.prompt.seed;
   $('explore-info').innerHTML =
     `<span class="mono">${esc(s.checkpoint)}</span> + ` +
     `<span class="mono">${esc(sessLoraName(s))}</span> @ ${s.strength}` +
@@ -1028,6 +1057,7 @@ $('btn-explore-gen').onclick = async () => {
     }
     $('btn-explore-gen').disabled = true;
     $('explore-progress').style.display = '';
+    exploreJobId = job_id;
     const timer = setInterval(async () => {
       let j;
       try { j = await api('/jobs/' + job_id); } catch (e) { return; }
@@ -1036,14 +1066,26 @@ $('btn-explore-gen').onclick = async () => {
       $('explore-progress-label').textContent = `paso ${j.step}/${j.steps_total} (${pct}%)`;
       if (j.status !== 'running') {
         clearInterval(timer);
+        exploreJobId = null;
         $('btn-explore-gen').disabled = false;
         $('explore-progress').style.display = 'none';
-        if (j.status === 'error') alert('Generación fallida: ' + j.error);
-        else if (j.gen) selectedGen = j.gen.id;
+        if (j.status === 'error' && j.error !== 'cancelado por el usuario')
+          alert('Generación fallida: ' + j.error);
+        else if (j.status === 'done' && j.gen) selectedGen = j.gen.id;
         await refreshExplore();
       }
     }, 1000);
   } catch (e) { alert('Error: ' + e.message); }
+};
+
+// Failsafe: cancela el job en curso (p.ej. contador clavado en 0/N) y libera
+// el candado del backend para poder relanzar. El poll ve el status != running
+// y restaura la UI solo.
+let exploreJobId = null;
+$('btn-explore-cancel').onclick = async () => {
+  if (!exploreJobId) return;
+  try { await api('/jobs/' + exploreJobId + '/cancel', { method: 'POST' }); }
+  catch (e) { alert('Error al cancelar: ' + e.message); }
 };
 
 $('btn-explore-ref').onclick = async () => {

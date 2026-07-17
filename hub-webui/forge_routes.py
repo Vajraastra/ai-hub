@@ -228,6 +228,26 @@ async def sets_delete(name: str):
 _jobs: dict[str, dict] = {}
 _MAX_JOBS = 20
 
+# asyncio solo guarda referencias débiles a los tasks: sin retenerlos aquí el
+# GC puede matar un job en vuelo (síntoma: contador clavado en 0/N y ComfyUI
+# nunca recibe el POST /prompt).
+_bg_tasks: set[asyncio.Task] = set()
+
+# task vivo de cada job (para poder cancelarlo); fuera del dict del job porque
+# ese dict se serializa tal cual en GET /jobs/{id}
+_job_tasks: dict[str, asyncio.Task] = {}
+
+
+def _spawn(coro, job: dict | None = None) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
+    if job is not None:
+        jid = job["id"]
+        _job_tasks[jid] = task
+        task.add_done_callback(lambda _t: _job_tasks.pop(jid, None))
+    return task
+
 
 async def _run_set_job(job: dict, vs: ValidationSet, model: str | None,
                        label: str):
@@ -261,7 +281,7 @@ async def sets_run(name: str, body: SetRunBody):
         for k in [k for k, j in _jobs.items() if j["status"] != "running"]:
             del _jobs[k]
     _jobs[job_id] = job
-    asyncio.create_task(_run_set_job(job, vs, body.model, body.label))
+    _spawn(_run_set_job(job, vs, body.model, body.label), job)
     return {"job_id": job_id}
 
 
@@ -270,6 +290,29 @@ async def job_get(job_id: str):
     job = _jobs.get(job_id)
     if not job:
         raise HTTPException(404, "job desconocido")
+    return job
+
+
+@forge_router.post("/jobs/{job_id}/cancel")
+async def job_cancel(job_id: str):
+    """Failsafe: cancela el job en curso (interrumpe ComfyUI si el prompt
+    llegó; mata el task si nunca llegó a enviarse) y libera el candado de
+    'ya hay un job en curso' para poder relanzar."""
+    job = _jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "job desconocido")
+    if job["status"] != "running":
+        return job
+    if job.get("type") == "merge":
+        # el merge corre en un proceso CPU aparte: cancelar el task lo dejaría
+        # huérfano escribiendo el checkpoint a medias
+        raise HTTPException(409, "el merge no se puede cancelar")
+    await _comfy.interrupt()
+    task = _job_tasks.get(job_id)
+    if task and not task.done():
+        task.cancel()
+    job["status"] = "error"
+    job["error"] = "cancelado por el usuario"
     return job
 
 
@@ -465,7 +508,7 @@ async def merge_start(body: MergeBody):
         for k in [k for k, j in _jobs.items() if j["status"] != "running"]:
             del _jobs[k]
     _jobs[job_id] = job
-    asyncio.create_task(_merge_job(job, body))
+    _spawn(_merge_job(job, body))
     return {"job_id": job_id}
 
 
@@ -597,7 +640,7 @@ async def explore_generate(body: ExploreGenerateBody):
            "step": 0, "steps_total": session["sampling"]["steps"],
            "gen": None, "error": None}
     _jobs[job_id] = job
-    asyncio.create_task(_explore_gen_job(job, config))
+    _spawn(_explore_gen_job(job, config), job)
     return {"job_id": job_id}
 
 
@@ -638,7 +681,7 @@ async def explore_draft(body: ExploreSessionBody):
            "step": 0, "steps_total": int((body.sampling or {}).get("steps") or 0),
            "draft": None, "error": None}
     _jobs[job_id] = job
-    asyncio.create_task(_explore_draft_job(job, body, ckpt))
+    _spawn(_explore_draft_job(job, body, ckpt), job)
     return {"job_id": job_id}
 
 
@@ -704,8 +747,8 @@ async def explore_confirm(body: ExploreConfirmBody):
            "step": 0, "steps_total": vs.sampling["steps"],
            "run_id": None, "error": None}
     _jobs[job_id] = job
-    asyncio.create_task(_explore_confirm_job(job, vs, session,
-                                             gen["config"], body.label))
+    _spawn(_explore_confirm_job(job, vs, session,
+                                gen["config"], body.label), job)
     return {"job_id": job_id}
 
 
@@ -851,5 +894,5 @@ async def explore_battery(body: BatteryRunBody):
            "step": 0, "steps_total": session["sampling"]["steps"],
            "result": None, "error": None}
     _jobs[job_id] = job
-    asyncio.create_task(_battery_run_job(job, body.battery_id, config))
+    _spawn(_battery_run_job(job, body.battery_id, config), job)
     return {"job_id": job_id}
