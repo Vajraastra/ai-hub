@@ -1,0 +1,102 @@
+{
+  "name": "zimage-base",
+  "arch": "zimage",
+  "created_at": "2026-07-04T14:30:48-06:00",
+  "locked_at": "2026-07-04T15:16:59-06:00",
+  "archived_at": null,
+  "sampling": {
+    "cfg": 2.5,
+    "steps": 25,
+    "sampler": "euler",
+    "scheduler": "simple",
+    "width": 1024,
+    "height": 1024
+  },
+  "prompts": [
+    {
+      "id": "target-anime",
+      "category": "target",
+      "text": "anime illustration of a young swordswoman standing on a hilltop at golden hour, full body, flowing hair, clean lineart, cel shading, detailed eyes, wind-blown cape",
+      "negative": "",
+      "seed": 101101
+    },
+    {
+      "id": "target-cartoon",
+      "category": "target",
+      "text": "modern western cartoon style illustration of a clumsy wizard cat casting a spell that backfires, bold outlines, flat colors with simple shading, expressive face, dynamic composition",
+      "negative": "",
+      "seed": 202202
+    },
+    {
+      "id": "target-3d-pixar",
+      "category": "target",
+      "text": "3d render of a cheerful young explorer girl with a backpack standing on a mossy forest rock, pixar animation style, soft studio lighting, subsurface scattering, high quality",
+      "negative": "",
+      "seed": 303303
+    },
+    {
+      "id": "target-3d-stylized",
+      "category": "target",
+      "text": "stylized 3d render of a female sci-fi mechanic leaning on a hover bike in a neon garage, exaggerated proportions, handpainted textures, blender octane style, rim lighting",
+      "negative": "",
+      "seed": 404404
+    },
+    {
+      "id": "target-human",
+      "category": "target",
+      "text": "full body portrait of a woman in a linen summer dress standing in a sunlit courtyard, natural pose, photorealistic, accurate anatomy, detailed face and hands, 85mm lens",
+      "negative": "",
+      "seed": 505505
+    },
+    {
+      "id": "general-photo",
+      "category": "general",
+      "text": "documentary photograph of an elderly fisherman repairing a net at dawn, natural light, 35mm film grain, shallow depth of field",
+      "negative": "",
+      "seed": 606606
+    },
+    {
+      "id": "general-oil",
+      "category": "general",
+      "text": "oil painting of a stormy sea with a small sailboat, impressionist brushstrokes, dramatic sky, muted palette",
+      "negative": "",
+      "seed": 707707
+    },
+    {
+      "id": "general-macro",
+      "category": "general",
+      "text": "macro photograph of a dew-covered dragonfly perched on a reed, early morning bokeh, extreme detail, nature photography",
+      "negative": "",
+      "seed": 808808
+    },
+    {
+      "id": "stress-hands",
+      "category": "stress",
+      "text": "close-up of two hands shuffling playing cards, interlaced fingers clearly visible, photorealistic, sharp focus",
+      "negative": "",
+      "seed": 909909
+    },
+    {
+      "id": "stress-multichar",
+      "category": "stress",
+      "text": "two anime characters arm wrestling at a wooden table while a third leans in cheering, arms and hands clearly visible, dynamic angle, consistent style",
+      "negative": "",
+      "seed": 111222
+    },
+    {
+      "id": "stress-pose",
+      "category": "stress",
+      "text": "3d render of a parkour athlete mid-vault over a railing, extreme foreshortening, low angle view, full body, dynamic action pose, anatomically correct",
+      "negative": "",
+      "seed": 333444
+    },
+    {
+      "id": "stress-text",
+      "category": "stress",
+      "text": "storefront of a small bakery with a wooden sign that reads 'PAN DE ORO', morning light",
+      "negative": "",
+      "seed": 555666
+    }
+  ],
+  "fingerprint": "eeae21fc2cf3070fa25a3670faf2c34b5da83c63999eb386db11854aa56db999"
+}

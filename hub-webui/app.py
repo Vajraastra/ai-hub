@@ -42,6 +42,7 @@ from merger_routes import merger_router
 from vault_routes import vault_router
 from painter_routes import painter_router
 from forge_routes import forge_router
+from fusion_routes import fusion_router
 from ideogram_routes import ideogram_router
 from faceswap_routes import faceswap_router
 
@@ -96,7 +97,7 @@ bridge.on_log(_on_log)
 api = FastAPI(title="AI Hub WebUI")
 
 
-_NO_CACHE_PATHS = {"/", "/merger", "/vault", "/painter", "/forge", "/ideogram", "/faceswap"}
+_NO_CACHE_PATHS = {"/", "/merger", "/vault", "/painter", "/forge", "/fusion", "/ideogram", "/faceswap"}
 
 # ── Stop-all con periodo de gracia ───────────────────────────────────────────
 _STOP_GRACE_SECS = 8.0
@@ -140,6 +141,7 @@ api.include_router(merger_router)
 api.include_router(vault_router)
 api.include_router(painter_router)
 api.include_router(forge_router)
+api.include_router(fusion_router)
 api.include_router(ideogram_router)
 api.include_router(faceswap_router)
 
@@ -190,6 +192,10 @@ async def painter_page():
 @api.get("/forge")
 async def forge_page():
     return FileResponse(os.path.join(POC_DIR, "static", "forge.html"))
+
+@api.get("/fusion")
+async def fusion_page():
+    return FileResponse(os.path.join(POC_DIR, "static", "fusion.html"))
 
 @api.get("/ideogram")
 async def ideogram_page():

@@ -62,6 +62,7 @@
     "merger_desc": "Combina LoRAs con métodos avanzados: slerp, TIES, DARE.",
     "painter_desc": "Editor de imagen AI: generate, inpaint, outpaint, upscale.",
     "forge_desc": "Derivación de checkpoints: merge por bloques con validación reproducible.",
+    "fusion_desc": "Fork de Forge Lab: derivar checkpoints y fusionar LoRAs (en construcción).",
     "open": "Abrir",
     "launched": "Herramienta iniciada.",
     "launch_error": "No se pudo iniciar.",

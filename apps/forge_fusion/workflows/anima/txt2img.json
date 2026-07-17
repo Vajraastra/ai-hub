@@ -1,0 +1,50 @@
+{
+  "_comment": "Anima (Cosmos 2B) txt2img. Carga por piezas: DiT (UNETLoader) + Qwen3-0.6B (CLIPLoader type cosmos; la detección por pesos QWEN3_06B resuelve al TE de Anima sea cual sea el type) + VAE de Qwen-Image (latent Wan21, 16ch — EmptySD3LatentImage vale). Shift 3.0 ya embebido en el sampling nativo de ComfyUI. Placeholders: model, text_encoder, vae, prompt, negative, seed, steps, cfg, sampler, scheduler, width, height.",
+  "1": {
+    "class_type": "UNETLoader",
+    "inputs": { "unet_name": "{{model}}", "weight_dtype": "default" }
+  },
+  "2": {
+    "class_type": "CLIPLoader",
+    "inputs": { "clip_name": "{{text_encoder}}", "type": "cosmos" }
+  },
+  "3": {
+    "class_type": "VAELoader",
+    "inputs": { "vae_name": "{{vae}}" }
+  },
+  "4": {
+    "class_type": "CLIPTextEncode",
+    "inputs": { "text": "{{prompt}}", "clip": ["2", 0] }
+  },
+  "5": {
+    "class_type": "CLIPTextEncode",
+    "inputs": { "text": "{{negative}}", "clip": ["2", 0] }
+  },
+  "6": {
+    "class_type": "EmptySD3LatentImage",
+    "inputs": { "width": "{{width}}", "height": "{{height}}", "batch_size": 1 }
+  },
+  "7": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": ["1", 0],
+      "positive": ["4", 0],
+      "negative": ["5", 0],
+      "latent_image": ["6", 0],
+      "seed": "{{seed}}",
+      "steps": "{{steps}}",
+      "cfg": "{{cfg}}",
+      "sampler_name": "{{sampler}}",
+      "scheduler": "{{scheduler}}",
+      "denoise": 1.0
+    }
+  },
+  "8": {
+    "class_type": "VAEDecode",
+    "inputs": { "samples": ["7", 0], "vae": ["3", 0] }
+  },
+  "9": {
+    "class_type": "SaveImage",
+    "inputs": { "images": ["8", 0], "filename_prefix": "forge_lab" }
+  }
+}
