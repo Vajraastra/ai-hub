@@ -384,6 +384,18 @@ class GenerateBody(BaseModel):
 _jobs: dict[str, dict] = {}
 _MAX_JOBS = 30
 
+# asyncio solo guarda referencias débiles a los tasks: sin retenerlos aquí el
+# GC puede matar un job en vuelo (síntoma: contador clavado en 0/N y ComfyUI
+# nunca recibe el POST /prompt).
+_bg_tasks: set[asyncio.Task] = set()
+
+
+def _spawn(coro) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
+    return task
+
 
 async def _run_job(job: dict, params: GenParams):
     def on_phase(name, extra):
@@ -432,7 +444,7 @@ async def generate(body: GenerateBody):
         for k in [k for k, j in _jobs.items() if j["status"] != "running"]:
             del _jobs[k]
     _jobs[job_id] = job
-    asyncio.create_task(_run_job(job, params))
+    _spawn(_run_job(job, params))
     return {"job_id": job_id}
 
 

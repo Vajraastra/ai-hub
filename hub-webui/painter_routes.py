@@ -47,6 +47,18 @@ _queues: dict[str, asyncio.Queue]   = {}
 _active_job: str | None             = None
 _loras_cache: list[str]             = []   # poblado en GET /models al iniciar Painter
 
+# asyncio solo guarda referencias débiles a los tasks: sin retenerlos aquí el
+# GC puede matar un job en vuelo (síntoma: contador clavado en 0/N y ComfyUI
+# nunca recibe el POST /prompt).
+_bg_tasks: set[asyncio.Task] = set()
+
+
+def _spawn(coro) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
+    return task
+
 # ── ADetailer — detectores disponibles ────────────────────────────────────
 _ADETAILER_DETECTORS = [
     {"id": "face",   "label": "Cara",     "filename": "face_yolov8n.pt"},
@@ -131,7 +143,7 @@ async def _launch(workflow: dict, params: dict, job_type: str = "image") -> str:
     job_id = str(uuid.uuid4())
     _new_job(job_id, job_type)
     _active_job = job_id
-    asyncio.create_task(_run_job(job_id, workflow, params))
+    _spawn(_run_job(job_id, workflow, params))
     return job_id
 
 
@@ -656,7 +668,7 @@ async def adetailer(req: ADetailerRequest):
     job_id = str(uuid.uuid4())
     _new_job(job_id)
     _active_job = job_id
-    asyncio.create_task(_run_adetailer_job(job_id, req))
+    _spawn(_run_adetailer_job(job_id, req))
     return JobResponse(job_id=job_id)
 
 
