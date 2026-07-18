@@ -38,8 +38,20 @@ CHECKPOINTS_DIR = _FORGE_ROOT / "data" / "checkpoints"
 # Python del venv de ComfyUI (torch + safetensors); ver handoff "Venvs".
 WORKER_PYTHON = _REPO_ROOT / "apps" / "comfyui" / "venv" / "Scripts" / "python.exe"
 
-# Subcarpeta (dentro del weights_root de cada arquitectura) de los derivados
-DERIVED_SUBDIR = "forge_lab"
+# Subcarpeta de salida de Forge Fusion, unificada (s75b): checkpoints derivados
+# (dentro del weights_root de cada arch) Y LoRA fusionados (dentro de loras/)
+# caen bajo el mismo nombre. Antes los checkpoints usaban "forge_lab".
+DERIVED_SUBDIR = "forge_fusion"
+FUSED_SUBDIR = "forge_fusion"
+
+# Subdirs de derivados históricos: se excluyen del listado de bases oficiales
+# para que los checkpoints creados antes de la unificación no cuenten como base.
+_LEGACY_DERIVED_SUBDIRS = ("forge_lab",)
+
+# Energía Frobenius² que conserva la compresión SVD del LoRA fusionado (s75b).
+# Recorta los valores singulares de "ruido" para que encadenar merges no infle
+# el rango. null en el job = concat exacto sin comprimir.
+SVD_ENERGY_DEFAULT = 0.99
 
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
@@ -238,6 +250,15 @@ class MergeOrchestrator:
         from .architectures import get_adapter
         return self.models_root / get_adapter(arch).weights_root / DERIVED_SUBDIR
 
+    def fused_dir(self) -> Path:
+        """Carpeta de LoRAs fusionados (modo fuse, F3)."""
+        return self.models_root / "loras" / FUSED_SUBDIR
+
+    def output_dir(self, arch: str, mode: str) -> Path:
+        """Carpeta contenedora de los productos según el modo del workbench:
+        derived checkpoints (derive) o LoRAs fusionados (fuse)."""
+        return self.fused_dir() if mode == "fuse" else self.derived_dir(arch)
+
     def _official_entries(self, arch: str) -> list[dict]:
         """Bases oficiales elegibles. Layout por piezas (zimage): solo la
         configurada en model_files. multi_base (sdxl): todo checkpoint del
@@ -268,7 +289,8 @@ class MergeOrchestrator:
         if base.exists():
             for p in sorted(base.rglob("*.safetensors")):
                 rel = p.relative_to(self.models_root).as_posix()
-                if rel.startswith(f"{root}/{DERIVED_SUBDIR}/"):
+                if any(rel.startswith(f"{root}/{d}/")
+                       for d in (DERIVED_SUBDIR, *_LEGACY_DERIVED_SUBDIRS)):
                     continue
                 # filtro por arquitectura real: otros modelos que compartan la
                 # carpeta checkpoints/ (p.ej. z-image) no son base sdxl
@@ -434,10 +456,114 @@ class MergeOrchestrator:
             encoding="utf-8")
         return entry
 
+    async def _resolve_lora(self, arch: str, lora_file: str):
+        """Ruta consumible por el worker + (hash, base_model) para el linaje.
+        En sdxl convierte al vuelo el naming diffusers→kohya (misma copia
+        alias que usa el preview); el linaje conserva el fichero original."""
+        lora_path = self.models_root / "loras" / lora_file
+        if not lora_path.is_file():
+            raise MergeError(f"no existe el LoRA {lora_file!r}")
+        hdr, meta = _read_st_header(lora_path)
+        if arch == "sdxl":
+            from .lora_alias import LoraAliasError, ensure_alias, needs_alias
+            if needs_alias(hdr):
+                try:
+                    alias_rel = await asyncio.to_thread(
+                        ensure_alias, self.models_root, lora_file)
+                except LoraAliasError as e:
+                    raise MergeError(
+                        f"LoRA con naming diffusers no convertible: {e}")
+                lora_path = self.models_root / "loras" / alias_rel
+        base_model = (meta.get("ss_base_model_version")
+                      or meta.get("ss_base_model") or "")
+        return lora_path, meta.get("sshs_model_hash") or "", base_model
+
+    async def fuse_loras(self, arch: str, lora_a: str, lora_b: str,
+                         strength_a: float, strength_b: float,
+                         name: str, label: str = "",
+                         blocks_a: dict[str, float] | None = None,
+                         blocks_b: dict[str, float] | None = None,
+                         svd_energy: float | None = SVD_ENERGY_DEFAULT,
+                         on_progress: Callable[[dict], None] | None = None
+                         ) -> dict:
+        """Fusión LoRA A + LoRA B → fichero LoRA (modo fuse, F3). Producto:
+        <models>/loras/forge_fusion/<name>.safetensors. blocks_* = dosis por
+        bloque (config_to_merge_blocks) o None (LoRA íntegro). svd_energy ∈
+        (0,1] recomprime el rango concatenado (rₐ+r_b) al mínimo que conserva
+        esa energía; None = concat exacto. Devuelve la entrada de catálogo."""
+        if not _SLUG_RE.match(name):
+            raise MergeError(f"nombre inválido {name!r} "
+                             "(minúsculas/dígitos/guiones, sin espacios)")
+        if not WORKER_PYTHON.exists():
+            raise MergeError(f"no existe el Python del worker: {WORKER_PYTHON}")
+        for s in (strength_a, strength_b):
+            if not 0.0 < s <= 2.0:
+                raise MergeError(f"strength {s} fuera de rango razonable (0–2]")
+        if lora_a == lora_b:
+            raise MergeError("fusión de un LoRA consigo mismo: elige dos distintos")
+
+        out_rel = f"{FUSED_SUBDIR}/{name}.safetensors"
+        out_path = self.models_root / "loras" / out_rel
+        if out_path.exists():
+            raise MergeError(f"ya existe el LoRA fusionado {out_rel!r}")
+
+        path_a, hash_a, base_model = await self._resolve_lora(arch, lora_a)
+        path_b, hash_b, _ = await self._resolve_lora(arch, lora_b)
+
+        def _blocks_meta(bl):
+            return ("full" if bl is None
+                    else ",".join(f"{b}:{d}" for b, d in bl.items()))
+
+        job = {
+            "arch": arch,
+            "lora_a_path": str(path_a), "lora_b_path": str(path_b),
+            "strength_a": strength_a, "strength_b": strength_b,
+            "blocks_a": blocks_a, "blocks_b": blocks_b,
+            "out_path": str(out_path), "svd_energy": svd_energy,
+            "base_model": base_model,
+            "metadata": {
+                "forge_lab.name": name,
+                "forge_lab.arch": arch,
+                "forge_lab.fused_from": "A+B",
+                "forge_lab.lora_a": lora_a,
+                "forge_lab.lora_b": lora_b,
+                "forge_lab.lora_a_hash": hash_a,
+                "forge_lab.lora_b_hash": hash_b,
+                "forge_lab.strength_a": strength_a,
+                "forge_lab.strength_b": strength_b,
+                "forge_lab.blocks_a": _blocks_meta(blocks_a),
+                "forge_lab.blocks_b": _blocks_meta(blocks_b),
+                "forge_lab.created_at": _now(),
+            },
+        }
+        t0 = time.time()
+        result = await self._run_worker(job, on_progress, script="fuse_worker.py")
+
+        if on_progress:
+            on_progress({"phase": "hash", "done": 0, "total": 1})
+        sha = await asyncio.to_thread(_sha256, out_path)
+        if on_progress:
+            on_progress({"phase": "hash", "done": 1, "total": 1})
+
+        return {
+            "name": name, "arch": arch, "kind": "fused", "file": out_rel,
+            "label": label,
+            "loras": [{"file": lora_a, "hash": hash_a, "strength": strength_a},
+                      {"file": lora_b, "hash": hash_b, "strength": strength_b}],
+            "created_at": _now(),
+            "seconds": round(time.time() - t0, 1),
+            "sha256": sha,
+            "size_bytes": out_path.stat().st_size,
+            "worker": {k: result[k] for k in
+                       ("modules", "rank_max", "rank_pre", "skipped_policy")
+                       if k in result},
+        }
+
     async def _run_worker(self, job: dict,
-                          on_progress: Callable[[dict], None] | None) -> dict:
-        """Lanza merge_worker.py con el venv de ComfyUI (CPU forzada) y
-        traduce su protocolo de líneas JSON. Limpia el parcial si falla."""
+                          on_progress: Callable[[dict], None] | None,
+                          script: str = "merge_worker.py") -> dict:
+        """Lanza el worker (merge o fuse) con el venv de ComfyUI (CPU forzada)
+        y traduce su protocolo de líneas JSON. Limpia el parcial si falla."""
         out_path = Path(job["out_path"])
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False,
                                          encoding="utf-8") as tf:
@@ -448,7 +574,7 @@ class MergeOrchestrator:
             # stderr fusionado en stdout: si solo se lee un pipe y el otro se
             # llena (warnings de torch), el worker se bloquearía.
             proc = await asyncio.create_subprocess_exec(
-                str(WORKER_PYTHON), str(_CORE / "merge_worker.py"), str(job_file),
+                str(WORKER_PYTHON), str(_CORE / script), str(job_file),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT, env=env)
             result, error, noise = None, None, []

@@ -457,6 +457,34 @@ async def checkpoints_list(arch: str = "zimage"):
     return {"checkpoints": ckpts}
 
 
+def _reveal_in_explorer(path: Path):
+    """Abre la carpeta en el explorador de archivos nativo del SO. Windows es
+    el target soportado (os.startfile); best-effort en macOS/Linux."""
+    if sys.platform == "win32":
+        os.startfile(str(path))                                    # noqa: S606
+    elif sys.platform == "darwin":
+        import subprocess
+        subprocess.Popen(["open", str(path)])
+    else:
+        import subprocess
+        subprocess.Popen(["xdg-open", str(path)])
+
+
+@fusion_router.post("/open-output-folder")
+async def open_output_folder(arch: str = "zimage", mode: str = "derive"):
+    """Abre en el explorador la carpeta contenedora de los productos del
+    workbench (checkpoints derivados o LoRAs fusionados según el modo), para
+    purgar o mover los merges sin navegar el árbol de carpetas. La crea si aún
+    no existe (p. ej. antes del primer merge)."""
+    try:
+        folder = _merger.output_dir(arch, mode)
+        folder.mkdir(parents=True, exist_ok=True)
+        _reveal_in_explorer(folder)
+    except Exception as e:
+        raise HTTPException(500, f"no se pudo abrir la carpeta: {e}")
+    return {"opened": str(folder)}
+
+
 class FavToggleBody(BaseModel):
     kind: str                      # "loras" | "checkpoints"
     id: str                        # file (lora) | name (checkpoint)
@@ -540,10 +568,14 @@ class ExploreSessionBody(BaseModel):
     negative: str = ""
     seed: int
     sampling: dict | None = None  # None → defaults del adaptador
+    mode: str = "derive"          # derive (checkpoint) | fuse (LoRA A+B)
+    lora2: str = ""               # LoRA B (obligatorio en modo fuse)
+    strength2: float = 1.0
 
 
 class ExploreGenerateBody(BaseModel):
     config: dict                  # {"layers": {"0": dosis...}, "other": dosis}
+    config2: dict | None = None   # máscara del LoRA B en modo fusión (F4)
 
 
 class ExploreConfirmBody(BaseModel):
@@ -574,7 +606,8 @@ async def explore_session_create(body: ExploreSessionBody):
             arch=body.arch, checkpoint=ckpt["name"], model=ckpt["unet_name"],
             lora=body.lora, strength=body.strength, prompt=body.prompt,
             negative=body.negative, seed=body.seed, sampling=body.sampling,
-            models_root=_models_root())
+            models_root=_models_root(),
+            mode=body.mode, lora2=body.lora2, strength2=body.strength2)
     except (ExploreError, MergeError) as e:
         raise HTTPException(400, str(e))
     return {"session": session}
@@ -636,11 +669,12 @@ async def explore_base_image():
         raise HTTPException(404, str(e))
 
 
-async def _explore_gen_job(job: dict, config: dict):
+async def _explore_gen_job(job: dict, config: dict, config2: dict | None):
     def on_progress(step, total):
         job.update({"step": step, "steps_total": total})
     try:
-        gen = await explore.generate(_comfy, config, on_progress=on_progress)
+        gen = await explore.generate(_comfy, config, on_progress=on_progress,
+                                     config2=config2)
         job["status"] = "done"
         job["gen"] = gen
     except Exception as e:
@@ -656,8 +690,11 @@ async def explore_generate(body: ExploreGenerateBody):
     _reject_if_job_running()
     if not await _comfy.health_check():
         raise HTTPException(503, "ComfyUI no responde en :8188 — arráncalo desde el Hub")
+    fuse = session.get("mode", "derive") == "fuse" and session.get("lora2")
     try:
         config = explore.normalize_config(body.config, session["arch"])
+        config2 = (explore.normalize_config(body.config2, session["arch"])
+                   if fuse and body.config2 is not None else None)
     except ExploreError as e:
         raise HTTPException(400, str(e))
     job_id = uuid.uuid4().hex[:12]
@@ -665,7 +702,7 @@ async def explore_generate(body: ExploreGenerateBody):
            "step": 0, "steps_total": session["sampling"]["steps"],
            "gen": None, "error": None}
     _jobs[job_id] = job
-    _spawn(_explore_gen_job(job, config), job)
+    _spawn(_explore_gen_job(job, config, config2), job)
     return {"job_id": job_id}
 
 
@@ -678,6 +715,7 @@ async def _explore_draft_job(job: dict, body: ExploreSessionBody, ckpt: dict):
             model=ckpt["unet_name"], lora=body.lora, strength=body.strength,
             prompt=body.prompt, negative=body.negative, seed=body.seed,
             sampling=body.sampling, models_root=_models_root(),
+            mode=body.mode, lora2=body.lora2, strength2=body.strength2,
             on_progress=on_progress)
         job["status"] = "done"
     except Exception as e:
@@ -755,6 +793,10 @@ async def explore_confirm(body: ExploreConfirmBody):
     session = explore.get_session()
     if not session:
         raise HTTPException(404, "no hay sesión de exploración activa")
+    if session.get("mode", "derive") == "fuse":
+        raise HTTPException(400, "sesión en modo fusión de LoRAs: la "
+                            "confirmación con set no encadena el LoRA B "
+                            "todavía (llega con F3/F4)")
     gen = next((g for g in session["generations"] if g["id"] == body.gen_id), None)
     if gen is None:
         raise HTTPException(404, f"no existe la generación {body.gen_id!r}")
@@ -777,9 +819,9 @@ async def explore_confirm(body: ExploreConfirmBody):
 
 @fusion_router.post("/explore/merge")
 async def explore_merge(body: dict):
-    """Merge final con la config de una generación de la sesión: traduce la
-    config a bloques del worker y delega en /merge (misma matemática que el
-    preview runtime — dosis lineal, sqrt en el nodo)."""
+    """Bake final con la config de una generación de la sesión. Modo derive →
+    checkpoint (base+LoRA, /merge). Modo fuse → LoRA fusionado A+B (F3). Misma
+    matemática que el preview runtime (dosis lineal, sqrt en el nodo)."""
     session = explore.get_session()
     if not session:
         raise HTTPException(404, "no hay sesión de exploración activa")
@@ -787,18 +829,74 @@ async def explore_merge(body: dict):
                 if g["id"] == body.get("gen_id")), None)
     if gen is None:
         raise HTTPException(404, f"no existe la generación {body.get('gen_id')!r}")
+    arch = session["arch"]
+    name = str(body.get("name", ""))
+    label = str(body.get("label", ""))
+
+    if session.get("mode", "derive") == "fuse":
+        # F3: producto = fichero LoRA (A⊕B). Config A y B → dosis por bloque.
+        try:
+            blocks_a = explore.config_to_merge_blocks(gen["config"], arch)
+            blocks_b = explore.config_to_merge_blocks(
+                gen.get("config2") or explore.full_config(arch), arch)
+        except ExploreError as e:
+            raise HTTPException(400, str(e))
+        return await fuse_start(
+            arch=arch,
+            # linaje sobre los LoRA originales de la colección (no la copia alias)
+            lora_a=session.get("lora_source") or session["lora"],
+            lora_b=session.get("lora2_source") or session["lora2"],
+            strength_a=session["strength"], strength_b=session["strength2"],
+            name=name, label=label, blocks_a=blocks_a, blocks_b=blocks_b)
+
     try:
-        blocks = explore.config_to_merge_blocks(gen["config"], session["arch"])
+        blocks = explore.config_to_merge_blocks(gen["config"], arch)
     except ExploreError as e:
         raise HTTPException(400, str(e))
     return await merge_start(MergeBody(
-        arch=session["arch"], base=session["checkpoint"],
+        arch=arch, base=session["checkpoint"],
         # si la sesión corre sobre una copia alias (diffusers→kohya), el
         # linaje del derivado referencia el LoRA original de la colección
         lora=session.get("lora_source") or session["lora"],
         strength=session["strength"],
-        name=str(body.get("name", "")), label=str(body.get("label", "")),
-        blocks=blocks))
+        name=name, label=label, blocks=blocks))
+
+
+async def _fuse_job(job: dict, arch: str, lora_a: str, lora_b: str,
+                    strength_a: float, strength_b: float, name: str,
+                    label: str, blocks_a, blocks_b):
+    def on_progress(p: dict):
+        job.update(p)
+    try:
+        entry = await _merger.fuse_loras(
+            arch=arch, lora_a=lora_a, lora_b=lora_b,
+            strength_a=strength_a, strength_b=strength_b,
+            name=name, label=label, blocks_a=blocks_a, blocks_b=blocks_b,
+            on_progress=on_progress)
+        job["status"] = "done"
+        job["checkpoint"] = entry     # reutiliza el campo del polleo (name/size)
+    except Exception as e:
+        job["status"] = "error"
+        job["error"] = str(e)
+
+
+async def fuse_start(*, arch: str, lora_a: str, lora_b: str,
+                     strength_a: float, strength_b: float, name: str,
+                     label: str, blocks_a, blocks_b):
+    """Fusión A+B como job en background (CPU, proceso aparte). type="merge"
+    para heredar la serialización y el no-cancelable del bake a fichero."""
+    _reject_if_job_running()
+    job_id = uuid.uuid4().hex[:12]
+    job = {"id": job_id, "type": "merge", "status": "running", "fused": True,
+           "name": name, "lora_a": lora_a, "lora_b": lora_b,
+           "phase": "", "done": 0, "total": 1, "checkpoint": None, "error": None}
+    if len(_jobs) >= _MAX_JOBS:
+        for k in [k for k, j in _jobs.items() if j["status"] != "running"]:
+            del _jobs[k]
+    _jobs[job_id] = job
+    _spawn(_fuse_job(job, arch, lora_a, lora_b, strength_a, strength_b,
+                     name, label, blocks_a, blocks_b))
+    return {"job_id": job_id}
 
 
 # ── Runs e imágenes ────────────────────────────────────────────────────────

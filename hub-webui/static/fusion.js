@@ -26,6 +26,42 @@ const labArch = () =>
 const withArch = (path) =>
   path + (path.includes('?') ? '&' : '?') + 'arch=' + encodeURIComponent(currentArch);
 
+// ── Modo de trabajo (F2): derivar checkpoint / fusionar LoRAs ──────────────
+// El modo elegido se persiste entre recargas; con sesión activa manda el de
+// la sesión (congelado en el lock, como base/LoRA/prompt).
+let currentMode = localStorage.getItem('fusion-mode') || 'derive';
+const labMode = () =>
+  (exploreSession && (exploreSession.mode || 'derive')) || currentMode;
+
+function applyModeUI() {
+  const mode = labMode();
+  const fuse = mode === 'fuse';
+  document.querySelectorAll('#mode-switch button').forEach(b => {
+    b.classList.toggle('active', b.dataset.mode === mode);
+    b.disabled = !!exploreSession;   // el modo queda congelado con la sesión
+  });
+  $('field-lora2').style.display = fuse ? '' : 'none';   // arrastra su fuerza anidada
+  $('lbl-lora').textContent = fuse ? 'LoRA A' : 'LoRA';
+  $('blocks-title-a').textContent = fuse ? 'Bloques · LoRA A' : 'Bloques';
+  $('blocks-head-b').style.display = fuse ? '' : 'none';
+  $('switch-grid-b').style.display = fuse ? '' : 'none';
+  $('blocks-hint').textContent = fuse
+    ? 'cada panel dosifica su LoRA por separado (A arriba · B abajo)'
+    : 'clic en un bloque → slider · valor 1.0 = efecto completo (lineal)';
+  const mbtn = $('btn-merge');
+  if (mbtn) mbtn.textContent = fuse
+    ? '⚗ Fusionar → LoRA A⊕B con la config afinada'
+    : '⚒ Merge → checkpoint con la config afinada';
+}
+
+document.querySelectorAll('#mode-switch button').forEach(b => b.onclick = () => {
+  if (exploreSession) return;
+  currentMode = b.dataset.mode;
+  localStorage.setItem('fusion-mode', currentMode);
+  applyModeUI();
+  refreshTriggers();
+});
+
 async function api(path, opts = {}) {
   if (opts.body !== undefined) {
     opts.headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
@@ -76,9 +112,13 @@ async function switchArch(name) {
 async function loadStatus() {
   try {
     const [s, mf] = await Promise.all([api(withArch('/status')), api(withArch('/model-files'))]);
-    const pill = $('comfy-pill');
-    pill.textContent = 'ComfyUI: ' + (s.comfyui ? 'online' : 'offline');
-    pill.className = 'badge ' + (s.comfyui ? 'draft' : '');
+    // El pill lo pinta el poller mientras hay una transición en curso.
+    if (!comfyBusy) {
+      setComfyPill(s.comfyui ? 'online' : 'offline');
+      // Si ComfyUI está arriba, reclamar la propiedad: habilita el auto-cierre
+      // al soltar esta página y cancela un cierre pendiente tras un F5.
+      if (s.comfyui) claimComfy();
+    }
     let html = `<div class="status-row"><span>ComfyUI (API :8188)</span>${mark(s.comfyui)}</div>`;
     for (const [node, ok] of Object.entries(s.nodes))
       html += `<div class="status-row"><span>nodo ${esc(node)}</span>${mark(ok)}</div>`;
@@ -126,6 +166,86 @@ $('btn-status-toggle').onclick = () => {
   const el = $('status-card');
   el.style.display = el.style.display === 'none' ? '' : 'none';
 };
+
+// ── ComfyUI como backend headless (arranque/parada desde el pill) ────────────
+// El pill de estado es también el botón: offline→arranca, online→detiene.
+// ComfyUI corre sin UI (solo :8188) y su log sale en el monitor del dashboard.
+// Al cerrar/recargar esta página se suelta el backend (con gracia para el F5).
+const COMFY_OWNER = 'fusion';
+let comfyBusy = false;   // hay un arranque/parada en curso
+
+function setComfyPill(state) {
+  const pill = $('comfy-pill');
+  const map = {
+    online:   ['ComfyUI: online',      'badge comfy-toggle draft'],
+    offline:  ['ComfyUI: offline',     'badge comfy-toggle'],
+    starting: ['ComfyUI: arrancando…', 'badge comfy-toggle busy locked'],
+    stopping: ['ComfyUI: deteniendo…', 'badge comfy-toggle busy locked'],
+  };
+  const [txt, cls] = map[state] || map.offline;
+  pill.textContent = txt;
+  pill.className = cls;
+}
+
+async function hubPost(path) {
+  const r = await fetch(path, { method: 'POST' });
+  if (!r.ok) throw new Error(r.statusText);
+  return r.json();
+}
+
+// Reclama la propiedad del backend si ya está arriba (idempotente, barato).
+async function claimComfy() {
+  try { await hubPost(`/api/apps/comfyui/launch-backend?owner=${COMFY_OWNER}`); }
+  catch (_) {}
+}
+
+// Sondea /status hasta que comfyui alcance el estado deseado (o timeout).
+async function pollComfyUntil(wantUp, timeoutMs = 90000) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < timeoutMs) {
+    await new Promise(r => setTimeout(r, 1500));
+    let up = false;
+    try { up = (await api(withArch('/status'))).comfyui; } catch (_) {}
+    if (up === wantUp) return true;
+  }
+  return false;
+}
+
+async function toggleComfy() {
+  if (comfyBusy) return;
+  const online = $('comfy-pill').textContent.includes('online');
+  comfyBusy = true;
+  try {
+    if (online) {
+      setComfyPill('stopping');
+      await hubPost(`/api/apps/comfyui/stop-backend?owner=${COMFY_OWNER}`);
+      await pollComfyUntil(false, 30000);
+    } else {
+      setComfyPill('starting');
+      await hubPost(`/api/apps/comfyui/launch-backend?owner=${COMFY_OWNER}`);
+      await pollComfyUntil(true, 120000);
+    }
+  } catch (e) {
+    alert('ComfyUI: ' + e.message);
+  } finally {
+    comfyBusy = false;
+    await loadStatus();   // refresca pill + nodos + diagnóstico
+  }
+}
+
+$('comfy-pill').onclick = toggleComfy;
+$('comfy-pill').onkeydown = (e) => {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleComfy(); }
+};
+
+// Al cerrar/recargar la página, soltar el backend (sendBeacon sobrevive al
+// unload). El servidor lo cierra con gracia solo si lo arrancamos nosotros.
+window.addEventListener('pagehide', () => {
+  try {
+    navigator.sendBeacon(
+      `/api/apps/comfyui/release-backend?owner=${COMFY_OWNER}`);
+  } catch (_) {}
+});
 
 // ── Batería de prompts (Fase 4) ─────────────────────────────────────────────
 
@@ -385,13 +505,19 @@ let picker = null;          // config del picker abierto (o null)
 
 const loraByFile = (f) => lorasCache.find(l => l.file === f);
 
+// LoRA congelado en la sesión para cada picker (A o B); se muestra el
+// ORIGINAL de la colección (sus sidecars/thumbnail viven junto a él)
+const sessLoraFor = (id) => exploreSession &&
+  (id === 'exp-lora2'
+    ? (exploreSession.lora2_source || exploreSession.lora2 || '')
+    : (exploreSession.lora_source || exploreSession.lora));
+
 async function refreshLoras() {
   const data = await api(withArch('/loras'));
   lorasCache = data.loras.filter(l => l.arch_match);
-  for (const id of ['exp-lora']) {
-    // con sesión activa manda la sesión (mismo motivo que en checkpoints);
-    // se muestra el LoRA original: sus sidecars/thumbnail viven junto a él
-    if (exploreSession) $(id).value = exploreSession.lora_source || exploreSession.lora;
+  for (const id of ['exp-lora', 'exp-lora2']) {
+    // con sesión activa manda la sesión (mismo motivo que en checkpoints)
+    if (exploreSession) $(id).value = sessLoraFor(id) || '';
     else if ($(id).value && !loraByFile($(id).value)) $(id).value = '';
     renderLoraPickBtn(id);
   }
@@ -400,10 +526,10 @@ async function refreshLoras() {
 function renderLoraPickBtn(id) {
   const btn = $('btn-pick-' + id);
   const l = loraByFile($(id).value);
-  if (id === 'exp-lora') refreshTriggers();
+  refreshTriggers();
   if (!l) {
     // sesión de otra arch: mismo fallback que en checkpoints
-    const sessLora = exploreSession && (exploreSession.lora_source || exploreSession.lora);
+    const sessLora = sessLoraFor(id);
     if (sessLora && $(id).value === sessLora) {
       const n = sessLora.split('/').pop().replace(/\.safetensors$/i, '');
       btn.innerHTML = `<span class="ph">🧬</span><span class="nm" title="${esc(sessLora)}">${esc(n)}</span>`;
@@ -422,51 +548,65 @@ function renderLoraPickBtn(id) {
 // Fuente (backend /lora/triggers): sidecars de Civitai/Lora-Manager o los tags
 // más frecuentes del dataset (kohya). Clic = añade/quita la palabra del
 // prompt; con sesión activa el prompt está congelado y los chips solo
-// informan (marcan cuáles ya están dentro).
-let triggerLora = null;      // lora cuya respuesta está pintada
+// informan (marcan cuáles ya están dentro). En modo fusión se pintan los de
+// AMBOS LoRAs, etiquetados A y B.
+let triggerKey = null;      // clave de la última respuesta pintada
 
 // la sesión puede correr sobre una copia alias: los sidecars viven junto al
-// LoRA ORIGINAL (lora_source)
-const triggerLoraFile = () => exploreSession
-  ? (exploreSession.lora_source || exploreSession.lora)
-  : $('exp-lora').value;
+// LoRA ORIGINAL (lora_source / lora2_source)
+function activeTriggerLoras() {
+  const fuse = labMode() === 'fuse';
+  const s = exploreSession;
+  const a = s ? (s.lora_source || s.lora) : $('exp-lora').value;
+  const b = fuse
+    ? (s ? (s.lora2_source || s.lora2 || '') : $('exp-lora2').value)
+    : '';
+  const out = [];
+  if (a) out.push({ file: a, tag: fuse ? 'A' : '' });
+  if (b) out.push({ file: b, tag: 'B' });
+  return out;
+}
 
 async function refreshTriggers() {
-  const file = triggerLoraFile();
+  const loras = activeTriggerLoras();
   const strip = $('trigger-strip');
-  if (!file) {
-    triggerLora = null;
+  const key = loras.map(l => l.tag + ':' + l.file).join('|');
+  if (!loras.length) {
+    triggerKey = null;
     strip.style.display = 'none';
     strip.innerHTML = '';
     return;
   }
-  if (file === triggerLora) { paintTriggerState(); return; }
-  triggerLora = file;
-  let data = { words: [], source: null };
-  try { data = await api('/lora/triggers?file=' + encodeURIComponent(file)); }
-  catch (_) { /* sin triggers: se oculta la franja */ }
-  if (triggerLora !== file) return;   // respuesta tardía: ya se pidió otro LoRA
+  if (key === triggerKey) { paintTriggerState(); return; }
+  triggerKey = key;
+  const results = await Promise.all(loras.map(async (l) => {
+    try {
+      return { ...l, ...(await api('/lora/triggers?file=' + encodeURIComponent(l.file))) };
+    } catch (_) { return { ...l, words: [], source: null }; }
+  }));
+  if (triggerKey !== key) return;   // respuesta tardía: ya se pidió otra cosa
   strip.innerHTML = '';
-  if (!data.words || !data.words.length) {
-    strip.style.display = 'none';
-    return;
+  let any = false;
+  for (const r of results) {
+    if (!r.words || !r.words.length) continue;
+    any = true;
+    const srcLabel = { civitai: 'Civitai', 'lora-manager': 'Civitai',
+                       dataset: 'dataset' }[r.source] || r.source;
+    const src = document.createElement('span');
+    src.className = 'trig-src';
+    src.textContent = `⚡${r.tag ? ' ' + r.tag : ''} triggers · ${srcLabel}`;
+    src.title = 'Palabras de activación del LoRA — clic para añadir/quitar del prompt';
+    strip.appendChild(src);
+    for (const w of r.words) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'trig-chip';
+      b.textContent = w;
+      b.onclick = () => toggleTrigger(w);
+      strip.appendChild(b);
+    }
   }
-  const srcLabel = { civitai: 'Civitai', 'lora-manager': 'Civitai',
-                     dataset: 'dataset' }[data.source] || data.source;
-  const src = document.createElement('span');
-  src.className = 'trig-src';
-  src.textContent = `⚡ triggers · ${srcLabel}`;
-  src.title = 'Palabras de activación del LoRA — clic para añadir/quitar del prompt';
-  strip.appendChild(src);
-  for (const w of data.words) {
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.className = 'trig-chip';
-    b.textContent = w;
-    b.onclick = () => toggleTrigger(w);
-    strip.appendChild(b);
-  }
-  strip.style.display = '';
+  strip.style.display = any ? '' : 'none';
   paintTriggerState();
 }
 
@@ -676,6 +816,7 @@ $('lp-fav-only').onclick = () => {
   renderPickerGrid();
 };
 $('btn-pick-exp-lora').onclick = () => openLoraPicker('exp-lora');
+$('btn-pick-exp-lora2').onclick = () => openLoraPicker('exp-lora2');
 $('btn-pick-exp-checkpoint').onclick = () => openCheckpointPicker('exp-checkpoint', 'btn-pick-exp-checkpoint');
 
 // Footer de merge (Fase 5): fusiona la config de la generación SELECCIONADA
@@ -683,18 +824,23 @@ $('btn-pick-exp-checkpoint').onclick = () => openCheckpointPicker('exp-checkpoin
 $('btn-merge').onclick = async () => {
   if (!exploreSession || !selectedGen) return;
   const g = genById(selectedGen);
+  const s = exploreSession;
+  const fuse = (s.mode || 'derive') === 'fuse';
   const name = ($('merge-name').value || '').trim();
   const label = ($('merge-label').value || '').trim();
-  if (!name) return alert('Pon nombre al checkpoint derivado (minúsculas, dígitos, guiones).');
-  const s = exploreSession;
-  if (!confirm(`Merge con la config afinada [${g.summary}]:\n\n  ${s.checkpoint}  ←  ${sessLoraName(s)}  @ ${s.strength}\n  →  forge_lab/${name}.safetensors (~12 GB)\n\nCorre en CPU/RAM (unos minutos). ¿Adelante?`)) return;
+  if (!name) return alert('Pon nombre al ' + (fuse ? 'LoRA fusionado' : 'checkpoint derivado')
+    + ' (minúsculas, dígitos, guiones).');
+  const msg = fuse
+    ? `Fusión A⊕B con la config afinada [${g.summary}]:\n\n  ${sessLoraName(s)} @ ${s.strength}\n  + ${sessLora2Name(s)} @ ${s.strength2}\n  → loras/forge_fusion/${name}.safetensors\n\nProducto: un LoRA comprimido por SVD (energía 99%). Corre en CPU/RAM. ¿Adelante?`
+    : `Merge con la config afinada [${g.summary}]:\n\n  ${s.checkpoint}  ←  ${sessLoraName(s)}  @ ${s.strength}\n  →  forge_lab/${name}.safetensors (~12 GB)\n\nCorre en CPU/RAM (unos minutos). ¿Adelante?`;
+  if (!confirm(msg)) return;
   try {
     const { job_id } = await api('/explore/merge',
       { method: 'POST', body: { gen_id: selectedGen, name, label } });
     $('btn-merge').disabled = true;
     $('merge-progress').style.display = '';
     pollMergeJob(job_id);
-  } catch (e) { alert('Error lanzando merge: ' + e.message); }
+  } catch (e) { alert('Error lanzando ' + (fuse ? 'fusión' : 'merge') + ': ' + e.message); }
 };
 
 // Habilita el footer según haya un trabajo seleccionado y refleja su config.
@@ -703,42 +849,56 @@ function updateMergeFooter() {
   const sum = $('mf-summary');
   const btn = $('btn-merge');
   if (!btn) return;
+  const fuse = exploreSession && (exploreSession.mode || 'derive') === 'fuse';
   if (sel) {
     const s = exploreSession;
     sum.classList.add('ready');
-    sum.innerHTML = `Config afinada: <span class="mono">${esc(sel.summary)}</span><br>` +
-      `<span class="dim">${esc(s.checkpoint)} ← ${esc(sessLoraName(s))} @ ${s.strength}</span>`;
+    sum.innerHTML = fuse
+      ? `LoRA fusionado A⊕B: <span class="mono">${esc(sel.summary)}</span><br>` +
+        `<span class="dim">${esc(sessLoraName(s))} @ ${s.strength} + ${esc(sessLora2Name(s))} @ ${s.strength2} → loras/forge_fusion/</span>`
+      : `Config afinada: <span class="mono">${esc(sel.summary)}</span><br>` +
+        `<span class="dim">${esc(s.checkpoint)} ← ${esc(sessLoraName(s))} @ ${s.strength}</span>`;
     btn.disabled = false;
   } else {
     sum.classList.remove('ready');
     sum.textContent = exploreSession
-      ? 'Selecciona un trabajo del historial para mergear su config de bloques.'
-      : 'Inicia una sesión y genera al menos una vez; selecciona ese trabajo para mergear su config.';
+      ? 'Selecciona un trabajo del historial para ' +
+        (fuse ? 'fusionar A⊕B con su config de bloques.' : 'mergear su config de bloques.')
+      : 'Inicia una sesión y genera al menos una vez; selecciona ese trabajo para el bake.';
     btn.disabled = true;
   }
 }
 
 const MERGE_PHASES = { map: 'mapeando LoRA', merge: 'mergeando tensores',
-                       write: 'escribiendo checkpoint', hash: 'SHA256 de verificación' };
+                       fuse: 'fusionando rangos A⊕B',
+                       write: 'escribiendo fichero', hash: 'SHA256 de verificación' };
 
 function pollMergeJob(jobId) {
   const timer = setInterval(async () => {
     let j;
     try { j = await api('/jobs/' + jobId); } catch (e) { return; }
     const pct = j.total ? Math.round(100 * j.done / j.total) : 0;
-    $('merge-progress-fill').style.width = (j.phase === 'merge' ? pct : (j.status === 'running' ? 100 : pct)) + '%';
+    const bar = (j.phase === 'merge' || j.phase === 'fuse');
+    $('merge-progress-fill').style.width = (bar ? pct : (j.status === 'running' ? 100 : pct)) + '%';
     $('merge-progress-label').textContent =
       `${MERGE_PHASES[j.phase] || j.phase || 'preparando'} — ${j.done}/${j.total}`;
     if (j.status !== 'running') {
       clearInterval(timer);
       $('btn-merge').disabled = false;
       $('merge-progress').style.display = 'none';
-      if (j.status === 'error') alert('Merge fallido: ' + j.error);
+      if (j.status === 'error') alert((j.fused ? 'Fusión' : 'Merge') + ' fallida: ' + j.error);
       else {
         $('merge-name').value = ''; $('merge-label').value = '';
-        alert(`Checkpoint "${j.checkpoint.name}" creado (${fmtGB(j.checkpoint.size_bytes)}).\nQueda listado abajo, en "Checkpoints — base y derivados".`);
+        const c = j.checkpoint;
+        if (j.fused) {
+          const w = c.worker || {};
+          const rk = (w.rank_pre && w.rank_pre !== w.rank_max)
+            ? `rank ${w.rank_pre}→${w.rank_max} (SVD)` : `rank ${w.rank_max ?? '?'}`;
+          alert(`LoRA fusionado "${c.name}" creado (${fmtGB(c.size_bytes)}, ${rk}).\nEn el catálogo de LoRAs, subcarpeta forge_fusion/.`);
+        } else
+          alert(`Checkpoint "${c.name}" creado (${fmtGB(c.size_bytes)}).\nQueda listado abajo, en "Checkpoints — base y derivados".`);
       }
-      await refreshCheckpoints();
+      await (j.fused ? refreshLoras() : refreshCheckpoints());
     }
   }, 1500);
 }
@@ -757,7 +917,7 @@ function draftPane() {
   return `<div class="compare-pane">
     <h3>Calibración (no se guarda)</h3>
     <img src="${url}" onclick="window.open('${url}','_blank')">
-    <div class="cfg">pre-lock · LoRA al 100% en todos los bloques</div>
+    <div class="cfg">pre-lock · LoRA(s) al 100% en todos los bloques</div>
   </div>`;
 }
 
@@ -771,6 +931,7 @@ async function refreshExplore() {
   const active = !!exploreSession;
   // entradas + config se BLOQUEAN mientras hay sesión (congeladas al arrancar)
   setInputsLocked(active);
+  applyModeUI();   // con sesión manda su modo; sin ella, el elegido
   $('btn-inputs-toggle').style.display = active ? '' : 'none';
   if (active && !wasActive) {
     // al bloquear la sesión: colapsar base/LoRA y prompt (ya congelados, redundantes
@@ -818,11 +979,17 @@ async function refreshExplore() {
   renderCkptPickBtn('exp-checkpoint', 'btn-pick-exp-checkpoint');
   $('exp-lora').value = s.lora_source || s.lora;
   renderLoraPickBtn('exp-lora');
+  $('exp-lora2').value = s.lora2_source || s.lora2 || '';
+  renderLoraPickBtn('exp-lora2');
   $('exp-strength').value = s.strength;
+  $('exp-strength2').value = s.strength2 ?? 1.0;
   $('exp-seed').value = s.prompt.seed;
+  const fuse = (s.mode || 'derive') === 'fuse';
   $('explore-info').innerHTML =
+    (fuse ? '<span class="badge draft">⚗ fusión</span> ' : '') +
     `<span class="mono">${esc(s.checkpoint)}</span> + ` +
     `<span class="mono">${esc(sessLoraName(s))}</span> @ ${s.strength}` +
+    (fuse ? ` + <span class="mono">${esc(sessLora2Name(s))}</span> @ ${s.strength2}` : '') +
     ` <span class="dim">seed ${s.prompt.seed} · ${s.sampling.steps} steps · cfg ${s.sampling.cfg}</span>`;
   populateKSampler(s.sampling);
   $('exp-prompt').value = s.prompt.text;
@@ -861,22 +1028,29 @@ function setCell(chip, on) {
   paintChip(chip);
 }
 
-function buildSwitchGrid() {
-  const grid = $('switch-grid');
+// Construye un grid de chips + su fila de presets. En fuse hay dos:
+// A (#switch-grid/#preset-row) y B (#switch-grid-b/#preset-row-b).
+function buildGrid(gridId, presetId) {
+  const grid = $(gridId);
   grid.innerHTML = '';
   const def = labArch();
   if (!def) return;
   for (const sw of def.explore_switches) grid.appendChild(switchCell(sw.label, sw.id));
   for (const chip of grid.children) paintChip(chip);
-  buildPresetRow(def);
+  buildPresetRow(def, gridId, presetId);
+}
+
+function buildSwitchGrid() {
+  buildGrid('switch-grid', 'preset-row');
+  buildGrid('switch-grid-b', 'preset-row-b');
 }
 
 // presets derivados de la arquitectura: genéricos (todo/invertir) + uno por
 // grupo macro de block_groups (enciende solo los switches del grupo)
-function buildPresetRow(def) {
-  const row = $('preset-row');
+function buildPresetRow(def, gridId, presetId) {
+  const row = $(presetId);
   row.innerHTML = '';
-  const cells = () => [...$('switch-grid').children];
+  const cells = () => [...$(gridId).children];
   const mk = (label, title, fn) => {
     const b = document.createElement('button');
     b.className = 'back-btn'; b.textContent = label;
@@ -895,10 +1069,10 @@ function buildPresetRow(def) {
   }
 }
 
-function collectConfig() {
+function collectConfig(gridId = 'switch-grid') {
   const blocks = {};
   let other = 0;
-  for (const chip of $('switch-grid').children) {
+  for (const chip of $(gridId).children) {
     const d = chipOn(chip) ? (parseFloat(chip.dataset.dose) || 0) : 0;
     if (chip.dataset.key === 'other') other = d;
     else blocks[chip.dataset.key] = d;
@@ -906,9 +1080,9 @@ function collectConfig() {
   return { blocks, other };
 }
 
-function applyConfig(cfg) {
+function applyConfig(cfg, gridId = 'switch-grid') {
   const blocks = cfg.blocks || {};
-  for (const chip of $('switch-grid').children) {
+  for (const chip of $(gridId).children) {
     const d = chip.dataset.key === 'other' ? (cfg.other || 0) : (blocks[chip.dataset.key] ?? 0);
     chip.dataset.dose = d > 0 ? String(d) : '1';
     chip.classList.toggle('off', !(d > 0));
@@ -957,6 +1131,7 @@ function genById(id) { return exploreSession.generations.find(g => g.id === id);
 // Nombre legible del LoRA de la sesión: el original de la colección si la
 // sesión corre sobre una copia alias (conversión diffusers→kohya).
 function sessLoraName(s) { return (s.lora_source || s.lora).split('/').pop(); }
+function sessLora2Name(s) { return (s.lora2_source || s.lora2 || '').split('/').pop(); }
 
 function comparePane(title, gen, extraClass = '') {
   if (!gen) return '';
@@ -1168,6 +1343,7 @@ function renderHistory() {
     item.onclick = () => {
       selectedGen = g.id;
       applyConfig(g.config);   // cargar su config en los switches para iterar
+      if (labMode() === 'fuse') applyConfig(g.config2 || {}, 'switch-grid-b');
       renderCompare();
       renderHistory();
     };
@@ -1194,6 +1370,7 @@ function renderHistory() {
 function collectSessionBody() {
   const body = {
     arch: currentArch,
+    mode: labMode(),
     checkpoint: $('exp-checkpoint').value,
     lora: $('exp-lora').value,
     strength: parseFloat($('exp-strength').value),
@@ -1204,6 +1381,12 @@ function collectSessionBody() {
   };
   if (!body.checkpoint) { alert('No hay checkpoint base seleccionado.'); return null; }
   if (!body.lora) { alert('No hay LoRA seleccionado.'); return null; }
+  if (body.mode === 'fuse') {
+    body.lora2 = $('exp-lora2').value;
+    body.strength2 = parseFloat($('exp-strength2').value) || 1.0;
+    if (!body.lora2) { alert('Modo fusión: falta el LoRA B.'); return null; }
+    if (body.lora2 === body.lora) { alert('Modo fusión: elige dos LoRAs distintos.'); return null; }
+  }
   if (!body.prompt.trim()) { alert('Escribe un prompt.'); return null; }
   const s = body.sampling;
   if (s.steps < 1) { alert('KSampler: Steps vacío o inválido.'); return null; }
@@ -1255,8 +1438,9 @@ $('btn-explore-gen').onclick = async () => {
   try {
     let job_id;
     if (exploreSession) {
-      ({ job_id } = await api('/explore/generate',
-                              { method: 'POST', body: { config: collectConfig() } }));
+      const body = { config: collectConfig() };
+      if (labMode() === 'fuse') body.config2 = collectConfig('switch-grid-b');
+      ({ job_id } = await api('/explore/generate', { method: 'POST', body }));
     } else {
       const body = collectSessionBody();
       if (!body) return;
@@ -1383,12 +1567,13 @@ function collectKSampler() {
   };
 }
 function setInputsLocked(locked) {
-  for (const id of ['exp-strength', 'exp-seed', 'exp-from-set', 'exp-prompt',
-                    ...KS_FIELDS.map(k => 'ks-' + k)]) {
+  for (const id of ['exp-strength', 'exp-strength2', 'exp-seed', 'exp-from-set',
+                    'exp-prompt', ...KS_FIELDS.map(k => 'ks-' + k)]) {
     const el = $(id); if (el) el.disabled = locked;
   }
   $('btn-pick-exp-checkpoint').disabled = locked;
   $('btn-pick-exp-lora').disabled = locked;
+  $('btn-pick-exp-lora2').disabled = locked;
   const lb = $('lock-badge'); if (lb) lb.style.display = locked ? '' : 'none';
 }
 
@@ -1416,6 +1601,24 @@ document.addEventListener('mousedown', (e) => {
 });
 
 // ── Init ────────────────────────────────────────────────────────────────────
+
+// Abrir la carpeta de los merges generados (mode-aware: derived checkpoints o
+// LoRAs fusionados). El botón vive dentro del <summary>, así que frenamos la
+// propagación para no colapsar/expandir el fold al pulsarlo.
+$('btn-open-output').onclick = async (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  const btn = $('btn-open-output');
+  btn.disabled = true;
+  try {
+    await api(`/open-output-folder?arch=${encodeURIComponent(currentArch)}` +
+              `&mode=${encodeURIComponent(labMode())}`, { method: 'POST' });
+  } catch (err) {
+    alert('No se pudo abrir la carpeta: ' + err.message);
+  } finally {
+    btn.disabled = false;
+  }
+};
 
 async function init() {
   await loadArchitectures();   // debe ir primero: fija currentArch y el selector

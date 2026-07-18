@@ -175,19 +175,65 @@ def _validate_lora_coverage(hdr: dict, adapter):
             "silencio y el merge abortaría, así que la sesión se rechaza")
 
 
+def _prepare_lora(models_root: Path, lora: str, adapter
+                  ) -> tuple[str, str | None, int]:
+    """Valida un LoRA para la sesión: existencia, conversión alias
+    diffusers→kohya (sdxl), cobertura del nodo selectivo y exponente de
+    dosis. Devuelve (lora_final, lora_source, exponente) — lora_source es
+    el original de la colección si lora_final es una copia alias."""
+    from .merge import _read_st_header
+    lora_source = None
+    lora_path = Path(models_root) / "loras" / lora
+    if not lora_path.is_file():
+        raise ExploreError(f"no existe el LoRA {lora!r}")
+    hdr, _ = _read_st_header(lora_path)
+    if adapter.name == "sdxl":
+        # naming diffusers → conversión al vuelo a kohya canónico; el
+        # resto de la sesión (nodo selectivo Y merge) consume la copia
+        from .lora_alias import LoraAliasError, ensure_alias, needs_alias
+        if needs_alias(hdr):
+            try:
+                lora_source, lora = lora, ensure_alias(
+                    Path(models_root), lora)
+            except LoraAliasError as e:
+                raise ExploreError(
+                    f"LoRA con naming diffusers no convertible: {e}")
+            lora_path = Path(models_root) / "loras" / lora
+            hdr, _ = _read_st_header(lora_path)
+    exponent = adapter.dose_exponent(
+        lora_has_alpha=any(k.endswith(".alpha") for k in hdr))
+    _validate_lora_coverage(hdr, adapter)
+    return lora, lora_source, exponent
+
+
 def _build_session(arch: str, checkpoint: str, model: str, lora: str,
                    strength: float, prompt: str, negative: str, seed: int,
                    sampling: dict | None,
-                   models_root: Path | None) -> dict:
+                   models_root: Path | None,
+                   mode: str = "derive", lora2: str = "",
+                   strength2: float = 1.0) -> dict:
     """Valida las entradas y arma el dict de sesión SIN tocar disco.
     Compartido entre el lock (create_session) y la calibración pre-lock
     (generate_draft): mismas validaciones → misma garantía de que el LoRA
-    aplica de verdad (coverage, exponente de dosis)."""
+    aplica de verdad (coverage, exponente de dosis).
+
+    mode: "derive" (producto: checkpoint derivado, comportamiento clásico)
+    o "fuse" (producto: LoRA fusionado A+B — F2: solo preview; bake en F3).
+    El modo fusión valida un segundo LoRA con las MISMAS garantías."""
     adapter = get_adapter(arch)
+    if mode not in ("derive", "fuse"):
+        raise ExploreError(f"modo desconocido {mode!r} (derive | fuse)")
     if not str(prompt).strip():
         raise ExploreError("prompt vacío")
     if not 0.0 < float(strength) <= 2.0:
         raise ExploreError(f"strength {strength} fuera de rango (0–2]")
+    if mode == "fuse":
+        if not lora2:
+            raise ExploreError("modo fusión: falta el LoRA B")
+        if lora2 == lora:
+            raise ExploreError("modo fusión: elige dos LoRAs distintos")
+        if not 0.0 < float(strength2) <= 2.0:
+            raise ExploreError(f"strength2 {strength2} fuera de rango (0–2]")
     effective_sampling = sampling or vars(adapter.sampling_defaults())
     if int(effective_sampling.get("steps") or 0) < 1:
         raise ExploreError("sampling.steps vacío o inválido (mínimo 1) — "
@@ -197,41 +243,33 @@ def _build_session(arch: str, checkpoint: str, model: str, lora: str,
         raise ExploreError("sampling.width/height vacíos o inválidos "
                             "(mínimo 16) — revisa el KSampler")
 
-    exponent = 2
-    lora_source = None
+    exponent, lora_source = 2, None
+    exponent2, lora2_source = 2, None
     if models_root is not None:
-        from .merge import _read_st_header
-        lora_path = Path(models_root) / "loras" / lora
-        if not lora_path.is_file():
-            raise ExploreError(f"no existe el LoRA {lora!r}")
-        hdr, _ = _read_st_header(lora_path)
-        if adapter.name == "sdxl":
-            # naming diffusers → conversión al vuelo a kohya canónico; el
-            # resto de la sesión (nodo selectivo Y merge) consume la copia
-            from .lora_alias import LoraAliasError, ensure_alias, needs_alias
-            if needs_alias(hdr):
-                try:
-                    lora_source, lora = lora, ensure_alias(
-                        Path(models_root), lora)
-                except LoraAliasError as e:
-                    raise ExploreError(
-                        f"LoRA con naming diffusers no convertible: {e}")
-                lora_path = Path(models_root) / "loras" / lora
-                hdr, _ = _read_st_header(lora_path)
-        exponent = adapter.dose_exponent(
-            lora_has_alpha=any(k.endswith(".alpha") for k in hdr))
-        _validate_lora_coverage(hdr, adapter)
+        lora, lora_source, exponent = _prepare_lora(models_root, lora, adapter)
+        if mode == "fuse":
+            lora2, lora2_source, exponent2 = _prepare_lora(
+                models_root, lora2, adapter)
+            if lora2 == lora:
+                # distintos de origen pero misma copia alias = mismo LoRA
+                raise ExploreError("modo fusión: A y B resuelven al mismo "
+                                   "fichero — elige dos LoRAs distintos")
 
     return {
         "id": uuid.uuid4().hex[:8],
         "created_at": _now(),
         "arch": arch,
+        "mode": mode,
         "checkpoint": checkpoint,
         "model": model,
         "lora": lora,
         "lora_source": lora_source,     # original si `lora` es copia alias
         "strength": float(strength),
         "dose_exponent": exponent,
+        "lora2": lora2 if mode == "fuse" else None,
+        "lora2_source": lora2_source,
+        "strength2": float(strength2),
+        "dose_exponent2": exponent2,
         "prompt": {"text": str(prompt).strip(),
                    "negative": str(negative or "").strip(),
                    "seed": int(seed)},
@@ -244,16 +282,20 @@ def _build_session(arch: str, checkpoint: str, model: str, lora: str,
 def create_session(arch: str, checkpoint: str, model: str, lora: str,
                    strength: float, prompt: str, negative: str, seed: int,
                    sampling: dict | None = None,
-                   models_root: Path | None = None) -> dict:
+                   models_root: Path | None = None,
+                   mode: str = "derive", lora2: str = "",
+                   strength2: float = 1.0) -> dict:
     """Arranca una sesión nueva (borra la anterior, imágenes y draft de
     calibración incluidos).
 
     checkpoint: nombre en el registro (para el merge final).
     model: unet/ckpt_name que entiende ComfyUI. lora: ruta relativa posix.
     models_root: almacén global; si se da, se lee el header del LoRA para
-    fijar el exponente de dosis (3 con alpha, 2 sin él)."""
+    fijar el exponente de dosis (3 con alpha, 2 sin él).
+    mode="fuse": sesión de fusión de LoRAs (lora2 obligatorio)."""
     session = _build_session(arch, checkpoint, model, lora, strength, prompt,
-                             negative, seed, sampling, models_root)
+                             negative, seed, sampling, models_root,
+                             mode=mode, lora2=lora2, strength2=strength2)
     clear_session()
     _save(session)
     return session
@@ -271,14 +313,17 @@ async def generate_draft(comfy, *, arch: str, checkpoint: str, model: str,
                          negative: str = "", seed: int = 0,
                          sampling: dict | None = None,
                          models_root: Path | None = None,
+                         mode: str = "derive", lora2: str = "",
+                         strength2: float = 1.0,
                          on_progress: Callable[[int, int], None] | None = None
                          ) -> dict:
     """Calibración pre-lock: genera con las mismas validaciones y workflow que
-    una sesión (LoRA a dosis 1.0 en todos los bloques) pero SIN sesión y SIN
-    persistir en el historial — la imagen sobrescribe draft.png en cada
+    una sesión (LoRA(s) a dosis 1.0 en todos los bloques) pero SIN sesión y
+    SIN persistir en el historial — la imagen sobrescribe draft.png en cada
     prueba. Sirve para afinar prompt y KSampler antes del lock."""
     session = _build_session(arch, checkpoint, model, lora, strength, prompt,
-                             negative, seed, sampling, models_root)
+                             negative, seed, sampling, models_root,
+                             mode=mode, lora2=lora2, strength2=strength2)
     png, _, secs = await _render(session, full_config(arch),
                                  session["prompt"], comfy, on_progress)
     EXPLORE_DIR.mkdir(parents=True, exist_ok=True)
@@ -350,22 +395,56 @@ def base_image_path() -> Path:
     return BASE_FILE
 
 
+def _chain_second_lora(template: dict, session: dict, config2: dict | None):
+    """Modo fusión: encadena un segundo nodo selectivo ("10b") a la salida
+    del "10" (las 3 archs comparten forma: outputs 0=model, 1=clip) y
+    recablea a él los consumidores del "10". Los deltas de ambos LoRAs suman
+    linealmente → el preview encadenado ≡ el merge weighted_sum (twist s62).
+    config2=None → LoRA B al 100% en todos los bloques (F2; el doble set de
+    chips con máscara propia para B llega en F4)."""
+    import copy
+    arch = session["arch"]
+    node = copy.deepcopy(template["10"])
+    node["inputs"]["model"] = ["10", 0]
+    node["inputs"]["clip"] = ["10", 1]
+    node["inputs"]["lora_name"] = "{{lora2}}"
+    node["inputs"]["strength"] = "{{lora2_strength}}"
+    cfg2 = normalize_config(
+        config2 if config2 is not None else full_config(arch), arch)
+    node["inputs"].update(
+        node_inputs(cfg2, arch, session.get("dose_exponent2", 2)))
+    for nid, n in template.items():
+        if nid == "10" or not isinstance(n, dict):
+            continue
+        for k, v in n.get("inputs", {}).items():
+            if isinstance(v, list) and v and v[0] == "10":
+                n["inputs"][k] = ["10b", v[1]]
+    template["10b"] = node
+
+
 async def _render(session: dict, config: dict, prompt: dict,
                   comfy,
-                  on_progress: Callable[[int, int], None] | None = None
+                  on_progress: Callable[[int, int], None] | None = None,
+                  config2: dict | None = None
                   ) -> tuple[bytes, dict, float]:
     """Corre el workflow selectivo (nodo "10") con la config de bloques dada y
     un prompt dado. Devuelve (png, config_normalizada, segundos). No toca la
     sesión en disco: sirve tanto a la exploración (prompt de sesión) como a la
-    batería (config fija × N prompts)."""
+    batería (config fija × N prompts).
+
+    En modo fusión encadena el LoRA B como segundo nodo selectivo; config2
+    es su config de bloques (None = todo al 100%)."""
     arch = session["arch"]
     adapter = get_adapter(arch)
     config = normalize_config(config, arch)
+    fuse = session.get("mode", "derive") == "fuse" and session.get("lora2")
 
     template = load_workflow(adapter.workflow_name("txt2img_lora_selective"),
                              arch)
     exponent = session.get("dose_exponent", 2)
     template["10"]["inputs"].update(node_inputs(config, arch, exponent))
+    if fuse:
+        _chain_second_lora(template, session, config2)
     from .model_config import model_files, loader_name
     files = model_files(arch)
     params = {
@@ -377,6 +456,9 @@ async def _render(session: dict, config: dict, prompt: dict,
         "seed": int(prompt["seed"]),
         **session["sampling"],
     }
+    if fuse:
+        params["lora2"] = session["lora2"].replace("/", os.sep)
+        params["lora2_strength"] = session["strength2"]
     # layouts por piezas cargan TE/VAE aparte; el checkpoint completo no
     for k in ("text_encoder", "vae"):
         if files.get(k):
@@ -402,9 +484,13 @@ def _append_generation(gen: dict, png: bytes) -> dict:
 
 
 async def generate(comfy, config: dict,
-                   on_progress: Callable[[int, int], None] | None = None) -> dict:
+                   on_progress: Callable[[int, int], None] | None = None,
+                   config2: dict | None = None) -> dict:
     """Genera una variante con la config dada (prompt fijo de la sesión) y la
     añade al historial. La primera generación queda como referencia.
+
+    En modo fusión `config2` es la máscara de bloques del LoRA B (F4). None →
+    B al 100% en todos los bloques (comportamiento F2).
 
     Además, si todavía no existe base.png (checkpoint puro, sin LoRA — misma
     sesión: prompt/sampling/seed), la genera de paso una única vez para que
@@ -425,7 +511,7 @@ async def generate(comfy, config: dict,
                 on_progress(step, total)
         base_png, _, _ = await _render(
             session, {"blocks": {}, "other": 0.0}, session["prompt"],
-            comfy, base_progress)
+            comfy, base_progress, config2={"blocks": {}, "other": 0.0})
         EXPLORE_DIR.mkdir(parents=True, exist_ok=True)
         BASE_FILE.write_bytes(base_png)
 
@@ -433,10 +519,15 @@ async def generate(comfy, config: dict,
         if on_progress:
             on_progress((steps if need_base else 0) + step, total)
     png, config, secs = await _render(session, config, session["prompt"],
-                                      comfy, main_progress)
+                                      comfy, main_progress, config2=config2)
+    summary = config_summary(config, arch)
     gen = {"id": uuid.uuid4().hex[:8], "config": config,
-           "summary": config_summary(config, arch),
-           "seconds": secs, "created_at": _now()}
+           "summary": summary, "seconds": secs, "created_at": _now()}
+    if session.get("mode", "derive") == "fuse" and session.get("lora2"):
+        cfg2 = (normalize_config(config2, arch) if config2 is not None
+                else full_config(arch))
+        gen["config2"] = cfg2
+        gen["summary"] = f"A {summary} · B {config_summary(cfg2, arch)}"
     _append_generation(gen, png)
     return gen
 

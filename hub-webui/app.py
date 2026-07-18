@@ -229,6 +229,25 @@ async def stop_app(app_id: str):
     return {"ok": ok}
 
 
+@api.post("/api/apps/{app_id}/launch-backend")
+async def launch_backend(app_id: str, owner: str = "hub"):
+    """Arranca una app como backend headless (sin abrir navegador), a nombre
+    del módulo 'owner'. Reutilizable por cualquier página del hub."""
+    return {"ok": bridge.launch_backend(app_id, owner)}
+
+
+@api.post("/api/apps/{app_id}/stop-backend")
+async def stop_backend(app_id: str, owner: str = "hub"):
+    return {"ok": bridge.stop_backend(app_id, owner)}
+
+
+@api.post("/api/apps/{app_id}/release-backend")
+async def release_backend(app_id: str, owner: str = "hub"):
+    """La página propietaria se cerró/recargó: cierra el backend con gracia
+    si lo arrancó ella. Pensado para sendBeacon en beforeunload."""
+    return {"ok": bridge.release_backend(app_id, owner)}
+
+
 @api.post("/api/apps/{app_id}/install")
 async def install_app(app_id: str):
     ok = bridge.install(app_id)

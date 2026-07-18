@@ -101,6 +101,15 @@ class HubBridge:
         self._state = _state
         self._on_state_changed_handlers: list = []
         self._on_log_handlers: list = []
+        # ── Leases de backend headless ──────────────────────────────────
+        # Un módulo (p. ej. Forge Fusion) puede arrancar una app como backend
+        # sin UI y adueñarse de su ciclo de vida: al soltar la página, el
+        # backend se cierra — pero solo si NOSOTROS lo arrancamos, nunca una
+        # instancia que el usuario tenía abierta a mano desde el dashboard.
+        self._backend_owners: dict[str, str] = {}      # app_id -> owner
+        self._backend_autostarted: set[str] = set()    # apps que arrancamos
+        self._backend_release_timers: dict[str, threading.Timer] = {}
+        self._backend_lock = threading.Lock()
         self._run_startup_sync()
 
     # ── Startup sync ────────────────────────────────────────────────────
@@ -556,6 +565,82 @@ class HubBridge:
         self._emit_state(app_id)
         threading.Thread(target=self._stop_thread, args=(app_id, proc), daemon=True).start()
         return True
+
+    # ── Backend headless (patrón reutilizable por cualquier módulo) ──────
+
+    def _effective_port(self, app_id: str):
+        return (self._state.get_port_override(app_id)
+                or self._state.registry_apps.get(app_id, {}).get("default_port"))
+
+    def is_backend_up(self, app_id: str) -> bool:
+        """True si el backend responde en su puerto (gestionado o externo)."""
+        port = self._effective_port(app_id)
+        return bool(port) and _is_port_in_use(int(port))
+
+    def launch_backend(self, app_id: str, owner: str) -> bool:
+        """Arranca app_id como backend headless (sin abrir navegador) a nombre
+        de 'owner'. Si ya está arriba — a mano desde el dashboard o por otro
+        módulo — no la re-arranca ni la marca como auto-arrancada; solo registra
+        al propietario. Cancela cualquier cierre pendiente (p. ej. tras un F5)."""
+        with self._backend_lock:
+            self._cancel_backend_release(app_id)
+            self._backend_owners[app_id] = owner
+            already = (app_id in self._state.running_apps
+                       or self.is_backend_up(app_id))
+            if already:
+                return True
+            self._backend_autostarted.add(app_id)
+        return self.launch(app_id, open_browser=False)
+
+    def stop_backend(self, app_id: str, owner: str = None) -> bool:
+        """Cierre explícito del backend (botón del usuario). Olvida el lease.
+        Mata tanto la instancia gestionada por el hub como una externa atada
+        al puerto."""
+        with self._backend_lock:
+            self._cancel_backend_release(app_id)
+            self._backend_owners.pop(app_id, None)
+            self._backend_autostarted.discard(app_id)
+        if app_id in self._state.running_apps:
+            return self.stop(app_id)
+        port = self._effective_port(app_id)
+        if port and _is_port_in_use(int(port)):
+            _kill_processes_on_port(int(port))
+            return True
+        return False
+
+    def release_backend(self, app_id: str, owner: str,
+                        grace: float = 8.0) -> bool:
+        """La página 'owner' se soltó (cierre o recarga). Programa el cierre
+        del backend con periodo de gracia: SOLO si nosotros lo auto-arrancamos
+        para ese owner. La gracia evita matar+reiniciar en cada F5 — si la
+        página recarga, su launch_backend cancela el cierre pendiente."""
+        with self._backend_lock:
+            if self._backend_owners.get(app_id) != owner:
+                return False
+            if app_id not in self._backend_autostarted:
+                return False
+            self._cancel_backend_release(app_id)
+
+            def _fire():
+                with self._backend_lock:
+                    self._backend_release_timers.pop(app_id, None)
+                    if app_id not in self._backend_autostarted:
+                        return
+                    self._backend_autostarted.discard(app_id)
+                    self._backend_owners.pop(app_id, None)
+                self.stop(app_id)
+
+            t = threading.Timer(grace, _fire)
+            t.daemon = True
+            self._backend_release_timers[app_id] = t
+            t.start()
+        return True
+
+    def _cancel_backend_release(self, app_id: str):
+        """Cancela un cierre de backend pendiente. Asume _backend_lock tomado."""
+        t = self._backend_release_timers.pop(app_id, None)
+        if t is not None:
+            t.cancel()
 
     def install(self, app_id: str) -> bool:
         if app_id in self._state.busy_apps:
