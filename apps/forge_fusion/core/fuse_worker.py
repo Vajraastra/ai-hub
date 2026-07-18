@@ -21,6 +21,11 @@ Matemática (exacta, sin pérdida — twist s58/s62):
     (LoCon: down (r,in,kh,kw), up (out,r,1,1)) concatenan por el eje de rango
     igual que las lineales — flatten(1) de la concat = concat de los flatten.
 
+Naming de salida: los módulos se CANONICALIZAN al alias kohya (lora_unet_…)
+cuando el key map de la arquitectura lo conoce — ver canonical(). Sin esto,
+un LoRA PEFT (anima/zimage) produciría claves peladas que ComfyUI no carga,
+y mezclar sabores A/B rompería la concatenación por módulo.
+
 Compresión SVD (job["svd_energy"] ∈ (0,1]; null = concat puro exacto): tras
 concatenar, cada módulo se recomprime al rango MÍNIMO que conserva esa fracción
 de energía Frobenius² (Σσ²). Sin materializar el delta denso (out×in): SVD
@@ -110,6 +115,22 @@ def main(job_path: str):
     def strip_container(key: str) -> str:
         return key[len(cprefix):] if cprefix and key.startswith(cprefix) else key
 
+    def canonical(module: str) -> str:
+        """Nombre kohya canónico del módulo, si la arquitectura lo conoce.
+        Los LoRAs circulan en dos sabores de naming (PEFT `blocks.0.…` tras
+        pelar el contenedor, kohya `lora_unet_blocks_0_…`); collect_pairs
+        conserva el sabor del fichero. Sin canonicalizar: (1) el fichero
+        fusionado heredaría claves PEFT PELADAS que ComfyUI no reconoce
+        (fallo mudo: el LoRA no aplicaría a nada), y (2) un A kohya + B PEFT
+        del mismo módulo no concatenarían (nombres distintos = módulos
+        distintos). El alias kohya sí lo carga ComfyUI en todas las archs.
+        Si el key map no conoce el alias (zimage: solo diffusers) se conserva
+        el nombre original — mismo comportamiento de siempre."""
+        if module.startswith("lora_unet_"):
+            return module
+        alias = "lora_unet_" + module.replace(".", "_")
+        return alias if alias in key_map else module
+
     def dose_of(module: str, block_dose: dict | None) -> float | None:
         """Dosis del bloque al que pertenece el módulo LoRA (None = filtrado).
         Sin filtro → 1.0. El bloque se resuelve por el target del key_map,
@@ -131,10 +152,17 @@ def main(job_path: str):
         with safe_open(path, framework="pt", device="cpu") as lf:
             keys = list(lf.keys())
         try:
-            pairs, skipped_policy = collect_pairs(
+            raw_pairs, skipped_policy = collect_pairs(
                 keys, adapter.ignored_lora_prefixes)
         except LoraFormatError as e:
             fail(str(e))
+        pairs = {}
+        for module, p in raw_pairs.items():
+            c = canonical(module)
+            if c in pairs:
+                fail(f"{Path(path).name}: el módulo {c!r} aparece en los dos "
+                     "sabores de naming (PEFT y kohya) dentro del mismo LoRA")
+            pairs[c] = p
         block_dose = (None if blocks is None
                       else {b: float(d) for b, d in blocks.items()})
         doses, unmapped = {}, []

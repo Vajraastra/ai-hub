@@ -121,7 +121,13 @@ class MergeOrchestrator:
         también usa blocks.N pero sus proyecciones son q/k/v sin _proj)."""
         if arch == "zimage":
             for k, v in hdr.items():
-                if k.startswith("diffusion_model.layers.") and ".lora_A." in k:
+                if ((k.startswith("diffusion_model.layers.") and ".lora_A." in k)
+                    or (k.startswith("layers.")            # fusionado (diffusers pelado)
+                        and ".attention.to_q." in k
+                        and k.endswith(".lora_down.weight"))
+                    or (k.startswith("lora_unet_layers_")  # fusionado (kohya nativo)
+                        and "attention_qkv" in k
+                        and k.endswith(".lora_down.weight"))):
                     return v.get("shape", [None, None])[1] in (3840, 256)
         elif arch == "sdxl":
             for k, v in hdr.items():

@@ -82,15 +82,29 @@ class ZImageAdapter(ArchAdapter):
         return ["cap_embedder", "cap_pad_token"]
 
     def lora_key_map(self) -> dict[str, tuple[str, tuple[int, int, int] | None]]:
-        # Réplica exacta (solo .weight) de comfy.utils.z_image_to_diffusers:
-        # los LoRAs de Z-Image (ai-toolkit y cía.) usan nomenclatura diffusers
-        # con q/k/v separados; el checkpoint fusiona qkv [3*H, H] → cada
-        # proyección aterriza en su franja de filas (dim 0).
+        # Dos familias de naming en los LoRAs Z-Image reales (censo s78):
+        #  - diffusers (ai-toolkit y cía., 21/22 en disco): q/k/v SEPARADOS;
+        #    el checkpoint fusiona qkv [3*H, H] → cada proyección aterriza en
+        #    su franja de filas (dim 0). Réplica exacta (solo .weight) de
+        #    comfy.utils.z_image_to_diffusers. Este naming pelado es el
+        #    canónico: ComfyUI lo carga tal cual (rama Lumina2 de lora.py).
+        #  - nativa del checkpoint (zturbo_bimbo_alpha): qkv FUSIONADO y
+        #    attention.out. El pelado nativo NO lo carga ComfyUI, pero su
+        #    alias kohya (lora_unet_…, generado del state dict en el bloque
+        #    genérico de model_lora_keys_unet) SÍ → se registran ambos: el
+        #    pelado para que derive/dosis lo resuelvan y el kohya para que
+        #    canonical() del fuse_worker emita claves cargables.
+        # OJO: NO añadir alias kohya de los nombres diffusers — ComfyUI no
+        # los genera para Lumina2 y serían claves muertas en el fusionado.
         H = 3840  # hidden size del S3-DiT 6B
         m: dict[str, tuple[str, tuple[int, int, int] | None]] = {}
         prefixes = ([f"layers.{i}" for i in range(_N_LAYERS)]
                     + [f"context_refiner.{i}" for i in range(2)]
                     + [f"noise_refiner.{i}" for i in range(2)])
+
+        def add_native(path: str, target: tuple):
+            m[path] = target                                   # pelado
+            m["lora_unet_" + path.replace(".", "_")] = target  # kohya
         for p in prefixes:
             qkv = f"{p}.attention.qkv.weight"
             m[f"{p}.attention.to_q"] = (qkv, (0, 0, H))
@@ -100,6 +114,8 @@ class ZImageAdapter(ArchAdapter):
             for w in ("w1", "w2", "w3"):
                 m[f"{p}.feed_forward.{w}"] = (f"{p}.feed_forward.{w}.weight", None)
             m[f"{p}.adaLN_modulation.0"] = (f"{p}.adaLN_modulation.0.weight", None)
+            add_native(f"{p}.attention.qkv", (qkv, None))
+            add_native(f"{p}.attention.out", (f"{p}.attention.out.weight", None))
         return m
 
     # ── Exploración (ZImageSelectiveLoRALoader) ───────────────────────────
