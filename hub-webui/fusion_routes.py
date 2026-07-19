@@ -1009,6 +1009,7 @@ class BatterySaveBody(BaseModel):
 class BatteryRunBody(BaseModel):
     battery_id: str
     config: dict                  # config de bloques a estresar (fija)
+    config2: dict | None = None   # grid B de la sesión (modo fusión); None → 100%
 
 
 @fusion_router.get("/batteries")
@@ -1041,11 +1042,13 @@ async def battery_delete(bid: str):
     return {"deleted": bid}
 
 
-async def _battery_run_job(job: dict, battery_id: str, config: dict):
+async def _battery_run_job(job: dict, battery_id: str, config: dict,
+                           config2: dict | None):
     def on_progress(p: dict):
         job.update(p)
     try:
         result = await battery.run_battery(_comfy, battery_id, config,
+                                           config2=config2,
                                            on_progress=on_progress)
         job["status"] = "done"
         job["result"] = result
@@ -1068,6 +1071,8 @@ async def explore_battery(body: BatteryRunBody):
     try:
         bat = battery.get_battery(body.battery_id)
         config = explore.normalize_config(body.config, session["arch"])
+        config2 = (explore.normalize_config(body.config2, session["arch"])
+                   if body.config2 is not None else None)
     except BatteryError as e:
         raise HTTPException(404, str(e))
     except ExploreError as e:
@@ -1079,5 +1084,5 @@ async def explore_battery(body: BatteryRunBody):
            "step": 0, "steps_total": session["sampling"]["steps"],
            "result": None, "error": None}
     _jobs[job_id] = job
-    _spawn(_battery_run_job(job, body.battery_id, config), job)
+    _spawn(_battery_run_job(job, body.battery_id, config, config2), job)
     return {"job_id": job_id}

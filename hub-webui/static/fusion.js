@@ -382,10 +382,11 @@ $('btn-battery-new').onclick = async () => {
 $('btn-battery-run').onclick = async () => {
   if (!exploreSession) return alert('Inicia una sesión de exploración primero (define base/LoRA/prompt y config).');
   if (!currentBattery) return alert('Elige una batería.');
-  if (!confirm(`Correr la batería "${currentBattery.label}" (${currentBattery.prompts.length} prompts) contra la config actual de bloques?\nCada prompt cae al historial como un trabajo.`)) return;
+  if (!confirm(`Correr la batería "${currentBattery.label}" (${currentBattery.prompts.length} prompts) contra la config actual de bloques${labMode() === 'fuse' ? ' (grids A y B)' : ''}?\nCada prompt cae al historial como un trabajo.`)) return;
   try {
-    const { job_id } = await api('/explore/battery', { method: 'POST',
-      body: { battery_id: currentBattery.id, config: collectConfig() } });
+    const body = { battery_id: currentBattery.id, config: collectConfig() };
+    if (labMode() === 'fuse') body.config2 = collectConfig('switch-grid-b');
+    const { job_id } = await api('/explore/battery', { method: 'POST', body });
     $('btn-battery-run').disabled = true;
     $('battery-progress').style.display = '';
     const timer = setInterval(async () => {

@@ -305,11 +305,15 @@ def delete_battery(bid: str):
 # ── Ejecución (config fija × N prompts) ─────────────────────────────────────
 
 async def run_battery(comfy, battery_id: str, config: dict,
+                      config2: dict | None = None,
                       on_progress: Callable[[dict], None] | None = None
                       ) -> dict:
     """Corre todos los prompts de la batería contra la MISMA config de bloques,
     dentro de la sesión de exploración activa. Secuencial (la 5060 Ti no da
     para más). Cada ítem cae al historial marcado como trabajo de batería.
+
+    En modo fusión `config2` es la máscara de bloques del LoRA B (el grid B de
+    la sesión); None → B al 100% (comportamiento pre-F4).
 
     on_progress recibe {item_index, total, prompt_id, step, steps_total}.
     Devuelve {battery, label, items:[gen_id...]}.
@@ -332,6 +336,6 @@ async def run_battery(comfy, battery_id: str, config: dict,
         _cb(0, session["sampling"].get("steps", 0))
         gen = await explore.generate_battery_item(
             comfy, config, p, battery=bat["id"],
-            battery_label=bat["label"], on_progress=_cb)
+            battery_label=bat["label"], on_progress=_cb, config2=config2)
         items.append(gen["id"])
     return {"battery": bat["id"], "label": bat["label"], "items": items}

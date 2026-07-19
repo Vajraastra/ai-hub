@@ -541,17 +541,21 @@ async def generate(comfy, config: dict,
 
 async def generate_battery_item(comfy, config: dict, prompt: dict,
                                 battery: str, battery_label: str = "",
-                                on_progress: Callable[[int, int], None] | None = None
+                                on_progress: Callable[[int, int], None] | None = None,
+                                config2: dict | None = None
                                 ) -> dict:
     """Genera un ítem de batería: MISMA config de bloques, prompt de la batería.
     El trabajo queda marcado (`battery`, `prompt_id`, `prompt_text`) para que el
-    historial lo muestre por prompt y no por config."""
+    historial lo muestre por prompt y no por config.
+
+    En modo fusión `config2` es la máscara de bloques del LoRA B; None → B al
+    100% en todos los bloques."""
     session = get_session()
     if not session:
         raise ExploreError("no hay sesión de exploración activa")
     arch = session["arch"]
     png, config, secs = await _render(session, config, prompt,
-                                      comfy, on_progress)
+                                      comfy, on_progress, config2=config2)
     label = prompt.get("id") or prompt["text"][:32]
     gen = {"id": uuid.uuid4().hex[:8], "config": config,
            "summary": f"🔋 {label}",
@@ -559,5 +563,8 @@ async def generate_battery_item(comfy, config: dict, prompt: dict,
            "prompt_id": prompt.get("id", ""),
            "prompt_text": prompt["text"], "seed": int(prompt["seed"]),
            "seconds": secs, "created_at": _now()}
+    if session.get("mode", "derive") == "fuse" and session.get("lora2"):
+        gen["config2"] = (normalize_config(config2, arch)
+                          if config2 is not None else full_config(arch))
     _append_generation(gen, png)
     return gen
