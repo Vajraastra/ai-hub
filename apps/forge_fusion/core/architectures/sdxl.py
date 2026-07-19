@@ -233,7 +233,7 @@ class SdxlAdapter(ArchAdapter):
         # y conv. Los grupos conv expanden a sus prefijos reales.
         out: dict[str, float] = {}
         for b, d in config["blocks"].items():
-            if d <= 0:
+            if d == 0:      # dosis firmada (s82): las negativas SÍ mergean
                 continue
             for prefix in _CONV_GROUPS.get(b, (f"{b}.1",)):
                 out[prefix] = d

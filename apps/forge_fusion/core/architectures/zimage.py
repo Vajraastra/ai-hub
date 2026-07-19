@@ -137,11 +137,12 @@ class ZImageAdapter(ArchAdapter):
         return out
 
     def config_to_merge_blocks(self, config: dict) -> dict[str, float]:
-        blocks = {b: d for b, d in config["blocks"].items() if d > 0}
+        # dosis firmada (s82): las negativas SÍ mergean (restan)
+        blocks = {b: d for b, d in config["blocks"].items() if d != 0}
         # "other" del nodo cubre las claves fuera de layers.*: en los LoRAs
         # de Z-Image eso son los refiners (los embedders no se entrenan)
         other = config.get("other", 0.0)
-        if other > 0:
+        if other != 0:
             blocks["noise_refiner"] = other
             blocks["context_refiner"] = other
         return dict(sorted(blocks.items()))

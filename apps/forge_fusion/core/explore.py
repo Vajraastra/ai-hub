@@ -23,6 +23,10 @@ checkpoint mergeado y/o en el label del run de confirmación.
 Config de bloques (genérica, ids del adaptador):
   {"blocks": {"layers.0": dosis, ...}, "other": dosis}
   dosis 0 (o ausente) = bloque apagado; 1.0 = efecto completo; LINEAL.
+  Dosis NEGATIVA (s82, signo por bloque) = RESTAR ese bloque: el preview lo
+  aplica en un nodo selectivo extra con strength global negado (lineal sobre
+  el delta) y |dosis| por bloque; el merge multiplica strength × dosis tal
+  cual (lineal) — misma matemática, preview ≡ fichero.
 
 Dosis lineal vs nodo: los nodos selectivos de Realtime-Lora multiplican
 TODOS los tensores del bloque por su strength, así que el efecto sobre el
@@ -77,14 +81,30 @@ def normalize_config(config: dict, arch: str) -> dict:
     blocks = {}
     for b in block_ids:
         d = float(raw.get(b, 0.0))
-        if d < 0:
-            raise ExploreError(f"dosis negativa en {b} (no soportado: la "
-                               "conversión a strength del nodo la impide)")
+        if abs(d) > 2.0:
+            raise ExploreError(f"dosis {d} en {b} fuera de rango [−2, 2]")
         blocks[b] = round(d, 4)
     other = float(config.get("other", 0.0)) if has_other else 0.0
-    if other < 0:
-        raise ExploreError("dosis negativa en 'other' (no soportado)")
+    if abs(other) > 2.0:
+        raise ExploreError(f"dosis {other} en 'other' fuera de rango [−2, 2]")
     return {"blocks": blocks, "other": round(other, 4)}
+
+
+def split_signed(config: dict) -> tuple[dict, dict]:
+    """Config normalizada (dosis firmadas) → (positiva, negada_en_abs).
+    Cada mitad es una config con dosis ≥ 0 apta para el nodo selectivo: la
+    positiva va al nodo normal y la negada (en |dosis|) a un nodo clonado con
+    el strength global de la sesión NEGADO (signo por bloque, s82)."""
+    pos = {"blocks": {b: d for b, d in config["blocks"].items() if d > 0},
+           "other": config["other"] if config["other"] > 0 else 0.0}
+    neg = {"blocks": {b: -d for b, d in config["blocks"].items() if d < 0},
+           "other": -config["other"] if config["other"] < 0 else 0.0}
+    return pos, neg
+
+
+def has_negative(config: dict) -> bool:
+    return (config.get("other", 0.0) < 0
+            or any(d < 0 for d in config["blocks"].values()))
 
 
 def full_config(arch: str) -> dict:
@@ -108,18 +128,23 @@ def config_to_merge_blocks(config: dict, arch: str) -> dict[str, float]:
 
 
 def config_summary(config: dict, arch: str) -> str:
-    """Resumen corto y legible ("28/30 ON · OFF: 7,9 · dosis: 20=0.5")."""
+    """Resumen corto y legible
+    ("27/30 ON · OFF: 7,9 · dosis: 20=0.5 · neg: 4=-1.0")."""
     switches = get_adapter(arch).explore_switches()
     labels = {s["id"]: s["label"] for s in switches}
     blocks = config["blocks"]
     off = [labels[b].split(" ")[0] for b in blocks if blocks[b] == 0]
     dosed = [f"{labels[b].split(' ')[0]}={d}"
              for b, d in blocks.items() if 0 < d != 1.0]
+    neg = [f"{labels[b].split(' ')[0]}={d}"
+           for b, d in blocks.items() if d < 0]
     parts = [f"{len(blocks) - len(off)}/{len(blocks)} ON"]
     if off:
         parts.append("OFF: " + ",".join(off))
     if dosed:
         parts.append("dosis: " + ",".join(dosed))
+    if neg:
+        parts.append("neg: " + ",".join(neg))
     if "other" in labels and config.get("other", 0.0) != 1.0:
         parts.append(f"other={config['other']}")
     return " · ".join(parts)
@@ -402,31 +427,65 @@ def base_image_path() -> Path:
     return BASE_FILE
 
 
-def _chain_second_lora(template: dict, session: dict, config2: dict | None):
-    """Modo fusión: encadena un segundo nodo selectivo ("10b") a la salida
-    del "10" (las 3 archs comparten forma: outputs 0=model, 1=clip) y
-    recablea a él los consumidores del "10". Los deltas de ambos LoRAs suman
-    linealmente → el preview encadenado ≡ el merge weighted_sum (twist s62).
-    config2=None → LoRA B al 100% en todos los bloques (F2; el doble set de
-    chips con máscara propia para B llega en F4)."""
+def _chain_selective(template: dict, prev_id: str, new_id: str,
+                     lora_name, strength, cfg: dict, arch: str,
+                     exponent: int) -> str:
+    """Clona el nodo selectivo "10" como `new_id`, lo encadena a la salida de
+    `prev_id` (las 3 archs comparten forma: outputs 0=model, 1=clip) y le
+    aplica lora/strength/config dados. NO recablea consumidores (eso lo hace
+    _build_selective_chain al final, cuando conoce el último eslabón).
+    Devuelve new_id. Los deltas de todos los nodos suman linealmente →
+    el preview encadenado ≡ el merge weighted_sum (twist s62)."""
     import copy
-    arch = session["arch"]
     node = copy.deepcopy(template["10"])
-    node["inputs"]["model"] = ["10", 0]
-    node["inputs"]["clip"] = ["10", 1]
-    node["inputs"]["lora_name"] = "{{lora2}}"
-    node["inputs"]["strength"] = "{{lora2_strength}}"
-    cfg2 = normalize_config(
-        config2 if config2 is not None else full_config(arch), arch)
-    node["inputs"].update(
-        node_inputs(cfg2, arch, session.get("dose_exponent2", 2)))
-    for nid, n in template.items():
-        if nid == "10" or not isinstance(n, dict):
-            continue
-        for k, v in n.get("inputs", {}).items():
-            if isinstance(v, list) and v and v[0] == "10":
-                n["inputs"][k] = ["10b", v[1]]
-    template["10b"] = node
+    node["inputs"]["model"] = [prev_id, 0]
+    node["inputs"]["clip"] = [prev_id, 1]
+    node["inputs"]["lora_name"] = lora_name
+    node["inputs"]["strength"] = strength
+    node["inputs"].update(node_inputs(cfg, arch, exponent))
+    template[new_id] = node
+    return new_id
+
+
+def _build_selective_chain(template: dict, session: dict, config: dict,
+                           config2: dict | None):
+    """Arma la cadena de nodos selectivos según la config (dosis firmadas):
+
+        "10"  — LoRA A, bloques positivos (strength de la sesión)
+        "10n" — LoRA A, bloques NEGADOS (|dosis|, strength negado) [si hay]
+        "10b" — LoRA B, bloques positivos (modo fusión)            [si fuse]
+        "10bn"— LoRA B, bloques negados                            [si hay]
+
+    y recablea los consumidores originales del "10" al último eslabón.
+    config/config2 llegan normalizadas; config2=None → B al 100%."""
+    arch = session["arch"]
+    exp_a = session.get("dose_exponent", 2)
+    fuse = session.get("mode", "derive") == "fuse" and session.get("lora2")
+
+    pos_a, neg_a = split_signed(config)
+    template["10"]["inputs"].update(node_inputs(pos_a, arch, exp_a))
+    consumers = [(n, k, v[1]) for nid, n in template.items()
+                 if nid != "10" and isinstance(n, dict)
+                 for k, v in n.get("inputs", {}).items()
+                 if isinstance(v, list) and v and v[0] == "10"]
+    tail = "10"
+    if neg_a["blocks"] or neg_a["other"]:
+        tail = _chain_selective(template, tail, "10n", "{{lora}}",
+                                -float(session["strength"]), neg_a, arch, exp_a)
+    if fuse:
+        exp_b = session.get("dose_exponent2", 2)
+        cfg2 = normalize_config(
+            config2 if config2 is not None else full_config(arch), arch)
+        pos_b, neg_b = split_signed(cfg2)
+        tail = _chain_selective(template, tail, "10b", "{{lora2}}",
+                                "{{lora2_strength}}", pos_b, arch, exp_b)
+        if neg_b["blocks"] or neg_b["other"]:
+            tail = _chain_selective(template, tail, "10bn", "{{lora2}}",
+                                    -float(session["strength2"]), neg_b,
+                                    arch, exp_b)
+    if tail != "10":
+        for n, k, out in consumers:
+            n["inputs"][k] = [tail, out]
 
 
 async def _render(session: dict, config: dict, prompt: dict,
@@ -448,10 +507,7 @@ async def _render(session: dict, config: dict, prompt: dict,
 
     template = load_workflow(adapter.workflow_name("txt2img_lora_selective"),
                              arch)
-    exponent = session.get("dose_exponent", 2)
-    template["10"]["inputs"].update(node_inputs(config, arch, exponent))
-    if fuse:
-        _chain_second_lora(template, session, config2)
+    _build_selective_chain(template, session, config, config2)
     from .model_config import model_files, loader_name
     files = model_files(arch)
     params = {

@@ -174,11 +174,12 @@ class AnimaAdapter(ArchAdapter):
         return out
 
     def config_to_merge_blocks(self, config: dict) -> dict[str, float]:
-        blocks = {b: d for b, d in config["blocks"].items() if d > 0}
+        # dosis firmada (s82): las negativas SÍ mergean (restan)
+        blocks = {b: d for b, d in config["blocks"].items() if d != 0}
         # "other" del nodo cubre las claves fuera de blocks/llm_adapter/TE:
         # final_layer y embedders (solo los entrenan LoRAs raros)
         other = config.get("other", 0.0)
-        if other > 0:
+        if other != 0:
             for b in ("final_layer", "t_embedder", "x_embedder"):
                 blocks[b] = other
         return dict(sorted(blocks.items()))

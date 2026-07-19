@@ -1048,7 +1048,10 @@ const chipOn = (chip) => !chip.classList.contains('off');
 
 function paintChip(chip) {
   const d = parseFloat(chip.dataset.dose) || 0;
-  chip.querySelector('.chip-val').textContent = chipOn(chip) ? d.toFixed(2) : 'off';
+  // s82: dosis con signo — "−" delante y valor teñido (clase .neg)
+  chip.querySelector('.chip-val').textContent = chipOn(chip)
+    ? (d < 0 ? '−' + Math.abs(d).toFixed(2) : d.toFixed(2)) : 'off';
+  chip.classList.toggle('neg', chipOn(chip) && d < 0);
 }
 
 function setCell(chip, on) {
@@ -1112,8 +1115,8 @@ function applyConfig(cfg, gridId = 'switch-grid') {
   const blocks = cfg.blocks || {};
   for (const chip of $(gridId).children) {
     const d = chip.dataset.key === 'other' ? (cfg.other || 0) : (blocks[chip.dataset.key] ?? 0);
-    chip.dataset.dose = d > 0 ? String(d) : '1';
-    chip.classList.toggle('off', !(d > 0));
+    chip.dataset.dose = d !== 0 ? String(d) : '1';   // s82: dosis firmada
+    chip.classList.toggle('off', d === 0);
     paintChip(chip);
   }
 }
@@ -1193,11 +1196,13 @@ function openChipPop(chip) {
   document.querySelectorAll('.chip.editing').forEach(c => c.classList.remove('editing'));
   chip.classList.add('editing');
   const d = parseFloat(chip.dataset.dose) || 1;
+  const mag = Math.abs(d);                    // s82: el slider maneja |dosis|
   $('pop-title').textContent = chip.querySelector('.chip-lbl').textContent;
   $('pop-on').checked = chipOn(chip);
-  $('pop-range').value = d;
-  $('pop-num').value = d;
-  $('pop-val').textContent = d.toFixed(2);
+  $('pop-neg').checked = d < 0;
+  $('pop-range').value = mag;
+  $('pop-num').value = mag;
+  $('pop-val').textContent = (d < 0 ? '−' : '') + mag.toFixed(2);
   const pop = $('chip-pop');
   pop.classList.add('open');
   const r = chip.getBoundingClientRect();
@@ -1216,9 +1221,10 @@ function closeChipPop() {
 function popApply(dose, on) {
   if (!popChip) return;
   dose = Math.min(2, Math.max(0, dose || 0));
-  popChip.dataset.dose = String(dose);
+  const neg = $('pop-neg').checked;           // s82: signo por bloque
+  popChip.dataset.dose = String(neg ? -dose : dose);
   popChip.classList.toggle('off', !on);
-  $('pop-val').textContent = dose.toFixed(2);
+  $('pop-val').textContent = (neg ? '−' : '') + dose.toFixed(2);
   paintChip(popChip);
 }
 
@@ -1708,6 +1714,10 @@ $('pop-num').oninput = () => {
   $('pop-range').value = v; $('pop-on').checked = true; popApply(v, true);
 };
 $('pop-on').onchange = () => popApply(parseFloat($('pop-num').value) || 0, $('pop-on').checked);
+$('pop-neg').onchange = () => {   // s82: negar implica activar el bloque
+  if ($('pop-neg').checked) $('pop-on').checked = true;
+  popApply(parseFloat($('pop-num').value) || 0, $('pop-on').checked);
+};
 document.addEventListener('mousedown', (e) => {
   if (!$('chip-pop').classList.contains('open')) return;
   if ($('chip-pop').contains(e.target) || e.target.closest('.chip')) return;
