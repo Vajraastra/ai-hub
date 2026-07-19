@@ -124,6 +124,9 @@
     .lora-group .lora-str { display:flex; align-items:center; justify-content:space-between;
       gap:6px; width:128px; font-size:10px; color:var(--text-secondary); }
     .lora-group .lora-str input { width:54px; }
+    /* Fuerza negativa (s79): resta — badge de signo ± (el color queda reservado
+       para el heatmap de relevancia de bloques de F5); tooltip explica el límite */
+    .lora-group .lora-str .sgn { width:12px; text-align:center; font-weight:700; }
 
     #workbench {
       display:grid; gap:14px;
@@ -454,12 +457,14 @@
             <input type="hidden" id="exp-lora">
             <button type="button" class="lora-pick" id="btn-pick-exp-lora"></button>
             <div class="lora-str"><span>Fuerza</span>
-              <input id="exp-strength" type="number" step="0.05" min="0.05" max="2" value="1.0"></div></div>
+              <span class="sgn" id="sgn-strength">+</span>
+              <input id="exp-strength" type="number" step="0.05" min="-2" max="2" value="1.0"></div></div>
           <div class="in-field lora-group" id="field-lora2" style="display:none"><span>LoRA B</span>
             <input type="hidden" id="exp-lora2">
             <button type="button" class="lora-pick" id="btn-pick-exp-lora2"></button>
             <div class="lora-str"><span>Fuerza</span>
-              <input id="exp-strength2" type="number" step="0.05" min="0.05" max="2" value="1.0"></div></div>
+              <span class="sgn" id="sgn-strength2">+</span>
+              <input id="exp-strength2" type="number" step="0.05" min="-2" max="2" value="1.0"></div></div>
           <div class="in-field">Seed
             <input id="exp-seed" type="number" value="424242" style="width:110px"></div>
         </div>
@@ -470,6 +475,8 @@
                     title="Producto: un checkpoint nuevo = base + LoRA con la config de bloques">⚒ Checkpoint + LoRA</button>
             <button type="button" data-mode="fuse"
                     title="Producto: un LoRA nuevo = LoRA A + LoRA B fusionados (bake a fichero en F3)">⚗ LoRA + LoRA</button>
+            <button type="button" data-mode="purify"
+                    title="Producto: el MISMO LoRA con los bloques apagados eliminados y los dosificados escalados (exacto, sin SVD) — el checkpoint solo es el lienzo del preview">🧪 Depurar LoRA</button>
           </div></div>
         <span id="lock-badge" class="badge locked" style="display:none"
               title="Entradas, prompt y KSampler quedan congelados mientras dura la sesión">🔒 prompt + config congelados</span>
@@ -643,6 +650,6 @@
     </div>
   </div>
 
-  <script src="/static/fusion.js?v=18"></script>
+  <script src="/static/fusion.js?v=21"></script>
 </body>
 </html>

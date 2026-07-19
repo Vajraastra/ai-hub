@@ -26,6 +26,12 @@ cuando el key map de la arquitectura lo conoce — ver canonical(). Sin esto,
 un LoRA PEFT (anima/zimage) produciría claves peladas que ComfyUI no carga,
 y mezclar sabores A/B rompería la concatenación por módulo.
 
+Caso degenerado (F3.5 "depurar", job["lora_b_path"] = null): un solo LoRA,
+sin concat — el producto es el MISMO LoRA con los módulos de bloques apagados
+ELIMINADOS y el factor f_A = strength·dosis·scale absorbido en up (alpha se
+reescribe a rank ⇒ scale 1.0). Con svd_energy = null es EXACTO y sin pérdida:
+preview runtime ≡ fichero.
+
 Compresión SVD (job["svd_energy"] ∈ (0,1]; null = concat puro exacto): tras
 concatenar, cada módulo se recomprime al rango MÍNIMO que conserva esa fracción
 de energía Frobenius² (Σσ²). Sin materializar el delta denso (out×in): SVD
@@ -178,23 +184,33 @@ def main(job_path: str):
                  f"{' …' if len(unmapped) > 5 else ''}")
         return pairs, doses, len(skipped_policy)
 
-    # ── 1. Planear ambos LoRAs contra la máscara de bloques ───────────────
+    # ── 1. Planear los LoRAs contra la máscara de bloques ─────────────────
+    # single = caso degenerado F3.5 (depurar): solo A, sin concat
+    single = not job.get("lora_b_path")
     pairs_a, doses_a, skip_a = plan(job["lora_a_path"], job.get("blocks_a"))
-    pairs_b, doses_b, skip_b = plan(job["lora_b_path"], job.get("blocks_b"))
+    pairs_b, doses_b, skip_b = (({}, {}, 0) if single else
+                                plan(job["lora_b_path"], job.get("blocks_b")))
     modules = sorted(set(doses_a) | set(doses_b))
     if not modules:
         fail("ningún módulo aplica tras el filtro de bloques (¿dosis todas a 0?)")
     progress("map", len(modules), len(modules))
 
-    sa, sb = float(job["strength_a"]), float(job["strength_b"])
+    sa = float(job["strength_a"])
+    sb = 0.0 if single else float(job["strength_b"])
 
     # ── 2. Fusionar módulo a módulo por concatenación de rangos ───────────
     out_tensors: dict[str, torch.Tensor] = {}
     rank_max, rank_pre_max = 0, 0
     total = len(modules)
-    with safe_open(job["lora_a_path"], framework="pt", device="cpu") as lf_a, \
-         safe_open(job["lora_b_path"], framework="pt", device="cpu") as lf_b:
-        sources = [(pairs_a, doses_a, sa, lf_a), (pairs_b, doses_b, sb, lf_b)]
+    from contextlib import ExitStack
+    with ExitStack() as stack:
+        lf_a = stack.enter_context(
+            safe_open(job["lora_a_path"], framework="pt", device="cpu"))
+        sources = [(pairs_a, doses_a, sa, lf_a)]
+        if not single:
+            lf_b = stack.enter_context(
+                safe_open(job["lora_b_path"], framework="pt", device="cpu"))
+            sources.append((pairs_b, doses_b, sb, lf_b))
         for i, module in enumerate(modules):
             downs, ups, out_dtype, rank = [], [], None, 0
             for pairs, doses, strength, lf in sources:
@@ -239,7 +255,7 @@ def main(job_path: str):
     progress("write", 0, 1)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     meta = {k: str(v) for k, v in (job.get("metadata") or {}).items()}
-    meta["forge_lab.format"] = "fused-lora-v1"
+    meta["forge_lab.format"] = "purified-lora-v1" if single else "fused-lora-v1"
     meta["forge_lab.svd_energy"] = "concat" if svd_energy is None else str(svd_energy)
     meta["forge_lab.rank"] = f"{rank_pre_max}->{rank_max}"
     if job.get("base_model"):                     # que list_loras lo lea SDXL

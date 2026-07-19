@@ -217,23 +217,30 @@ def _build_session(arch: str, checkpoint: str, model: str, lora: str,
     (generate_draft): mismas validaciones → misma garantía de que el LoRA
     aplica de verdad (coverage, exponente de dosis).
 
-    mode: "derive" (producto: checkpoint derivado, comportamiento clásico)
-    o "fuse" (producto: LoRA fusionado A+B — F2: solo preview; bake en F3).
+    mode: "derive" (producto: checkpoint derivado, comportamiento clásico),
+    "fuse" (producto: LoRA fusionado A+B — F2: solo preview; bake en F3) o
+    "purify" (F3.5: producto: el MISMO LoRA con bloques eliminados/escalados;
+    el preview es idéntico al de derive — el checkpoint solo es el lienzo).
     El modo fusión valida un segundo LoRA con las MISMAS garantías."""
     adapter = get_adapter(arch)
-    if mode not in ("derive", "fuse"):
-        raise ExploreError(f"modo desconocido {mode!r} (derive | fuse)")
+    if mode not in ("derive", "fuse", "purify"):
+        raise ExploreError(f"modo desconocido {mode!r} "
+                           "(derive | fuse | purify)")
     if not str(prompt).strip():
         raise ExploreError("prompt vacío")
-    if not 0.0 < float(strength) <= 2.0:
-        raise ExploreError(f"strength {strength} fuera de rango (0–2]")
+    # Negativo permitido (s79): resta de LoRAs (fuse) / checkpoint − LoRA
+    # (derive). El signo viaja en el strength GLOBAL del nodo selectivo, que
+    # es lineal sobre el delta — la dosis por bloque sigue siendo 0..1.
+    if not 0.0 < abs(float(strength)) <= 2.0:
+        raise ExploreError(f"strength {strength} fuera de rango [−2,2] sin 0")
     if mode == "fuse":
         if not lora2:
             raise ExploreError("modo fusión: falta el LoRA B")
         if lora2 == lora:
             raise ExploreError("modo fusión: elige dos LoRAs distintos")
-        if not 0.0 < float(strength2) <= 2.0:
-            raise ExploreError(f"strength2 {strength2} fuera de rango (0–2]")
+        if not 0.0 < abs(float(strength2)) <= 2.0:
+            raise ExploreError(f"strength2 {strength2} fuera de rango "
+                               "[−2,2] sin 0")
     effective_sampling = sampling or vars(adapter.sampling_defaults())
     if int(effective_sampling.get("steps") or 0) < 1:
         raise ExploreError("sampling.steps vacío o inválido (mínimo 1) — "

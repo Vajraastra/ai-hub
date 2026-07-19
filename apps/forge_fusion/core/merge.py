@@ -262,8 +262,10 @@ class MergeOrchestrator:
 
     def output_dir(self, arch: str, mode: str) -> Path:
         """Carpeta contenedora de los productos según el modo del workbench:
-        derived checkpoints (derive) o LoRAs fusionados (fuse)."""
-        return self.fused_dir() if mode == "fuse" else self.derived_dir(arch)
+        derived checkpoints (derive) o LoRAs (fuse y purify comparten
+        loras/forge_fusion)."""
+        return (self.fused_dir() if mode in ("fuse", "purify")
+                else self.derived_dir(arch))
 
     def _official_entries(self, arch: str) -> list[dict]:
         """Bases oficiales elegibles. Layout por piezas (zimage): solo la
@@ -377,8 +379,9 @@ class MergeOrchestrator:
             raise MergeError(f"ya existe un checkpoint derivado llamado {name!r}")
         if not WORKER_PYTHON.exists():
             raise MergeError(f"no existe el Python del worker: {WORKER_PYTHON}")
-        if not 0.0 < strength <= 2.0:
-            raise MergeError(f"strength {strength} fuera de rango razonable (0–2]")
+        if not 0.0 < abs(strength) <= 2.0:
+            raise MergeError(f"strength {strength} fuera de rango razonable "
+                             "[−2,2] sin 0")
 
         from .architectures import get_adapter
         weights_root = get_adapter(arch).weights_root
@@ -502,9 +505,12 @@ class MergeOrchestrator:
                              "(minúsculas/dígitos/guiones, sin espacios)")
         if not WORKER_PYTHON.exists():
             raise MergeError(f"no existe el Python del worker: {WORKER_PYTHON}")
+        # Negativo permitido (s79): A − w·B (el factor con signo se absorbe
+        # en up dentro del fuse_worker; el concat lo soporta tal cual).
         for s in (strength_a, strength_b):
-            if not 0.0 < s <= 2.0:
-                raise MergeError(f"strength {s} fuera de rango razonable (0–2]")
+            if not 0.0 < abs(s) <= 2.0:
+                raise MergeError(f"strength {s} fuera de rango razonable "
+                                 "[−2,2] sin 0")
         if lora_a == lora_b:
             raise MergeError("fusión de un LoRA consigo mismo: elige dos distintos")
 
@@ -556,6 +562,76 @@ class MergeOrchestrator:
             "label": label,
             "loras": [{"file": lora_a, "hash": hash_a, "strength": strength_a},
                       {"file": lora_b, "hash": hash_b, "strength": strength_b}],
+            "created_at": _now(),
+            "seconds": round(time.time() - t0, 1),
+            "sha256": sha,
+            "size_bytes": out_path.stat().st_size,
+            "worker": {k: result[k] for k in
+                       ("modules", "rank_max", "rank_pre", "skipped_policy")
+                       if k in result},
+        }
+
+    async def purify_lora(self, arch: str, lora_file: str, strength: float,
+                          name: str, label: str = "",
+                          blocks: dict[str, float] | None = None,
+                          on_progress: Callable[[dict], None] | None = None
+                          ) -> dict:
+        """Depuración (modo purify, F3.5): el MISMO LoRA con los bloques
+        apagados ELIMINADOS y los dosificados escalados (strength × dosis).
+        Caso degenerado del fuse_worker (un solo LoRA, sin concat) y SIN SVD:
+        exacto y sin pérdida, preview runtime ≡ fichero. Producto:
+        <models>/loras/forge_fusion/<name>.safetensors."""
+        if not _SLUG_RE.match(name):
+            raise MergeError(f"nombre inválido {name!r} "
+                             "(minúsculas/dígitos/guiones, sin espacios)")
+        if not WORKER_PYTHON.exists():
+            raise MergeError(f"no existe el Python del worker: {WORKER_PYTHON}")
+        if not 0.0 < abs(strength) <= 2.0:
+            raise MergeError(f"strength {strength} fuera de rango razonable "
+                             "[−2,2] sin 0")
+
+        out_rel = f"{FUSED_SUBDIR}/{name}.safetensors"
+        out_path = self.models_root / "loras" / out_rel
+        if out_path.exists():
+            raise MergeError(f"ya existe el LoRA {out_rel!r}")
+
+        path_a, hash_a, base_model = await self._resolve_lora(arch, lora_file)
+
+        job = {
+            "arch": arch,
+            "lora_a_path": str(path_a), "lora_b_path": None,
+            "strength_a": strength,
+            "blocks_a": blocks, "blocks_b": None,
+            "out_path": str(out_path),
+            "svd_energy": None,           # regla F3.5: exacto, sin pérdida
+            "base_model": base_model,
+            "metadata": {
+                "forge_lab.name": name,
+                "forge_lab.arch": arch,
+                "forge_lab.purified_from": lora_file,
+                "forge_lab.lora_a": lora_file,
+                "forge_lab.lora_a_hash": hash_a,
+                "forge_lab.strength_a": strength,
+                "forge_lab.blocks_a": (
+                    "full" if blocks is None
+                    else ",".join(f"{b}:{d}" for b, d in blocks.items())),
+                "forge_lab.created_at": _now(),
+            },
+        }
+        t0 = time.time()
+        result = await self._run_worker(job, on_progress, script="fuse_worker.py")
+
+        if on_progress:
+            on_progress({"phase": "hash", "done": 0, "total": 1})
+        sha = await asyncio.to_thread(_sha256, out_path)
+        if on_progress:
+            on_progress({"phase": "hash", "done": 1, "total": 1})
+
+        return {
+            "name": name, "arch": arch, "kind": "purified", "file": out_rel,
+            "label": label,
+            "loras": [{"file": lora_file, "hash": hash_a,
+                       "strength": strength}],
             "created_at": _now(),
             "seconds": round(time.time() - t0, 1),
             "sha256": sha,

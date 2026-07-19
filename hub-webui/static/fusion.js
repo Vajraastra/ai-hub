@@ -36,22 +36,27 @@ const labMode = () =>
 function applyModeUI() {
   const mode = labMode();
   const fuse = mode === 'fuse';
+  const purify = mode === 'purify';
   document.querySelectorAll('#mode-switch button').forEach(b => {
     b.classList.toggle('active', b.dataset.mode === mode);
     b.disabled = !!exploreSession;   // el modo queda congelado con la sesión
   });
   $('field-lora2').style.display = fuse ? '' : 'none';   // arrastra su fuerza anidada
-  $('lbl-lora').textContent = fuse ? 'LoRA A' : 'LoRA';
+  $('lbl-lora').textContent = fuse ? 'LoRA A' : (purify ? 'LoRA a depurar' : 'LoRA');
   $('blocks-title-a').textContent = fuse ? 'Bloques · LoRA A' : 'Bloques';
   $('blocks-head-b').style.display = fuse ? '' : 'none';
   $('switch-grid-b').style.display = fuse ? '' : 'none';
   $('blocks-hint').textContent = fuse
     ? 'cada panel dosifica su LoRA por separado (A arriba · B abajo)'
-    : 'clic en un bloque → slider · valor 1.0 = efecto completo (lineal)';
+    : purify
+      ? 'el producto es el MISMO LoRA: bloques off se ELIMINAN, dosis <1 lo escalan · el checkpoint solo es el lienzo del preview'
+      : 'clic en un bloque → slider · valor 1.0 = efecto completo (lineal)';
   const mbtn = $('btn-merge');
   if (mbtn) mbtn.textContent = fuse
     ? '⚗ Fusionar → LoRA A⊕B con la config afinada'
-    : '⚒ Merge → checkpoint con la config afinada';
+    : purify
+      ? '🧪 Depurar → LoRA filtrado con la config afinada'
+      : '⚒ Merge → checkpoint con la config afinada';
 }
 
 document.querySelectorAll('#mode-switch button').forEach(b => b.onclick = () => {
@@ -826,13 +831,21 @@ $('btn-merge').onclick = async () => {
   const g = genById(selectedGen);
   const s = exploreSession;
   const fuse = (s.mode || 'derive') === 'fuse';
+  const purify = (s.mode || 'derive') === 'purify';
   const name = ($('merge-name').value || '').trim();
   const label = ($('merge-label').value || '').trim();
-  if (!name) return alert('Pon nombre al ' + (fuse ? 'LoRA fusionado' : 'checkpoint derivado')
+  if (!name) return alert('Pon nombre al '
+    + (fuse ? 'LoRA fusionado' : purify ? 'LoRA depurado' : 'checkpoint derivado')
     + ' (minúsculas, dígitos, guiones).');
-  const msg = fuse
+  const negWarn = (s.strength < 0 || (fuse && s.strength2 < 0))
+    ? `\n\n⚠ Fuerza negativa (resta): ${NEG_TIP}`
+    : '';
+  const msg = (fuse
     ? `Fusión A⊕B con la config afinada [${g.summary}]:\n\n  ${sessLoraName(s)} @ ${s.strength}\n  + ${sessLora2Name(s)} @ ${s.strength2}\n  → loras/forge_fusion/${name}.safetensors\n\nProducto: un LoRA comprimido por SVD (energía 99%). Corre en CPU/RAM. ¿Adelante?`
-    : `Merge con la config afinada [${g.summary}]:\n\n  ${s.checkpoint}  ←  ${sessLoraName(s)}  @ ${s.strength}\n  →  forge_lab/${name}.safetensors (~12 GB)\n\nCorre en CPU/RAM (unos minutos). ¿Adelante?`;
+    : purify
+    ? `Depurar con la config afinada [${g.summary}]:\n\n  ${sessLoraName(s)} @ ${s.strength}\n  → loras/forge_fusion/${name}.safetensors\n\nProducto: el MISMO LoRA con los bloques OFF eliminados y las dosis aplicadas (exacto, sin SVD). Corre en CPU/RAM. ¿Adelante?`
+    : `Merge con la config afinada [${g.summary}]:\n\n  ${s.checkpoint}  ←  ${sessLoraName(s)}  @ ${s.strength}\n  →  forge_lab/${name}.safetensors (~12 GB)\n\nCorre en CPU/RAM (unos minutos). ¿Adelante?`)
+    + negWarn;
   if (!confirm(msg)) return;
   try {
     const { job_id } = await api('/explore/merge',
@@ -840,7 +853,8 @@ $('btn-merge').onclick = async () => {
     $('btn-merge').disabled = true;
     $('merge-progress').style.display = '';
     pollMergeJob(job_id);
-  } catch (e) { alert('Error lanzando ' + (fuse ? 'fusión' : 'merge') + ': ' + e.message); }
+  } catch (e) { alert('Error lanzando '
+    + (fuse ? 'fusión' : purify ? 'depuración' : 'merge') + ': ' + e.message); }
 };
 
 // Habilita el footer según haya un trabajo seleccionado y refleja su config.
@@ -850,12 +864,16 @@ function updateMergeFooter() {
   const btn = $('btn-merge');
   if (!btn) return;
   const fuse = exploreSession && (exploreSession.mode || 'derive') === 'fuse';
+  const purify = exploreSession && (exploreSession.mode || 'derive') === 'purify';
   if (sel) {
     const s = exploreSession;
     sum.classList.add('ready');
     sum.innerHTML = fuse
       ? `LoRA fusionado A⊕B: <span class="mono">${esc(sel.summary)}</span><br>` +
         `<span class="dim">${esc(sessLoraName(s))} @ ${s.strength} + ${esc(sessLora2Name(s))} @ ${s.strength2} → loras/forge_fusion/</span>`
+      : purify
+      ? `LoRA depurado: <span class="mono">${esc(sel.summary)}</span><br>` +
+        `<span class="dim">${esc(sessLoraName(s))} @ ${s.strength} → loras/forge_fusion/ (exacto, sin SVD)</span>`
       : `Config afinada: <span class="mono">${esc(sel.summary)}</span><br>` +
         `<span class="dim">${esc(s.checkpoint)} ← ${esc(sessLoraName(s))} @ ${s.strength}</span>`;
     btn.disabled = false;
@@ -863,7 +881,9 @@ function updateMergeFooter() {
     sum.classList.remove('ready');
     sum.textContent = exploreSession
       ? 'Selecciona un trabajo del historial para ' +
-        (fuse ? 'fusionar A⊕B con su config de bloques.' : 'mergear su config de bloques.')
+        (fuse ? 'fusionar A⊕B con su config de bloques.'
+         : purify ? 'depurar el LoRA con su config de bloques.'
+         : 'mergear su config de bloques.')
       : 'Inicia una sesión y genera al menos una vez; selecciona ese trabajo para el bake.';
     btn.disabled = true;
   }
@@ -880,13 +900,16 @@ function pollMergeJob(jobId) {
     const pct = j.total ? Math.round(100 * j.done / j.total) : 0;
     const bar = (j.phase === 'merge' || j.phase === 'fuse');
     $('merge-progress-fill').style.width = (bar ? pct : (j.status === 'running' ? 100 : pct)) + '%';
-    $('merge-progress-label').textContent =
-      `${MERGE_PHASES[j.phase] || j.phase || 'preparando'} — ${j.done}/${j.total}`;
+    const phase = (j.purified && j.phase === 'fuse')
+      ? 'depurando bloques' : (MERGE_PHASES[j.phase] || j.phase || 'preparando');
+    $('merge-progress-label').textContent = `${phase} — ${j.done}/${j.total}`;
     if (j.status !== 'running') {
       clearInterval(timer);
       $('btn-merge').disabled = false;
       $('merge-progress').style.display = 'none';
-      if (j.status === 'error') alert((j.fused ? 'Fusión' : 'Merge') + ' fallida: ' + j.error);
+      if (j.status === 'error')
+        alert((j.purified ? 'Depuración' : j.fused ? 'Fusión' : 'Merge')
+          + ' fallida: ' + j.error);
       else {
         $('merge-name').value = ''; $('merge-label').value = '';
         const c = j.checkpoint;
@@ -894,7 +917,7 @@ function pollMergeJob(jobId) {
           const w = c.worker || {};
           const rk = (w.rank_pre && w.rank_pre !== w.rank_max)
             ? `rank ${w.rank_pre}→${w.rank_max} (SVD)` : `rank ${w.rank_max ?? '?'}`;
-          alert(`LoRA fusionado "${c.name}" creado (${fmtGB(c.size_bytes)}, ${rk}).\nEn el catálogo de LoRAs, subcarpeta forge_fusion/.`);
+          alert(`LoRA ${j.purified ? 'depurado' : 'fusionado'} "${c.name}" creado (${fmtGB(c.size_bytes)}, ${rk}).\nEn el catálogo de LoRAs, subcarpeta forge_fusion/.`);
         } else
           alert(`Checkpoint "${c.name}" creado (${fmtGB(c.size_bytes)}).\nQueda listado abajo, en "Checkpoints — base y derivados".`);
       }
@@ -983,10 +1006,13 @@ async function refreshExplore() {
   renderLoraPickBtn('exp-lora2');
   $('exp-strength').value = s.strength;
   $('exp-strength2').value = s.strength2 ?? 1.0;
+  updateStrengthWarn();
   $('exp-seed').value = s.prompt.seed;
   const fuse = (s.mode || 'derive') === 'fuse';
+  const purify = (s.mode || 'derive') === 'purify';
   $('explore-info').innerHTML =
-    (fuse ? '<span class="badge draft">⚗ fusión</span> ' : '') +
+    (fuse ? '<span class="badge draft">⚗ fusión</span> '
+     : purify ? '<span class="badge draft">🧪 depurar</span> ' : '') +
     `<span class="mono">${esc(s.checkpoint)}</span> + ` +
     `<span class="mono">${esc(sessLoraName(s))}</span> @ ${s.strength}` +
     (fuse ? ` + <span class="mono">${esc(sessLora2Name(s))}</span> @ ${s.strength2}` : '') +
@@ -1566,6 +1592,24 @@ function collectKSampler() {
     height: parseInt($('ks-height').value, 10) || 0,
   };
 }
+// Fuerza negativa (s79) = RESTA (fuse: A − w·B; derive: checkpoint − LoRA).
+// Solo limpia si el objetivo CONTIENE ese delta (mismo linaje); si no, degrada.
+const NEG_TIP = 'Fuerza negativa = resta. Solo limpia si el objetivo contiene ' +
+  'de verdad ese estilo/concepto (mismo linaje); si no, degrada la imagen.';
+// El aviso es un badge de signo ± (sin color: el color de los switches queda
+// reservado para el heatmap de relevancia de bloques de F5).
+function updateStrengthWarn() {
+  for (const [id, sg] of [['exp-strength', 'sgn-strength'],
+                          ['exp-strength2', 'sgn-strength2']]) {
+    const el = $(id), sgn = $(sg); if (!el || !sgn) continue;
+    const neg = parseFloat(el.value) < 0;
+    sgn.textContent = neg ? '−' : '+';
+    el.title = sgn.title = neg ? NEG_TIP : '';
+  }
+}
+$('exp-strength').addEventListener('input', updateStrengthWarn);
+$('exp-strength2').addEventListener('input', updateStrengthWarn);
+
 function setInputsLocked(locked) {
   for (const id of ['exp-strength', 'exp-strength2', 'exp-seed', 'exp-from-set',
                     'exp-prompt', ...KS_FIELDS.map(k => 'ks-' + k)]) {

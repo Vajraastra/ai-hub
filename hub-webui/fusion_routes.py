@@ -568,7 +568,7 @@ class ExploreSessionBody(BaseModel):
     negative: str = ""
     seed: int
     sampling: dict | None = None  # None → defaults del adaptador
-    mode: str = "derive"          # derive (checkpoint) | fuse (LoRA A+B)
+    mode: str = "derive"          # derive (checkpoint) | fuse (A+B) | purify (F3.5)
     lora2: str = ""               # LoRA B (obligatorio en modo fuse)
     strength2: float = 1.0
 
@@ -820,7 +820,8 @@ async def explore_confirm(body: ExploreConfirmBody):
 @fusion_router.post("/explore/merge")
 async def explore_merge(body: dict):
     """Bake final con la config de una generación de la sesión. Modo derive →
-    checkpoint (base+LoRA, /merge). Modo fuse → LoRA fusionado A+B (F3). Misma
+    checkpoint (base+LoRA, /merge). Modo fuse → LoRA fusionado A+B (F3). Modo
+    purify → el MISMO LoRA filtrado/escalado (F3.5, exacto sin SVD). Misma
     matemática que el preview runtime (dosis lineal, sqrt en el nodo)."""
     session = explore.get_session()
     if not session:
@@ -848,6 +849,19 @@ async def explore_merge(body: dict):
             lora_b=session.get("lora2_source") or session["lora2"],
             strength_a=session["strength"], strength_b=session["strength2"],
             name=name, label=label, blocks_a=blocks_a, blocks_b=blocks_b)
+
+    if session.get("mode", "derive") == "purify":
+        # F3.5: producto = el MISMO LoRA con la máscara de bloques aplicada.
+        # El checkpoint de la sesión era solo el lienzo del preview.
+        try:
+            blocks = explore.config_to_merge_blocks(gen["config"], arch)
+        except ExploreError as e:
+            raise HTTPException(400, str(e))
+        return await purify_start(
+            arch=arch,
+            lora=session.get("lora_source") or session["lora"],
+            strength=session["strength"], name=name, label=label,
+            blocks=blocks)
 
     try:
         blocks = explore.config_to_merge_blocks(gen["config"], arch)
@@ -896,6 +910,41 @@ async def fuse_start(*, arch: str, lora_a: str, lora_b: str,
     _jobs[job_id] = job
     _spawn(_fuse_job(job, arch, lora_a, lora_b, strength_a, strength_b,
                      name, label, blocks_a, blocks_b))
+    return {"job_id": job_id}
+
+
+async def _purify_job(job: dict, arch: str, lora: str, strength: float,
+                      name: str, label: str, blocks):
+    def on_progress(p: dict):
+        job.update(p)
+    try:
+        entry = await _merger.purify_lora(
+            arch=arch, lora_file=lora, strength=strength,
+            name=name, label=label, blocks=blocks, on_progress=on_progress)
+        job["status"] = "done"
+        job["checkpoint"] = entry     # reutiliza el campo del polleo (name/size)
+    except Exception as e:
+        job["status"] = "error"
+        job["error"] = str(e)
+
+
+async def purify_start(*, arch: str, lora: str, strength: float, name: str,
+                       label: str, blocks):
+    """Depuración (F3.5) como job en background (CPU, proceso aparte).
+    type="merge" para heredar la serialización y el no-cancelable del bake;
+    fused+purified para que el frontend refresque el catálogo de LoRAs y
+    rotule "depurado"."""
+    _reject_if_job_running()
+    job_id = uuid.uuid4().hex[:12]
+    job = {"id": job_id, "type": "merge", "status": "running",
+           "fused": True, "purified": True,
+           "name": name, "lora_a": lora,
+           "phase": "", "done": 0, "total": 1, "checkpoint": None, "error": None}
+    if len(_jobs) >= _MAX_JOBS:
+        for k in [k for k, j in _jobs.items() if j["status"] != "running"]:
+            del _jobs[k]
+    _jobs[job_id] = job
+    _spawn(_purify_job(job, arch, lora, strength, name, label, blocks))
     return {"job_id": job_id}
 
 
