@@ -400,13 +400,27 @@ async def lora_triggers_get(file: str):
 
 
 @fusion_router.get("/lora/dominance")
-async def lora_dominance(file: str, arch: str = "zimage"):
+async def lora_dominance(file: str, arch: str = "zimage",
+                         checkpoint: str | None = None):
     """Heatmap F5: dominancia por switch de la UI (norma exacta del delta por
     módulo, agrupada con el mismo mapeo que usa el merge). numpy puro en CPU;
-    relee el fichero entero → en thread aparte y con cache por mtime."""
+    relee el fichero entero → en thread aparte y con cache por mtime.
+    Con `checkpoint` (nombre del registro, s83) los scores se relativizan
+    contra ‖W_base‖ — la primera pasada por checkpoint lee el modelo entero
+    (luego cache en disco); si no se puede resolver, escalón 1 sin error."""
+    base_path = None
+    if checkpoint:
+        try:
+            from forge_fusion.core.architectures import get_adapter
+            entry = _merger.get_checkpoint(checkpoint, arch)
+            p = _models_root() / get_adapter(arch).weights_root / entry["file"]
+            if p.is_file():
+                base_path = p
+        except (MergeError, ValueError):
+            base_path = None           # checkpoint desconocido → escalón 1
     try:
         return await asyncio.to_thread(dominance.analyze, _models_root(),
-                                       file, arch)
+                                       file, arch, base_path)
     except DominanceError as e:
         raise HTTPException(400, str(e))
     except ValueError as e:            # arch desconocida (get_adapter)

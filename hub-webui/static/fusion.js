@@ -1123,10 +1123,11 @@ function applyConfig(cfg, gridId = 'switch-grid') {
 
 // ── F5: heatmap de dominancia en los chips ──────────────────────────────
 // El COLOR de los chips queda reservado para esto (regla s79): barra azul =
-// el bloque apenas aprendió, roja = núcleo del LoRA. Score relativo DENTRO
-// del LoRA (norma exacta del delta por bloque, /lora/dominance); el ancho de
-// la barra codifica lo mismo que el color para leerlo también en off.
-let domCache = {};        // `${arch}|${file}` → resultado (false = falló, no reintentar)
+// el bloque apenas aprendió, roja = núcleo del LoRA. Score relativo al
+// CHECKPOINT de la sesión si el backend puede (s83: ‖ΔW‖/‖W_base‖, la 1ª
+// pasada por checkpoint tarda — luego cachea en disco); si no, relativo
+// DENTRO del LoRA. El ancho de la barra codifica lo mismo que el color.
+let domCache = {};        // `${arch}|${checkpoint}|${file}` → resultado (false = falló)
 
 const domColor = (score) => `hsl(${Math.round(220 - 2.2 * score)}deg 78% 48%)`;
 
@@ -1144,8 +1145,10 @@ function paintDominance(gridId, dom) {
     bar.style.background = domColor(score);
     bar.style.width = Math.max(6, score) + '%';
     const mods = dom.modules[chip.dataset.key] || 0;
+    const rel = dom.relative && dom.ratios   // s83: % de cambio sobre la base
+      ? ` · cambia ${dom.ratios[chip.dataset.key] ?? 0}% del peso base` : '';
     chip.title = mods
-      ? `dominancia ${score}/100 · ${dom.shares[chip.dataset.key] ?? 0}% del delta · ${mods} módulos`
+      ? `dominancia ${score}/100${rel} · ${dom.shares[chip.dataset.key] ?? 0}% del delta · ${mods} módulos`
       : 'el LoRA no entrena este bloque';
   }
 }
@@ -1173,11 +1176,12 @@ async function loadDominance(s) {
   if ((s.mode || 'derive') === 'fuse' && s.lora2)
     jobs.push([s.lora2, 'switch-grid-b']);
   for (const [file, gridId] of jobs) {
-    const ck = s.arch + '|' + file;
+    const ck = s.arch + '|' + (s.checkpoint || '') + '|' + file;
     if (domCache[ck] === undefined) {
       try {
         domCache[ck] = await api('/lora/dominance?file=' +
-          encodeURIComponent(file) + '&arch=' + encodeURIComponent(s.arch));
+          encodeURIComponent(file) + '&arch=' + encodeURIComponent(s.arch) +
+          '&checkpoint=' + encodeURIComponent(s.checkpoint || ''));
       } catch (e) {
         domCache[ck] = false;    // p. ej. naming raro: sin heatmap, sin spam
         console.warn('dominancia no disponible para', file, '—', e.message);

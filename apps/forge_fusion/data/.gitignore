@@ -9,3 +9,5 @@ explore_tmp/
 model_config.json
 # Reporte generado por tools/alias_battery.py (regenerable)
 alias_battery_report.json
+# Cache de normas del checkpoint base para el heatmap relativo (regenerable)
+cache/
