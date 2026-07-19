@@ -207,6 +207,13 @@
     .chip.off .chip-val { color:var(--text-dim); }
     .chip .chip-lbl { font-size:10px; color:var(--text-secondary);
       font-family:'JetBrains Mono',monospace; }
+    /* F5: barra de dominancia (azul=aprendió poco → rojo=núcleo del LoRA);
+       color+ancho codifican el score. Visible también en chips off. */
+    .chip { padding-bottom:9px; }
+    .chip .chip-dom { position:absolute; left:4px; bottom:2px; height:3px;
+      max-width:calc(100% - 8px); border-radius:2px; pointer-events:none; }
+    .chip.off .chip-dom { opacity:.55; }
+    .chip.dom-conflict { border-color:#e05252; }
 
     /* popup del slider (compartido) */
     #chip-pop {
@@ -650,6 +657,6 @@
     </div>
   </div>
 
-  <script src="/static/fusion.js?v=21"></script>
+  <script src="/static/fusion.js?v=22"></script>
 </body>
 </html>

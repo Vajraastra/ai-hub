@@ -36,7 +36,9 @@ from forge_fusion.core import model_config
 from forge_fusion.core import favorites
 from forge_fusion.core import battery
 from forge_fusion.core import lora_triggers
+from forge_fusion.core import dominance
 from forge_fusion.core.battery import BatteryError
+from forge_fusion.core.dominance import DominanceError
 from forge_fusion.core.favorites import FavoritesError
 from forge_fusion.core.validation_set import ValidationSet, ValidationSetError, LockedError
 from forge_fusion.core.merge import MergeOrchestrator, MergeError
@@ -395,6 +397,20 @@ async def lora_triggers_get(file: str):
         return lora_triggers.triggers_for(_models_root(), file)
     except lora_triggers.TriggerError as e:
         raise HTTPException(404, str(e))
+
+
+@fusion_router.get("/lora/dominance")
+async def lora_dominance(file: str, arch: str = "zimage"):
+    """Heatmap F5: dominancia por switch de la UI (norma exacta del delta por
+    módulo, agrupada con el mismo mapeo que usa el merge). numpy puro en CPU;
+    relee el fichero entero → en thread aparte y con cache por mtime."""
+    try:
+        return await asyncio.to_thread(dominance.analyze, _models_root(),
+                                       file, arch)
+    except DominanceError as e:
+        raise HTTPException(400, str(e))
+    except ValueError as e:            # arch desconocida (get_adapter)
+        raise HTTPException(400, str(e))
 
 
 @fusion_router.get("/lora-preview")

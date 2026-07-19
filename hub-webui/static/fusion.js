@@ -1022,6 +1022,7 @@ async function refreshExplore() {
   paintTriggerState();   // el prompt congelado acaba de fijarse
 
   if (!$('switch-grid').children.length) buildSwitchGrid();
+  loadDominance(s);          // F5: pinta el heatmap (async, cacheado)
   if (selectedGen && !s.generations.find(g => g.id === selectedGen))
     selectedGen = null;
   if (!selectedGen && s.generations.length)
@@ -1114,6 +1115,74 @@ function applyConfig(cfg, gridId = 'switch-grid') {
     chip.classList.toggle('off', !(d > 0));
     paintChip(chip);
   }
+}
+
+// ── F5: heatmap de dominancia en los chips ──────────────────────────────
+// El COLOR de los chips queda reservado para esto (regla s79): barra azul =
+// el bloque apenas aprendió, roja = núcleo del LoRA. Score relativo DENTRO
+// del LoRA (norma exacta del delta por bloque, /lora/dominance); el ancho de
+// la barra codifica lo mismo que el color para leerlo también en off.
+let domCache = {};        // `${arch}|${file}` → resultado (false = falló, no reintentar)
+
+const domColor = (score) => `hsl(${Math.round(220 - 2.2 * score)}deg 78% 48%)`;
+
+function paintDominance(gridId, dom) {
+  for (const chip of $(gridId).children) {
+    const score = dom.scores[chip.dataset.key];
+    if (score === undefined) continue;
+    chip.dataset.dom = score;
+    let bar = chip.querySelector('.chip-dom');
+    if (!bar) {
+      bar = document.createElement('span');
+      bar.className = 'chip-dom';
+      chip.appendChild(bar);
+    }
+    bar.style.background = domColor(score);
+    bar.style.width = Math.max(6, score) + '%';
+    const mods = dom.modules[chip.dataset.key] || 0;
+    chip.title = mods
+      ? `dominancia ${score}/100 · ${dom.shares[chip.dataset.key] ?? 0}% del delta · ${mods} módulos`
+      : 'el LoRA no entrena este bloque';
+  }
+}
+
+// fuse: núcleo (≥60) en A y B a la vez = choque probable al fusionar
+function markDomConflicts() {
+  const gb = $('switch-grid-b');
+  const scoreB = {};
+  for (const c of gb.children) scoreB[c.dataset.key] = parseFloat(c.dataset.dom ?? 'NaN');
+  for (const ca of $('switch-grid').children) {
+    const conflict = parseFloat(ca.dataset.dom ?? 'NaN') >= 60 &&
+                     scoreB[ca.dataset.key] >= 60;
+    const cb = [...gb.children].find(c => c.dataset.key === ca.dataset.key);
+    for (const c of [ca, cb]) {
+      if (!c) continue;
+      c.classList.toggle('dom-conflict', conflict);
+      if (conflict && !c.title.includes('⚠'))
+        c.title += '\n⚠ núcleo en A y B: probable choque al fusionar';
+    }
+  }
+}
+
+async function loadDominance(s) {
+  const jobs = [[s.lora, 'switch-grid']];
+  if ((s.mode || 'derive') === 'fuse' && s.lora2)
+    jobs.push([s.lora2, 'switch-grid-b']);
+  for (const [file, gridId] of jobs) {
+    const ck = s.arch + '|' + file;
+    if (domCache[ck] === undefined) {
+      try {
+        domCache[ck] = await api('/lora/dominance?file=' +
+          encodeURIComponent(file) + '&arch=' + encodeURIComponent(s.arch));
+      } catch (e) {
+        domCache[ck] = false;    // p. ej. naming raro: sin heatmap, sin spam
+        console.warn('dominancia no disponible para', file, '—', e.message);
+      }
+    }
+    if (domCache[ck] && $(gridId).children.length)
+      paintDominance(gridId, domCache[ck]);
+  }
+  if ((s.mode || 'derive') === 'fuse') markDomConflicts();
 }
 
 // ── Popup del slider de un chip (compartido) ────────────────────────────
