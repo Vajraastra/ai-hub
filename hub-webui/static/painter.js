@@ -761,6 +761,8 @@ async function doUpscale() {
 function trackJob(jobId) {
   return new Promise(resolve => {
     S.activeJobId = jobId;
+    // El prompt ya se usó: plegar para devolverle el alto al canvas
+    setPromptBarCollapsed(true);
     showProgress(true);
 
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -921,6 +923,64 @@ async function doCancelJob() {
   } catch (e) { toast(e.message || t('painter.conn_error')); }
 }
 
+// ── Panel derecho: pestañas y modo ────────────────────────────────────────
+function setPanelTab(name) {
+  document.querySelectorAll('.ptab-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.ptab === name));
+  document.querySelectorAll('.ptab-body').forEach(b =>
+    b.classList.toggle('active', b.id === 'ptab-' + name));
+}
+
+// El modo decide qué botón de acción se ve en la barra de prompt y si hay
+// pestaña contextual (Outpaint / Upscale tienen controles propios).
+function setPanelMode(mode) {
+  document.getElementById('btn-generate').style.display = mode === 'generate' ? '' : 'none';
+  document.getElementById('btn-outpaint').style.display = mode === 'outpaint' ? '' : 'none';
+  document.getElementById('btn-upscale' ).style.display = mode === 'upscale'  ? '' : 'none';
+
+  document.getElementById('ptab-btn-outpaint').hidden = mode !== 'outpaint';
+  document.getElementById('ptab-btn-upscale' ).hidden = mode !== 'upscale';
+
+  if (mode === 'generate') {
+    // Si estábamos en una pestaña contextual que acaba de desaparecer, volver a Modelo
+    const active = document.querySelector('.ptab-body.active');
+    if (!active || active.id === 'ptab-outpaint' || active.id === 'ptab-upscale')
+      setPanelTab('model');
+  } else {
+    setPanelTab(mode);
+  }
+}
+
+// ── Barra de prompt: plegar / desplegar ───────────────────────────────────
+const PB_COLLAPSED_KEY = 'painter.promptbar.collapsed';
+
+function setPromptBarCollapsed(collapsed) {
+  document.getElementById('p-promptbar').classList.toggle('collapsed', collapsed);
+  try { localStorage.setItem(PB_COLLAPSED_KEY, collapsed ? '1' : '0'); } catch (e) {}
+  if (collapsed) updatePromptSummary();
+  // El canvas gana o pierde alto: hay que recalcular su escala
+  if (S.imgW && S.imgH) resizeCanvases(S.imgW, S.imgH);
+  if (!collapsed) document.getElementById('inp-prompt').focus();
+}
+
+function togglePromptBar() {
+  setPromptBarCollapsed(!document.getElementById('p-promptbar').classList.contains('collapsed'));
+}
+
+// Resumen que se ve con la barra plegada: prompt truncado + estilo activo
+function updatePromptSummary() {
+  const raw  = document.getElementById('inp-prompt').value.trim();
+  const txt  = document.getElementById('pb-summary-text');
+  txt.textContent = raw || t('painter.pb_no_prompt');
+  txt.classList.toggle('pb-summary-empty', !raw);
+  txt.title = raw || '';
+
+  const styleName = document.getElementById('styles-active-name');
+  const hasStyle  = styleName && styleName.classList.contains('has-style');
+  document.getElementById('pb-summary-style').textContent =
+    hasStyle ? '✦ ' + styleName.textContent : '';
+}
+
 // ── UI helpers ────────────────────────────────────────────────────────────
 function showAcceptReject(visible) {
   const el = document.getElementById('accept-reject');
@@ -986,7 +1046,7 @@ function updateButtons() {
   updateUndoRedo();
 }
 
-// Badges ON de las secciones plegables del panel Generar
+// Badges ON de las secciones plegables de la pestaña Mods
 function updateSectionBadges() {
   const cnOn = document.getElementById('cn-enabled').checked;
   const adOn = _adDetectors.some(d => d.available && _adEnabled.has(d.id));
@@ -1872,17 +1932,25 @@ function initEvents() {
     document.getElementById('cn-strength-val').textContent = parseFloat(this.value).toFixed(2);
   });
 
-  // Selector de modo del panel (Regional vive como sección dentro de Generar)
+  // Pestañas del panel derecho
+  document.querySelectorAll('.ptab-btn').forEach(b => {
+    b.addEventListener('click', () => setPanelTab(b.dataset.ptab));
+  });
+
+  // Barra de prompt plegable
+  document.getElementById('pb-collapse').addEventListener('click', togglePromptBar);
+  document.getElementById('pb-summary' ).addEventListener('click', togglePromptBar);
+
+  // Selector de modo, en la barra de prompt (Regional vive como sección en Mods)
   document.getElementById('panel-mode-select').addEventListener('change', function () {
-    const targetTab = this.value;
-    if (S.regional.active && targetTab !== 'generate') {
+    const mode = this.value;
+    if (S.regional.active && mode !== 'generate') {
       if (!exitRegionalMode()) { this.value = 'generate'; return; }
       document.getElementById('reg-enabled').checked = false;
       document.getElementById('reg-active-controls').style.display = 'none';
       updateButtons();
     }
-    document.querySelectorAll('.panel-body').forEach(b => b.classList.remove('active'));
-    document.getElementById('tab-' + targetTab).classList.add('active');
+    setPanelMode(mode);
   });
 
   // Diálogo de tamaño de canvas
@@ -1898,7 +1966,7 @@ function initEvents() {
     b.addEventListener('click', () => setActiveRegion(parseInt(b.dataset.region)));
   });
 
-  // Secciones plegables del panel Generar (ControlNet / Regional / ADetailer)
+  // Secciones plegables de la pestaña Mods (ControlNet / Regional / ADetailer)
   [['cn-sec-toggle', 'cn-sec-body'],
    ['reg-sec-toggle', 'reg-sec-body'],
    ['ad-sec-toggle', 'ad-sec-body']].forEach(([hdrId, bodyId]) => {
@@ -2821,6 +2889,11 @@ document.addEventListener('DOMContentLoaded', () => {
   initTagDownloadModal();
   initProfiles();
   initTagSystem();
+  // Restaurar el estado plegado de la barra de prompt (initStyles ya corrió,
+  // así que el resumen puede leer el estilo activo)
+  try {
+    if (localStorage.getItem(PB_COLLAPSED_KEY) === '1') setPromptBarCollapsed(true);
+  } catch (e) {}
   backgroundInit();   // verifica ComfyUI e instala nodos faltantes en background
 });
 

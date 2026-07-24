@@ -59,8 +59,16 @@
     /* ── Main row ──────────────────────────────────────────────── */
     #p-main {
       display: grid;
-      grid-template-columns: 48px 1fr 300px;
+      grid-template-columns: 48px 1fr 320px;
       overflow: hidden;
+    }
+
+    /* ── Columna central: canvas arriba, barra de prompt abajo ─── */
+    #p-center {
+      display: grid;
+      grid-template-rows: 1fr auto;
+      overflow: hidden;
+      min-width: 0;
     }
 
     /* ── Herramientas ──────────────────────────────────────────── */
@@ -141,6 +149,118 @@
       outline: 1px solid rgba(96,13,181,.7);
       box-shadow: 0 0 0 1px rgba(84,239,234,.13), 0 8px 32px rgba(0,0,0,.5);
     }
+
+    /* ── Barra de prompt (bajo el canvas) ──────────────────────── */
+    /* Sin overflow: el popover de estilos se ancla aquí y saldría recortado.
+       El crecimiento se acota con el max-height de cada textarea. */
+    #p-promptbar {
+      display: flex; flex-direction: column; gap: 6px;
+      padding: 8px 12px 10px;
+      border-top: 1px solid var(--border); background: var(--bg-card);
+      flex-shrink: 0; position: relative;
+    }
+    /* Cabecera: etiqueta a la izquierda, estilos a la derecha */
+    .pb-hdr {
+      display: flex; align-items: center; gap: 8px;
+    }
+    .pb-hdr .ctrl-label { flex-shrink: 0; }
+    .pb-hdr .pb-rule {
+      flex: 1; height: 1px; background: var(--border);
+    }
+    #p-promptbar #inp-prompt {
+      min-height: 62px; max-height: 22vh; resize: vertical;
+    }
+    #p-promptbar #inp-negative {
+      min-height: 38px; max-height: 14vh; resize: vertical;
+    }
+    /* Fila de acción: selector de modo + botón principal */
+    #pb-action-row {
+      display: flex; align-items: stretch; gap: 8px;
+    }
+    #pb-action-row #panel-mode-select { width: 168px; flex-shrink: 0; }
+    #pb-action-row .btn-generate,
+    #pb-action-row .btn-action { margin-top: 0; flex: 1; }
+
+    /* ── Barra de prompt plegada ───────────────────────────────── */
+    /* Plegada, la fila de acción es lo único que queda: el resumen del
+       prompt ocupa el hueco de los textareas y devuelve el alto al canvas. */
+    #p-promptbar.collapsed > .pb-hdr,
+    #p-promptbar.collapsed > #inp-prompt,
+    #p-promptbar.collapsed > #inp-negative,
+    #p-promptbar.collapsed > #lora-chips { display: none; }
+
+    #pb-summary { display: none; }
+    #p-promptbar.collapsed #pb-summary {
+      display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0;
+      background: var(--bg-input); border: 1px solid var(--border);
+      border-radius: 8px; padding: 0 12px; cursor: pointer;
+      font-family: inherit; font-size: 12px; text-align: left;
+      color: var(--text-secondary);
+    }
+    #p-promptbar.collapsed #pb-summary:hover {
+      border-color: var(--accent-cyan); color: var(--text-primary);
+    }
+    /* Plegada, el botón de acción cede el ancho al resumen */
+    #p-promptbar.collapsed #pb-action-row .btn-generate,
+    #p-promptbar.collapsed #pb-action-row .btn-action { flex: 0 0 200px; }
+    #pb-summary-caret { color: var(--accent-cyan); font-size: 10px; flex-shrink: 0; }
+    #pb-summary-text {
+      flex: 1; min-width: 0;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    #pb-summary-text.pb-summary-empty { font-style: italic; color: var(--text-dim); }
+    #pb-summary-style {
+      flex-shrink: 0; font-size: 11px; color: var(--accent-cyan);
+    }
+    #pb-summary-style:empty { display: none; }
+    /* Botón de plegar, en la cabecera del prompt */
+    #pb-collapse {
+      background: none; border: 1px solid var(--border); color: var(--text-dim);
+      border-radius: 5px; padding: 1px 7px; font-size: 10px;
+      font-family: inherit; cursor: pointer; flex-shrink: 0;
+    }
+    #pb-collapse:hover { border-color: var(--accent-cyan); color: var(--accent-cyan); }
+    /* La sección de estilos vive en la cabecera del prompt */
+    #p-promptbar #styles-section {
+      border: none; background: none; margin: 0; flex-shrink: 0;
+    }
+    #p-promptbar #styles-header {
+      padding: 3px 8px; border: 1px solid var(--border); border-radius: 6px;
+    }
+    #p-promptbar #styles-active-name {
+      flex: 0 1 auto; max-width: 130px;
+    }
+    #p-promptbar #styles-panel {
+      position: absolute; right: 12px; bottom: 100%; z-index: 20;
+      width: 320px; max-height: 340px; overflow-y: auto;
+      background: var(--bg-card); border: 1px solid var(--border);
+      border-radius: 8px; padding: 10px;
+      box-shadow: 0 -8px 32px rgba(0,0,0,.55);
+    }
+    #pb-styles-anchor { position: relative; flex-shrink: 0; }
+
+    /* ── Pestañas del panel derecho ────────────────────────────── */
+    #panel-tabs {
+      display: flex; flex-shrink: 0;
+      border-bottom: 1px solid var(--border); background: var(--bg-deep, #0a001a);
+    }
+    .ptab-btn {
+      flex: 1; background: none; border: none; border-bottom: 2px solid transparent;
+      color: var(--text-dim); font-family: inherit; font-size: 11px; font-weight: 600;
+      letter-spacing: .05em; text-transform: uppercase;
+      padding: 9px 4px; cursor: pointer; white-space: nowrap;
+    }
+    .ptab-btn:hover { color: var(--text-secondary); }
+    .ptab-btn.active {
+      color: var(--accent-cyan); border-bottom-color: var(--accent-cyan);
+      background: rgba(84,239,234,.05);
+    }
+    .ptab-btn[hidden] { display: none; }
+    .ptab-body {
+      display: none; flex: 1; min-height: 0; overflow-y: auto;
+      padding: 12px; flex-direction: column; gap: 10px;
+    }
+    .ptab-body.active { display: flex; }
 
     /* ── Overlays ──────────────────────────────────────────────── */
     /* Banner no bloqueante: errores de setup menores */
@@ -239,9 +359,6 @@
       border-left: 1px solid var(--border); background: var(--bg-card);
       overflow: hidden;
     }
-    #panel-mode-wrap {
-      padding: 10px 12px 8px; border-bottom: 1px solid var(--border); flex-shrink: 0;
-    }
     #panel-mode-select {
       width: 100%; padding: 7px 10px; font-size: 12px; font-weight: 600;
       background: var(--bg-deep, #0a001a); color: var(--accent-cyan);
@@ -252,8 +369,6 @@
       background-repeat: no-repeat; background-position: right 10px center;
     }
     #panel-mode-select:focus { outline: none; box-shadow: 0 0 0 2px rgba(84,239,234,.3); }
-    .panel-body { display: none; flex: 1; min-height: 0; overflow-y: auto; padding: 12px; flex-direction: column; gap: 10px; }
-    .panel-body.active { display: flex; }
 
     /* ── Controles del panel ───────────────────────────────────── */
     .ctrl-group { display: flex; flex-direction: column; gap: 4px; }
@@ -314,7 +429,7 @@
 
     /* ── ADetailer ─────────────────────────────────────────────── */
     .ad-section { display:flex; flex-direction:column; gap:0; }
-    /* Secciones plegables del panel Generar (ControlNet / Regional / ADetailer) */
+    /* Secciones plegables de la pestaña Mods (ControlNet / Regional / ADetailer) */
     .mod-section { border:1px solid var(--border); border-radius:7px; overflow:hidden; flex-shrink:0; }
     .mod-section > .ad-section-hdr { padding:8px 10px; background:var(--bg-input); width:100%; }
     .mod-section-body { padding:8px 10px; display:flex; flex-direction:column; gap:10px; }
@@ -696,12 +811,6 @@
     <button class="back-btn" onclick="location.href='/'" data-i18n="painter.back">← AI Hub</button>
     <h1 data-i18n="painter.title">Painter</h1>
 
-    <span style="font-size:10px;color:var(--text-dim)" data-i18n="painter.arch_label">Arquitectura</span>
-    <select id="arch-select" title="Arquitectura de modelos">
-      <option value="sdxl">SDXL / Pony / Illustrious</option>
-      <option value="flux" disabled>Flux (próximamente)</option>
-    </select>
-
     <button class="hdr-icon-btn" id="btn-load-img"  data-i18n="painter.btn_load">Cargar imagen</button>
     <button class="hdr-icon-btn" id="btn-save-img" data-i18n="painter.btn_save" disabled>↓ Guardar</button>
     <input type="file" id="file-input" accept="image/*" style="display:none">
@@ -747,6 +856,9 @@
       </div>
     </div>
 
+    <!-- Columna central: canvas + barra de prompt -->
+    <div id="p-center">
+
     <!-- Canvas -->
     <div id="p-canvas-wrap">
 
@@ -775,36 +887,88 @@
       <canvas id="canvas-fg"></canvas>
     </div>
 
-    <!-- Panel IA -->
-    <div id="p-panel">
-      <div id="panel-mode-wrap">
+    <!-- ── Barra de prompt ─────────────────────────────────────── -->
+    <div id="p-promptbar">
+
+      <div class="pb-hdr">
+        <label class="ctrl-label" for="inp-prompt" data-i18n="painter.label_prompt">Prompt</label>
+        <button id="pb-collapse" type="button" data-i18n="painter.pb_collapse"
+                data-i18n-title="painter.pb_collapse_tip" title="Plegar la barra de prompt">▾ Plegar</button>
+        <div class="pb-rule"></div>
+        <!-- Estilos — compartido entre todos los modos -->
+        <div id="pb-styles-anchor">
+          <div id="styles-section">
+            <div id="styles-header">
+              <span id="styles-icon">✦</span>
+              <span id="styles-active-name" data-i18n="painter.styles_none">Sin estilo</span>
+              <button id="styles-clear-btn" style="display:none" title="Quitar estilo">×</button>
+              <span id="styles-toggle-arrow">▾</span>
+            </div>
+            <div id="styles-panel" style="display:none">
+              <textarea id="styles-prompt" placeholder="masterpiece, best quality, ultra detailed…"></textarea>
+              <div class="styles-name-row">
+                <input type="text" id="styles-name-input" data-i18n-placeholder="painter.styles_name_ph">
+                <button id="styles-save-btn" data-i18n="painter.styles_save">Guardar</button>
+              </div>
+              <div id="styles-list"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <textarea class="ctrl-textarea" id="inp-prompt" placeholder="Descripción de la imagen…" spellcheck="false"></textarea>
+      <div id="lora-chips"></div>
+
+      <div class="pb-hdr">
+        <label class="ctrl-label" for="inp-negative" data-i18n="painter.label_negative">Negativo</label>
+        <div class="pb-rule"></div>
+      </div>
+      <textarea class="ctrl-textarea" id="inp-negative" rows="2" placeholder="worst quality, blurry…"></textarea>
+
+      <div id="pb-action-row">
+        <!-- Resumen clicable — solo visible con la barra plegada -->
+        <button id="pb-summary" type="button" data-i18n-title="painter.pb_expand_tip"
+                title="Desplegar la barra de prompt">
+          <span id="pb-summary-caret">▴</span>
+          <span id="pb-summary-text" class="pb-summary-empty" data-i18n="painter.pb_no_prompt">Sin prompt — clic para escribir</span>
+          <span id="pb-summary-style"></span>
+        </button>
         <select id="panel-mode-select">
           <option value="generate"   data-i18n="painter.tab_generate">Generar</option>
           <option value="outpaint"   data-i18n="painter.tab_outpaint">Outpaint</option>
           <option value="upscale"    data-i18n="painter.tab_upscale">Upscale</option>
         </select>
+        <button class="btn-generate" id="btn-generate" data-i18n="painter.btn_generate">Generar</button>
+        <button class="btn-generate" id="btn-outpaint" style="display:none" data-i18n="painter.btn_outpaint">Outpaint</button>
+        <button class="btn-action"   id="btn-upscale"  style="display:none" data-i18n="painter.btn_upscale">Upscale</button>
       </div>
 
-      <!-- Estilos — compartido entre todos los modos -->
-      <div id="styles-section">
-        <div id="styles-header">
-          <span id="styles-icon">✦</span>
-          <span id="styles-active-name" data-i18n="painter.styles_none">Sin estilo</span>
-          <button id="styles-clear-btn" style="display:none" title="Quitar estilo">×</button>
-          <span id="styles-toggle-arrow">▾</span>
-        </div>
-        <div id="styles-panel" style="display:none">
-          <textarea id="styles-prompt" placeholder="masterpiece, best quality, ultra detailed…"></textarea>
-          <div class="styles-name-row">
-            <input type="text" id="styles-name-input" data-i18n-placeholder="painter.styles_name_ph">
-            <button id="styles-save-btn" data-i18n="painter.styles_save">Guardar</button>
-          </div>
-          <div id="styles-list"></div>
-        </div>
+    </div><!-- /p-promptbar -->
+    </div><!-- /p-center -->
+
+    <!-- Panel IA -->
+    <div id="p-panel">
+
+      <!-- Pestañas -->
+      <div id="panel-tabs">
+        <button class="ptab-btn active" data-ptab="model"    data-i18n="painter.ptab_model">Modelo</button>
+        <button class="ptab-btn"        data-ptab="sampling" data-i18n="painter.ptab_sampling">Muestreo</button>
+        <button class="ptab-btn"        data-ptab="mods"     data-i18n="painter.ptab_mods">Mods</button>
+        <button class="ptab-btn" id="ptab-btn-outpaint" data-ptab="outpaint" hidden data-i18n="painter.tab_outpaint">Outpaint</button>
+        <button class="ptab-btn" id="ptab-btn-upscale"  data-ptab="upscale"  hidden data-i18n="painter.tab_upscale">Upscale</button>
       </div>
 
-      <!-- Tab: Generar -->
-      <div class="panel-body active" id="tab-generate">
+      <!-- ── Pestaña: Modelo ───────────────────────────────────── -->
+      <div class="ptab-body active" id="ptab-model">
+        <div class="ctrl-group">
+          <label class="ctrl-label" data-i18n="painter.arch_label">Arquitectura</label>
+          <select class="ctrl-select" id="arch-select" title="Arquitectura de modelos">
+            <option value="sdxl">SDXL / Pony / Illustrious</option>
+            <option value="anima"  disabled>Anima — Cosmos 2B (próximamente)</option>
+            <option value="zimage" disabled>Z-Image (próximamente)</option>
+            <option value="krea2"  disabled>Krea 2 (próximamente)</option>
+          </select>
+        </div>
         <div class="ctrl-group">
           <label class="ctrl-label" data-i18n="painter.label_checkpoint">Checkpoint</label>
           <select class="ctrl-select" id="sel-checkpoint"><option value="">Cargando…</option></select>
@@ -827,16 +991,17 @@
             <button id="btn-tags-reload" title="Recargar CSV">↺</button>
           </div>
         </div>
-        <div class="ctrl-group" style="flex:1">
-          <label class="ctrl-label" data-i18n="painter.label_prompt">Prompt</label>
-          <textarea class="ctrl-textarea" id="inp-prompt" style="min-height:110px;resize:vertical" placeholder="Descripción de la imagen…" spellcheck="false"></textarea>
-          <div id="lora-chips"></div>
+        <div class="ctrl-group" id="inpaint-model-group" style="display:none">
+          <label class="ctrl-label" data-i18n="painter.label_inpaint_model">Modelo inpaint</label>
+          <select class="ctrl-select" id="sel-inpaint-model">
+            <option value="" data-i18n="painter.label_inpaint_none">(workflow básico)</option>
+          </select>
         </div>
-        <div class="ctrl-group">
-          <label class="ctrl-label" data-i18n="painter.label_negative">Negativo</label>
-          <textarea class="ctrl-textarea" id="inp-negative" style="min-height:52px" rows="2" placeholder="worst quality, blurry…"></textarea>
-        </div>
-        <div class="panel-divider"></div>
+        <button class="btn-action" id="btn-load-img-panel" data-i18n="painter.btn_load">↑ Cargar imagen</button>
+      </div><!-- /ptab-model -->
+
+      <!-- ── Pestaña: Muestreo ─────────────────────────────────── -->
+      <div class="ptab-body" id="ptab-sampling">
         <div class="ctrl-row">
           <div class="ctrl-group">
             <label class="ctrl-label" data-i18n="painter.label_sampler">Sampler</label>
@@ -893,14 +1058,10 @@
             <input type="number" class="ctrl-input" id="inp-height" value="1024" min="512" max="2048" step="8">
           </div>
         </div>
-        <div class="ctrl-group" id="inpaint-model-group" style="display:none">
-          <label class="ctrl-label" data-i18n="painter.label_inpaint_model">Modelo inpaint</label>
-          <select class="ctrl-select" id="sel-inpaint-model">
-            <option value="" data-i18n="painter.label_inpaint_none">(workflow básico)</option>
-          </select>
-        </div>
+      </div><!-- /ptab-sampling -->
 
-        <div class="panel-divider"></div>
+      <!-- ── Pestaña: Mods ─────────────────────────────────────── -->
+      <div class="ptab-body" id="ptab-mods">
 
         <!-- ── Sección: ControlNet (modificador de la generación) ─────── -->
         <div class="mod-section">
@@ -993,7 +1154,7 @@
               <label for="reg-enabled" class="ctrl-label" style="margin:0; cursor:pointer;">Activar Regional</label>
             </div>
             <div id="reg-active-controls" style="display:none">
-              <p class="panel-note" style="margin:0 0 6px">Pinta cada región en el canvas con los botones R1–R4 y dale un prompt propio. Usa el checkpoint, negativo y parámetros de arriba; se genera con el botón Generar.</p>
+              <p class="panel-note" style="margin:0 0 6px">Pinta cada región en el canvas con los botones R1–R4 y dale un prompt propio. Usa el checkpoint de la pestaña Modelo, el negativo de la barra de prompt y los parámetros de Muestreo; se genera con el botón Generar.</p>
               <!-- Regiones R1-R4 (generadas por JS) -->
               <div id="reg-regions"></div>
               <p id="reg-sampler-note">Sampler: Euler + Normal (forzado)</p>
@@ -1071,7 +1232,7 @@
                   <span class="ad-arrow">▾</span>
                 </button>
                 <div id="ad-prompt-body" style="display:none">
-                  <p class="panel-note" style="margin-top:4px">Si está vacío, usa el prompt del tab Generar.</p>
+                  <p class="panel-note" style="margin-top:4px">Si está vacío, usa el prompt de la barra inferior.</p>
                   <textarea class="ctrl-textarea" id="ad-prompt-override" rows="3" placeholder="prompt de detalle…"></textarea>
                 </div>
               </div>
@@ -1081,12 +1242,10 @@
           </div>
         </div>
 
-        <button class="btn-generate" id="btn-generate" data-i18n="painter.btn_generate">Generar</button>
-        <button class="btn-action" id="btn-load-img-panel" data-i18n="painter.btn_load">↑ Cargar imagen</button>
-      </div>
+      </div><!-- /ptab-mods -->
 
-      <!-- Tab: Outpaint -->
-      <div class="panel-body" id="tab-outpaint">
+      <!-- ── Pestaña contextual: Outpaint ──────────────────────── -->
+      <div class="ptab-body" id="ptab-outpaint">
 
         <!-- Preview visual de expansión -->
         <div id="op-preview-wrap">
@@ -1143,19 +1302,17 @@
           </div>
         </div>
 
-        <p class="panel-note" data-i18n="painter.op_note">Usa prompt, checkpoint y parámetros del tab Generar.</p>
-        <button class="btn-generate" id="btn-outpaint" data-i18n="painter.btn_outpaint">Outpaint</button>
-      </div>
+        <p class="panel-note" data-i18n="painter.op_note">Usa el prompt de la barra inferior y el checkpoint de la pestaña Modelo.</p>
+      </div><!-- /ptab-outpaint -->
 
-      <!-- Tab: Upscale -->
-      <div class="panel-body" id="tab-upscale">
+      <!-- ── Pestaña contextual: Upscale ───────────────────────── -->
+      <div class="ptab-body" id="ptab-upscale">
         <div class="ctrl-group">
           <label class="ctrl-label" data-i18n="painter.label_upscaler">Upscaler</label>
           <select class="ctrl-select" id="sel-upscaler"><option value="">Cargando…</option></select>
         </div>
         <p class="panel-note">El resultado puede ser 2x-4x más grande dependiendo del modelo.</p>
-        <button class="btn-action" id="btn-upscale" data-i18n="painter.btn_upscale">Upscale</button>
-      </div>
+      </div><!-- /ptab-upscale -->
 
     </div><!-- /p-panel -->
   </div><!-- /p-main -->
