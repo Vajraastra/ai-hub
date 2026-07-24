@@ -472,6 +472,42 @@ function clearMask() {
   updateMaskState();
 }
 
+// Refresca estado tras una edición de máscara (regional o principal) y repinta.
+function afterMaskEdit() {
+  if (S.regional.active) {
+    regionalMasks[S.regional.activeIdx].hasPixels =
+      checkRegionalMaskPixels(S.regional.activeIdx);
+    updateRegionCards();
+  } else {
+    updateMaskState();
+  }
+  render();
+}
+
+// Invierte la máscara activa: lo enmascarado queda libre y viceversa.
+function invertMask() {
+  if (!S.imgW) return;
+  const ctx = getActiveMaskCtx();
+  const img = ctx.getImageData(0, 0, S.imgW, S.imgH);
+  const d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    d[i] = 255; d[i + 1] = 255; d[i + 2] = 255;   // la máscara siempre se guarda en blanco
+    d[i + 3] = 255 - d[i + 3];                     // alpha invertido
+  }
+  ctx.putImageData(img, 0, 0);
+  afterMaskEdit();
+}
+
+// Selecciona todo el lienzo (máscara completa).
+function selectAllMask() {
+  if (!S.imgW) return;
+  const ctx = getActiveMaskCtx();
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = 'white';
+  ctx.fillRect(0, 0, S.imgW, S.imgH);
+  afterMaskEdit();
+}
+
 function updateMaskState() {
   if (S.regional.active) return;
   const d = ctxMask.getImageData(0, 0, S.imgW, S.imgH).data;
@@ -1689,7 +1725,10 @@ function initKeyboard() {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
     if (e.ctrlKey && e.key === 'z') { e.preventDefault(); doUndo(); return; }
     if (e.ctrlKey && (e.key === 'y' || e.key === 'Y')) { e.preventDefault(); doRedo(); return; }
+    if (e.ctrlKey && (e.key === 'a' || e.key === 'A')) { e.preventDefault(); selectAllMask(); return; }
+    if (e.ctrlKey) return;   // no capturar otros atajos con Ctrl
     if (e.key === 'Escape') { cancelSelection(); return; }
+    if (e.key.toLowerCase() === 'i') { invertMask(); return; }
     switch (e.key.toLowerCase()) {
       case 'b': setTool('brush');  break;
       case 'r': setTool('rect');   break;
@@ -1879,7 +1918,9 @@ function initEvents() {
     if (this.files[0]) loadImageFile(this.files[0]);
   });
 
-  // Limpiar máscara
+  // Utilidades de máscara
+  document.getElementById('btn-select-all').addEventListener('click', selectAllMask);
+  document.getElementById('btn-invert-mask').addEventListener('click', invertMask);
   document.getElementById('btn-clear-mask').addEventListener('click', clearMask);
 
   // Generar (Regional activo → generación regional; máscara → inpaint)
