@@ -845,7 +845,7 @@ $('btn-merge').onclick = async () => {
     ? `Fusión A⊕B con la config afinada [${g.summary}]:\n\n  ${sessLoraName(s)} @ ${s.strength}\n  + ${sessLora2Name(s)} @ ${s.strength2}\n  → loras/forge_fusion/${name}.safetensors\n\nProducto: un LoRA comprimido por SVD (energía 99%). Corre en CPU/RAM. ¿Adelante?`
     : purify
     ? `Depurar con la config afinada [${g.summary}]:\n\n  ${sessLoraName(s)} @ ${s.strength}\n  → loras/forge_fusion/${name}.safetensors\n\nProducto: el MISMO LoRA con los bloques OFF eliminados y las dosis aplicadas (exacto, sin SVD). Corre en CPU/RAM. ¿Adelante?`
-    : `Merge con la config afinada [${g.summary}]:\n\n  ${s.checkpoint}  ←  ${sessLoraName(s)}  @ ${s.strength}\n  →  forge_lab/${name}.safetensors (~12 GB)\n\nCorre en CPU/RAM (unos minutos). ¿Adelante?`)
+    : `Merge con la config afinada [${g.summary}]:\n\n  ${s.checkpoint}  ←  ${sessLoraName(s)}  @ ${s.strength}\n  →  forge_fusion/${name}.safetensors (~12 GB)\n\nCorre en CPU/RAM (unos minutos). ¿Adelante?`)
     + negWarn;
   if (!confirm(msg)) return;
   try {

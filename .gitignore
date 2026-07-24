@@ -172,8 +172,6 @@ bitacora*
 /scripts/
 apps/*
 !apps/model_vault/
-!apps/lora_merger/
-!apps/forge_lab/
 !apps/forge_fusion/
 !apps/ideogram/
 !apps/faceswap/

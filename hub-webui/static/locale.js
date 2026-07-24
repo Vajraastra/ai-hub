@@ -17,7 +17,7 @@
         uninstall_confirm:"¿Desinstalar <strong>{name}</strong>?<br><br>Se eliminará su directorio completo. Esta acción no se puede deshacer.",
         op_unavailable:"Operación no disponible en este momento.", op_error:"Error de conexión con el backend."
       },
-      tools: { section_title:"Herramientas del Hub", vault_desc:"Gestiona y organiza modelos. Integración con Civitai.", merger_desc:"Combina LoRAs con métodos avanzados: slerp, TIES, DARE.", painter_desc:"Editor de imagen AI: generate, inpaint, outpaint, upscale.", open:"Abrir", launched:"Herramienta iniciada.", launch_error:"No se pudo iniciar.", error:"Error al lanzar la herramienta." },
+      tools: { section_title:"Herramientas del Hub", vault_desc:"Gestiona y organiza modelos. Integración con Civitai.", painter_desc:"Editor de imagen AI: generate, inpaint, outpaint, upscale.", fusion_desc:"Derivación de checkpoints y fusión de LoRAs por bloques (SDXL, Anima, Z-Image).", open:"Abrir", launched:"Herramienta iniciada.", launch_error:"No se pudo iniciar.", error:"Error al lanzar la herramienta." },
       settings: {
         title_system:"Sistema", gpu:"GPU", vram:"VRAM", arch:"Arquitectura", cuda_tag:"CUDA Tag", pytorch:"PyTorch",
         title_paths:"Rutas", models_dir:"Directorio de Modelos", models_hint:"Ruta donde están almacenados los checkpoints, LoRAs, VAEs, etc.", models_placeholder:"/ruta/a/modelos",
@@ -197,7 +197,7 @@
         uninstall_confirm:"Uninstall <strong>{name}</strong>?<br><br>Its entire directory will be deleted. This action cannot be undone.",
         op_unavailable:"Operation not available at this time.", op_error:"Connection error with the backend."
       },
-      tools: { section_title:"Hub Tools", vault_desc:"Manage and organize models. Civitai integration.", merger_desc:"Combine LoRAs with advanced methods: slerp, TIES, DARE.", painter_desc:"AI image editor: generate, inpaint, outpaint, upscale.", open:"Open", launched:"Tool launched.", launch_error:"Could not launch.", error:"Error launching tool." },
+      tools: { section_title:"Hub Tools", vault_desc:"Manage and organize models. Civitai integration.", painter_desc:"AI image editor: generate, inpaint, outpaint, upscale.", fusion_desc:"Checkpoint derivation and block-wise LoRA fusion (SDXL, Anima, Z-Image).", open:"Open", launched:"Tool launched.", launch_error:"Could not launch.", error:"Error launching tool." },
       settings: {
         title_system:"System", gpu:"GPU", vram:"VRAM", arch:"Architecture", cuda_tag:"CUDA Tag", pytorch:"PyTorch",
         title_paths:"Paths", models_dir:"Models Directory", models_hint:"Path where checkpoints, LoRAs, VAEs, etc. are stored.", models_placeholder:"/path/to/models",
