@@ -9,7 +9,9 @@ const S = {
   tool:       'brush',
   brushSize:  30,
   imgW: 0, imgH: 0,       // resolución de la imagen actual
-  scale:  1,              // factor CSS→imagen
+  scale:  1,              // factor CSS→imagen (zoom de la vista)
+  panX: 0, panY: 0,       // desplazamiento de la vista en px de pantalla
+  zoomAuto: true,         // true = la vista se re-encaja sola al cambiar el contenedor
   hasMask:    false,
   showMask:   true,   // false mientras se muestra un preview (máscara oculta pero no borrada)
   hasImage:   false,
@@ -157,6 +159,9 @@ let _prevBrushX = null, _prevBrushY = null;
 // ── Posición del cursor en espacio-imagen ─────────────────────────────────
 let _cursorX = -1, _cursorY = -1, _cursorVisible = false;
 
+// ── Paneo: botón central, o espacio mantenido + botón izquierdo ───────────
+let _panning = false, _panLastX = 0, _panLastY = 0, _spaceDown = false;
+
 // ── Init canvas ───────────────────────────────────────────────────────────
 function initCanvas() {
   canvasBg   = document.getElementById('canvas-bg');
@@ -174,27 +179,116 @@ function initCanvas() {
   canvasFg.addEventListener('contextmenu', e => e.preventDefault());
   // Ocultar cursor CSS — lo dibujamos nosotros
   canvasFg.style.cursor = 'none';
+
+  // Rueda = zoom anclado al cursor. Va en el wrap para que también funcione
+  // sobre el damero, fuera de la imagen.
+  const wrap = viewWrap();
+  wrap.addEventListener('wheel', e => {
+    if (!S.imgW) return;
+    e.preventDefault();
+    zoomBy(e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP, e.clientX, e.clientY);
+  }, { passive: false });
+
+  // El canvas se re-encaja solo cuando cambia el contenedor (plegar la barra de
+  // prompt, redimensionar la ventana). Antes esto se hacía llamando a
+  // resizeCanvases con las mismas dimensiones, que vaciaba el canvas de fondo.
+  new ResizeObserver(reflowView).observe(wrap);
 }
 
+// Cambia la RESOLUCIÓN del documento. Destructivo: asignar c.width vacía el
+// canvas aunque el valor no cambie, así que no vale para un simple reflow del
+// contenedor — para eso está reflowView().
 function resizeCanvases(w, h) {
   S.imgW = w; S.imgH = h;
-  const wrap  = document.getElementById('p-canvas-wrap');
-  const maxW  = wrap.clientWidth  - 20;
-  const maxH  = wrap.clientHeight - 20;
-  S.scale     = Math.min(maxW / w, maxH / h, 1);
-  const cssW  = Math.round(w * S.scale);
-  const cssH  = Math.round(h * S.scale);
-
-  [canvasBg, canvasFg].forEach(c => {
-    c.width  = w; c.height = h;
-    c.style.width  = cssW + 'px';
-    c.style.height = cssH + 'px';
-  });
+  [canvasBg, canvasFg].forEach(c => { c.width = w; c.height = h; });
   maskCanvas.width = w; maskCanvas.height = h;
+  zoomToFit();
+}
+
+// ── Vista: zoom y paneo ───────────────────────────────────────────────────
+// El zoom se aplica al tamaño CSS (style.width/height), NO con transform:scale,
+// para que el backing store siga siendo 1 px de imagen = 1 px de canvas. El
+// paneo sí es un translate encima del centrado. Gracias a las dos cosas toImg()
+// no necesita saber nada de esto: getBoundingClientRect() ya devuelve el rect
+// desplazado y escalado.
+const ZOOM_MIN = 0.05, ZOOM_MAX = 16;
+const ZOOM_STEP  = 1.15;   // por muesca de rueda
+const PAN_MARGIN = 60;     // px de imagen que siempre quedan dentro del wrap
+
+function viewWrap() { return document.getElementById('p-canvas-wrap'); }
+
+function applyView() {
+  const cssW = Math.max(1, Math.round(S.imgW * S.scale));
+  const cssH = Math.max(1, Math.round(S.imgH * S.scale));
+  const tf   = `translate(-50%, -50%) translate(${Math.round(S.panX)}px, ${Math.round(S.panY)}px)`;
+  [canvasBg, canvasFg].forEach(c => {
+    c.style.width     = cssW + 'px';
+    c.style.height    = cssH + 'px';
+    c.style.transform = tf;
+  });
   updateStatusDims();
 }
 
+// Impide perder la imagen fuera de la vista: siempre quedan PAN_MARGIN px dentro
+function clampPan() {
+  const wrap = viewWrap();
+  const maxX = Math.max(0, (wrap.clientWidth  + S.imgW * S.scale) / 2 - PAN_MARGIN);
+  const maxY = Math.max(0, (wrap.clientHeight + S.imgH * S.scale) / 2 - PAN_MARGIN);
+  S.panX = Math.max(-maxX, Math.min(maxX, S.panX));
+  S.panY = Math.max(-maxY, Math.min(maxY, S.panY));
+}
+
+function zoomToFit() {
+  const wrap = viewWrap();
+  S.scale = S.imgW && S.imgH
+    ? Math.min((wrap.clientWidth - 20) / S.imgW, (wrap.clientHeight - 20) / S.imgH, 1)
+    : 1;
+  S.panX = 0; S.panY = 0;
+  S.zoomAuto = true;
+  applyView();
+}
+
+// Zoom anclado a un punto de pantalla: el píxel de imagen que hay bajo ese punto
+// no se mueve. Sin ancla se usa el centro del wrap.
+function setZoom(scale, clientX, clientY) {
+  scale = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, scale));
+  if (!S.imgW || Math.abs(scale - S.scale) < 1e-6) return;
+  const r   = viewWrap().getBoundingClientRect();
+  const wcx = r.left + r.width  / 2;
+  const wcy = r.top  + r.height / 2;
+  if (clientX === undefined) { clientX = wcx; clientY = wcy; }
+  // El ancla está a (dx,dy) del centro del canvas; tras escalar por k pasa a
+  // estar a k·(dx,dy), así que se compensa el exceso con el paneo.
+  const dx = clientX - (wcx + S.panX);
+  const dy = clientY - (wcy + S.panY);
+  const k  = scale / S.scale;
+  S.panX -= dx * (k - 1);
+  S.panY -= dy * (k - 1);
+  S.scale = scale;
+  S.zoomAuto = false;
+  clampPan();
+  applyView();
+}
+
+function zoomBy(factor, clientX, clientY) { setZoom(S.scale * factor, clientX, clientY); }
+
+function panBy(dx, dy) {
+  S.panX += dx; S.panY += dy;
+  S.zoomAuto = false;
+  clampPan();
+  applyView();
+}
+
+// El contenedor cambió de tamaño (plegar la barra de prompt, redimensionar la
+// ventana). Solo recoloca: no toca el backing store, no borra nada.
+function reflowView() {
+  if (!S.imgW) return;
+  if (S.zoomAuto) zoomToFit();
+  else { clampPan(); applyView(); }
+}
+
 // ── Coordenadas CSS → imagen ──────────────────────────────────────────────
+// Válida con zoom y paneo: el rect del canvas ya los incluye a los dos.
 function toImg(clientX, clientY) {
   const r = canvasFg.getBoundingClientRect();
   return [
@@ -237,13 +331,18 @@ function drawRegionalOverlay() {
 
 function drawToolPreview() {
   const x = _cursorX, y = _cursorY;
+  // El canvas dibuja en espacio-imagen, así que con zoom todo se escala. Para
+  // los adornos (líneas, cruces, texto) eso no vale: a 8× una línea de 2 px
+  // taparía el dibujo. Se dividen por la escala para que midan lo mismo en
+  // pantalla a cualquier zoom. El radio del pincel NO — ese sí es tamaño real.
+  const k = 1 / (S.scale || 1);
   ctxFg.save();
 
   if (S.tool === 'wand' || S.tool === 'fill') {
-    const sz = 10;
+    const sz = 10 * k;
     const color = S.tool === 'wand' ? 'rgba(84,239,234,0.9)' : 'rgba(236,0,240,0.9)';
     ctxFg.strokeStyle = color;
-    ctxFg.lineWidth   = 1.5;
+    ctxFg.lineWidth   = 1.5 * k;
     ctxFg.setLineDash([]);
     ctxFg.beginPath();
     ctxFg.moveTo(x - sz, y); ctxFg.lineTo(x + sz, y);
@@ -255,12 +354,12 @@ function drawToolPreview() {
     ctxFg.beginPath();
     ctxFg.arc(x, y, r, 0, Math.PI * 2);
     ctxFg.strokeStyle = 'rgba(255,255,255,0.85)';
-    ctxFg.lineWidth   = 1;
-    ctxFg.setLineDash([4, 3]);
+    ctxFg.lineWidth   = 1 * k;
+    ctxFg.setLineDash([4 * k, 3 * k]);
     ctxFg.stroke();
     // Punto central
     ctxFg.beginPath();
-    ctxFg.arc(x, y, 1.5, 0, Math.PI * 2);
+    ctxFg.arc(x, y, 1.5 * k, 0, Math.PI * 2);
     ctxFg.fillStyle = 'rgba(255,255,255,0.9)';
     ctxFg.fill();
 
@@ -269,27 +368,27 @@ function drawToolPreview() {
     const [x1, y1] = rectEnd;
     // Sombra negra para contraste sobre fondos claros
     ctxFg.strokeStyle = 'rgba(0,0,0,0.6)';
-    ctxFg.lineWidth   = 3;
+    ctxFg.lineWidth   = 3 * k;
     ctxFg.setLineDash([]);
     ctxFg.strokeRect(x0, y0, x1 - x0, y1 - y0);
     // Línea blanca punteada encima
     ctxFg.strokeStyle = 'rgba(255,255,255,0.95)';
-    ctxFg.lineWidth   = 2;
-    ctxFg.setLineDash([6, 4]);
+    ctxFg.lineWidth   = 2 * k;
+    ctxFg.setLineDash([6 * k, 4 * k]);
     ctxFg.strokeRect(x0, y0, x1 - x0, y1 - y0);
     // Dimensiones
     const w = Math.abs(x1 - x0), h = Math.abs(y1 - y0);
     ctxFg.setLineDash([]);
-    ctxFg.font        = 'bold 12px monospace';
+    ctxFg.font        = `bold ${(12 * k).toFixed(1)}px monospace`;
     ctxFg.fillStyle   = 'rgba(0,0,0,0.7)';
-    ctxFg.fillText(`${w}×${h}`, Math.min(x0, x1) + 4, Math.min(y0, y1) - 5);
+    ctxFg.fillText(`${w}×${h}`, Math.min(x0, x1) + 4 * k, Math.min(y0, y1) - 5 * k);
     ctxFg.fillStyle   = 'rgba(255,255,255,0.95)';
-    ctxFg.fillText(`${w}×${h}`, Math.min(x0, x1) + 3, Math.min(y0, y1) - 6);
+    ctxFg.fillText(`${w}×${h}`, Math.min(x0, x1) + 3 * k, Math.min(y0, y1) - 6 * k);
 
   } else if (S.tool === 'lasso' && lassoPoints.length > 1) {
     // Sombra negra
     ctxFg.strokeStyle = 'rgba(0,0,0,0.6)';
-    ctxFg.lineWidth   = 3;
+    ctxFg.lineWidth   = 3 * k;
     ctxFg.setLineDash([]);
     ctxFg.beginPath();
     ctxFg.moveTo(lassoPoints[0][0], lassoPoints[0][1]);
@@ -298,8 +397,8 @@ function drawToolPreview() {
     ctxFg.stroke();
     // Línea blanca punteada encima
     ctxFg.strokeStyle = 'rgba(255,255,255,0.95)';
-    ctxFg.lineWidth   = 2;
-    ctxFg.setLineDash([6, 4]);
+    ctxFg.lineWidth   = 2 * k;
+    ctxFg.setLineDash([6 * k, 4 * k]);
     ctxFg.beginPath();
     ctxFg.moveTo(lassoPoints[0][0], lassoPoints[0][1]);
     lassoPoints.slice(1).forEach(([px, py]) => ctxFg.lineTo(px, py));
@@ -308,25 +407,25 @@ function drawToolPreview() {
     // Punto de inicio (cyan para indicar dónde cerrar)
     ctxFg.setLineDash([]);
     ctxFg.beginPath();
-    ctxFg.arc(lassoPoints[0][0], lassoPoints[0][1], 5, 0, Math.PI * 2);
+    ctxFg.arc(lassoPoints[0][0], lassoPoints[0][1], 5 * k, 0, Math.PI * 2);
     ctxFg.fillStyle = '#54EFEA';
     ctxFg.fill();
     ctxFg.strokeStyle = '#000';
-    ctxFg.lineWidth = 1;
+    ctxFg.lineWidth = 1 * k;
     ctxFg.stroke();
 
   } else if ((S.tool === 'rect' || S.tool === 'lasso') && !drawing) {
     // Cruz de referencia cuando no está dibujando
-    const size = 9;
+    const size = 9 * k;
     ctxFg.setLineDash([]);
-    ctxFg.lineWidth = 2;
+    ctxFg.lineWidth = 2 * k;
     ctxFg.strokeStyle = 'rgba(0,0,0,0.5)';
     ctxFg.beginPath();
     ctxFg.moveTo(x - size, y); ctxFg.lineTo(x + size, y);
     ctxFg.moveTo(x, y - size); ctxFg.lineTo(x, y + size);
     ctxFg.stroke();
     ctxFg.strokeStyle = 'rgba(255,255,255,0.9)';
-    ctxFg.lineWidth = 1.5;
+    ctxFg.lineWidth = 1.5 * k;
     ctxFg.beginPath();
     ctxFg.moveTo(x - size, y); ctxFg.lineTo(x + size, y);
     ctxFg.moveTo(x, y - size); ctxFg.lineTo(x, y + size);
@@ -352,6 +451,16 @@ function drawMaskOverlay() {
 
 // ── Herramientas ──────────────────────────────────────────────────────────
 function onMouseDown(e) {
+  // El paneo va antes de todo: se pueda o no dibujar (preview activo incluido),
+  // moverse por la imagen siempre debe funcionar.
+  if (e.button === 1 || (_spaceDown && e.button === 0)) {
+    _panning = true;
+    _panLastX = e.clientX; _panLastY = e.clientY;
+    canvasFg.style.cursor = 'grabbing';
+    e.preventDefault();
+    return;
+  }
+  if (e.button !== 0) return;      // el derecho no pinta
   if (S.hasPreview) return;
   drawing = true;
   _prevBrushX = null; _prevBrushY = null;  // inicio de trazo nuevo
@@ -372,6 +481,11 @@ function onMouseDown(e) {
 }
 
 function onMouseMove(e) {
+  if (_panning) {
+    panBy(e.clientX - _panLastX, e.clientY - _panLastY);
+    _panLastX = e.clientX; _panLastY = e.clientY;
+    return;
+  }
   const [x, y] = toImg(e.clientX, e.clientY);
   _cursorX = x; _cursorY = y;
   updateStatusCursor(x, y);
@@ -386,6 +500,11 @@ function onMouseMove(e) {
 }
 
 function onMouseUp(e) {
+  if (_panning) {
+    _panning = false;
+    canvasFg.style.cursor = _spaceDown ? 'grab' : 'none';
+    return;
+  }
   if (!drawing) return;
   drawing = false;
   _prevBrushX = null; _prevBrushY = null;
@@ -1036,8 +1155,7 @@ function setPromptBarCollapsed(collapsed) {
   document.getElementById('p-promptbar').classList.toggle('collapsed', collapsed);
   try { localStorage.setItem(PB_COLLAPSED_KEY, collapsed ? '1' : '0'); } catch (e) {}
   if (collapsed) updatePromptSummary();
-  // El canvas gana o pierde alto: hay que recalcular su escala
-  if (S.imgW && S.imgH) resizeCanvases(S.imgW, S.imgH);
+  // El canvas gana o pierde alto; del reajuste se encarga el ResizeObserver
   if (!collapsed) document.getElementById('inp-prompt').focus();
 }
 
@@ -1146,6 +1264,18 @@ function updateStatusDims() {
     S.imgW && S.imgH ? `${S.imgW}×${S.imgH}` : '—';
   const pct = S.imgW ? Math.round(S.scale * 100) : null;
   document.getElementById('st-zoom').textContent = pct ? `${pct}%` : '—';
+}
+
+// El indicador de zoom alterna 100% ↔ ajustar a la ventana
+function initZoomIndicator() {
+  const el = document.getElementById('st-zoom');
+  el.style.cursor     = 'pointer';
+  el.style.textDecoration = 'underline dotted';
+  el.title = 'Rueda: zoom · Espacio o botón central: mover · Ctrl+0: ajustar · Ctrl+1: 100%';
+  el.addEventListener('click', () => {
+    if (!S.imgW) return;
+    Math.abs(S.scale - 1) < 0.005 ? zoomToFit() : setZoom(1);
+  });
 }
 
 function updateStatusCursor(x, y) {
@@ -1771,7 +1901,19 @@ function initKeyboard() {
     if (e.ctrlKey && e.key === 'z') { e.preventDefault(); doUndo(); return; }
     if (e.ctrlKey && (e.key === 'y' || e.key === 'Y')) { e.preventDefault(); doRedo(); return; }
     if (e.ctrlKey && (e.key === 'a' || e.key === 'A')) { e.preventDefault(); selectAllMask(); return; }
+    if (e.ctrlKey && e.key === '0') { e.preventDefault(); zoomToFit(); return; }
+    if (e.ctrlKey && e.key === '1') { e.preventDefault(); setZoom(1);  return; }
     if (e.ctrlKey) return;   // no capturar otros atajos con Ctrl
+    // Espacio mantenido = modo paneo mientras dure (no se propaga a los campos:
+    // este handler ya ha descartado INPUT y TEXTAREA más arriba)
+    if (e.code === 'Space') {
+      e.preventDefault();
+      if (!_spaceDown) {
+        _spaceDown = true;
+        if (!_panning) canvasFg.style.cursor = 'grab';
+      }
+      return;
+    }
     if (e.key === 'Escape') { cancelSelection(); return; }
     if (e.key.toLowerCase() === 'i') { invertMask(); return; }
     switch (e.key.toLowerCase()) {
@@ -1786,6 +1928,16 @@ function initKeyboard() {
       case ']': changeBrushSize(+5); break;
     }
   });
+
+  // El keyup del espacio NO filtra por target ni por foco: si se filtrara, un
+  // cambio de foco con la tecla pulsada dejaría el modo paneo pegado.
+  const endSpacePan = () => {
+    if (!_spaceDown) return;
+    _spaceDown = false;
+    if (!_panning) canvasFg.style.cursor = 'none';
+  };
+  document.addEventListener('keyup', e => { if (e.code === 'Space') endSpacePan(); });
+  window.addEventListener('blur', endSpacePan);   // alt-tab con el espacio pulsado
 }
 
 // ── Selección temporal (Magic Wand) ───────────────────────────────────────
@@ -2971,6 +3123,7 @@ document.addEventListener('DOMContentLoaded', () => {
   buildRegionCards();
   initEvents();
   initKeyboard();
+  initZoomIndicator();
   initDraggable();
   initStyles();
   initControlNet();
