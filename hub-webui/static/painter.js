@@ -510,10 +510,17 @@ function selectAllMask() {
 
 function updateMaskState() {
   if (S.regional.active) return;
-  const d = ctxMask.getImageData(0, 0, S.imgW, S.imgH).data;
-  S.hasMask = d.some((v, i) => i % 4 === 3 && v > 0);
-  document.getElementById('inpaint-model-group').style.display =
-    S.hasMask ? '' : 'none';
+  const d    = ctxMask.getImageData(0, 0, S.imgW, S.imgH).data;
+  const had  = S.hasMask;
+  S.hasMask  = d.some((v, i) => i % 4 === 3 && v > 0);
+  if (S.hasMask === had) return;
+
+  // La máscara es el disparador natural de Inpaint: pintar la primera lo
+  // activa, borrarla devuelve a Generar. Si el usuario eligió a mano otra
+  // acción (Outpaint, Upscale, ADetailer) no se le cambia por debajo.
+  if      ( S.hasMask && S_action === 'generate' && S.hasImage) setPanelAction('inpaint');
+  else if (!S.hasMask && S_action === 'inpaint')                setPanelAction('generate');
+  else    updateButtons();
 }
 
 function getMaskB64() {
@@ -967,24 +974,59 @@ function setPanelTab(name) {
     b.classList.toggle('active', b.id === 'ptab-' + name));
 }
 
-// El modo decide qué botón de acción se ve en la barra de prompt y si hay
-// pestaña contextual (Outpaint / Upscale tienen controles propios).
-function setPanelMode(mode) {
-  document.getElementById('btn-generate').style.display = mode === 'generate' ? '' : 'none';
-  document.getElementById('btn-outpaint').style.display = mode === 'outpaint' ? '' : 'none';
-  document.getElementById('btn-upscale' ).style.display = mode === 'upscale'  ? '' : 'none';
+// La acción activa decide qué botón de ejecución se ve en la barra de prompt
+// y qué pestaña contextual existe. Outpaint / Upscale / ADetailer tienen
+// controles propios; Inpaint usa los de Muestreo (denoise, feather).
+const ACTIONS  = ['generate', 'inpaint', 'outpaint', 'upscale', 'adetailer'];
+const CTX_TABS = ['outpaint', 'upscale', 'adetailer'];
+let S_action   = 'generate';
 
-  document.getElementById('ptab-btn-outpaint').hidden = mode !== 'outpaint';
-  document.getElementById('ptab-btn-upscale' ).hidden = mode !== 'upscale';
+function setPanelAction(action) {
+  S_action = action;
 
-  if (mode === 'generate') {
-    // Si estábamos en una pestaña contextual que acaba de desaparecer, volver a Modelo
-    const active = document.querySelector('.ptab-body.active');
-    if (!active || active.id === 'ptab-outpaint' || active.id === 'ptab-upscale')
-      setPanelTab('model');
+  document.querySelectorAll('.act-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.action === action));
+  ACTIONS.forEach(a =>
+    document.getElementById('btn-' + a).style.display = a === action ? '' : 'none');
+  CTX_TABS.forEach(a =>
+    document.getElementById('ptab-btn-' + a).hidden = a !== action);
+
+  // El modelo de inpaint solo pinta algo cuando se va a hacer inpaint
+  document.getElementById('inpaint-model-group').style.display =
+    action === 'inpaint' ? '' : 'none';
+
+  if (CTX_TABS.includes(action)) {
+    setPanelTab(action);
   } else {
-    setPanelTab(mode);
+    // Generar e Inpaint no tienen pestaña propia: sus ajustes viven en Modelo
+    // (checkpoint, modelo de inpaint) y Muestreo. Solo se fuerza el cambio si
+    // la pestaña contextual que se estaba viendo acaba de desaparecer.
+    const active = document.querySelector('.ptab-body.active');
+    if (!active || CTX_TABS.includes(active.id.replace('ptab-', '')))
+      setPanelTab('model');
   }
+  updateButtons();
+}
+
+// Disponibilidad de cada acción. Las que no se pueden usar se quedan a la
+// vista en gris con el motivo en el tooltip — ocultarlas es lo que hacía que
+// nadie supiera que existían.
+function updateActionAvailability() {
+  const busy   = !!S.activeJobId;
+  const reason = {
+    generate:  '',
+    inpaint:   !S.hasImage ? t('painter.no_image')
+             : !S.hasMask  ? t('painter.no_mask') : '',
+    outpaint:  !S.hasImage ? t('painter.no_image') : '',
+    upscale:   !S.hasImage ? t('painter.no_image') : '',
+    adetailer: !S.hasImage        ? t('painter.no_image')
+             : !_adImpactAvailable ? 'Requiere comfyui-impact-pack' : '',
+  };
+  document.querySelectorAll('.act-btn').forEach(b => {
+    const why = reason[b.dataset.action];
+    b.disabled = busy || !!why;
+    b.title    = why || '';
+  });
 }
 
 // ── Barra de prompt: plegar / desplegar ───────────────────────────────────
@@ -1072,12 +1114,14 @@ function updateButtons() {
   btnGen.disabled  = busy || !hasCkpt;
   btnGen.textContent = S.regional.active
     ? t('painter.btn_generate') + ' (Regional)'
-    : (S.hasMask ? t('painter.btn_inpaint') : t('painter.btn_generate'));
+    : t('painter.btn_generate');
   document.getElementById('btn-save-img').disabled  = !S.hasImage;
+  document.getElementById('btn-inpaint').disabled   = busy || !hasCkpt || !S.hasImage || !S.hasMask;
   document.getElementById('btn-outpaint').disabled  = busy || !S.hasImage;
   document.getElementById('btn-upscale').disabled   = busy || !S.hasImage;
   const hasAdEnabled = _adDetectors.some(d => d.available && _adEnabled.has(d.id));
   document.getElementById('btn-adetailer').disabled  = busy || !S.hasImage || !hasCkpt || !hasAdEnabled;
+  updateActionAvailability();
   updateSectionBadges();
   updateUndoRedo();
 }
@@ -1519,6 +1563,7 @@ function populateModelSelects(m, arch) {
   _adImpactAvailable = !!m.adetailer_available;
   document.getElementById('ad-install-panel').style.display = _adImpactAvailable ? 'none' : 'flex';
   document.getElementById('ad-controls').style.display      = _adImpactAvailable ? ''     : 'none';
+  updateButtons();   // el chip ADetailer depende de _adImpactAvailable
 }
 
 // ── Setup overlay ─────────────────────────────────────────────────────────
@@ -1923,11 +1968,13 @@ function initEvents() {
   document.getElementById('btn-invert-mask').addEventListener('click', invertMask);
   document.getElementById('btn-clear-mask').addEventListener('click', clearMask);
 
-  // Generar (Regional activo → generación regional; máscara → inpaint)
+  // Generar (Regional activo → generación regional). Inpaint es su propia
+  // acción: ya no se dispara solo por tener máscara pintada.
   document.getElementById('btn-generate').addEventListener('click', () => {
     if (S.regional.active) return doRegional();
-    S.hasMask ? doInpaint() : doGenerate();
+    doGenerate();
   });
+  document.getElementById('btn-inpaint').addEventListener('click', doInpaint);
 
   // Upscale
   document.getElementById('btn-outpaint').addEventListener('click', doOutpaint);
@@ -1982,16 +2029,17 @@ function initEvents() {
   document.getElementById('pb-collapse').addEventListener('click', togglePromptBar);
   document.getElementById('pb-summary' ).addEventListener('click', togglePromptBar);
 
-  // Selector de modo, en la barra de prompt (Regional vive como sección en Mods)
-  document.getElementById('panel-mode-select').addEventListener('change', function () {
-    const mode = this.value;
-    if (S.regional.active && mode !== 'generate') {
-      if (!exitRegionalMode()) { this.value = 'generate'; return; }
-      document.getElementById('reg-enabled').checked = false;
-      document.getElementById('reg-active-controls').style.display = 'none';
-      updateButtons();
-    }
-    setPanelMode(mode);
+  // Segmentos de acción, en la barra de prompt (Regional vive como sección en Mods)
+  document.querySelectorAll('.act-btn').forEach(b => {
+    b.addEventListener('click', () => {
+      const action = b.dataset.action;
+      if (S.regional.active && action !== 'generate') {
+        if (!exitRegionalMode()) return;   // el usuario canceló el confirm
+        document.getElementById('reg-enabled').checked = false;
+        document.getElementById('reg-active-controls').style.display = 'none';
+      }
+      setPanelAction(action);
+    });
   });
 
   // Diálogo de tamaño de canvas
@@ -2007,10 +2055,9 @@ function initEvents() {
     b.addEventListener('click', () => setActiveRegion(parseInt(b.dataset.region)));
   });
 
-  // Secciones plegables de la pestaña Mods (ControlNet / Regional / ADetailer)
+  // Secciones plegables de la pestaña Mods (ControlNet / Regional)
   [['cn-sec-toggle', 'cn-sec-body'],
-   ['reg-sec-toggle', 'reg-sec-body'],
-   ['ad-sec-toggle', 'ad-sec-body']].forEach(([hdrId, bodyId]) => {
+   ['reg-sec-toggle', 'reg-sec-body']].forEach(([hdrId, bodyId]) => {
     document.getElementById(hdrId).addEventListener('click', function () {
       const open = this.getAttribute('aria-expanded') === 'true';
       this.setAttribute('aria-expanded', String(!open));

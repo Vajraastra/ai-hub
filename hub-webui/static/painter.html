@@ -173,11 +173,11 @@
     #p-promptbar #inp-negative {
       min-height: 38px; max-height: 14vh; resize: vertical;
     }
-    /* Fila de acción: selector de modo + botón principal */
+    /* Fila de acción: segmentos de acción + botón principal */
     #pb-action-row {
       display: flex; align-items: stretch; gap: 8px;
     }
-    #pb-action-row #panel-mode-select { width: 168px; flex-shrink: 0; }
+    #pb-action-row #action-seg { flex-shrink: 0; }
     #pb-action-row .btn-generate,
     #pb-action-row .btn-action { margin-top: 0; flex: 1; }
 
@@ -247,8 +247,10 @@
     .ptab-btn {
       flex: 1; background: none; border: none; border-bottom: 2px solid transparent;
       color: var(--text-dim); font-family: inherit; font-size: 11px; font-weight: 600;
-      letter-spacing: .05em; text-transform: uppercase;
-      padding: 9px 4px; cursor: pointer; white-space: nowrap;
+      /* .03em y no más: con la pestaña contextual abierta son 4 a la vez
+         ("ADETAILER" es la más larga) en los 320px del panel */
+      letter-spacing: .03em; text-transform: uppercase;
+      padding: 9px 3px; cursor: pointer; white-space: nowrap;
     }
     .ptab-btn:hover { color: var(--text-secondary); }
     .ptab-btn.active {
@@ -359,16 +361,31 @@
       border-left: 1px solid var(--border); background: var(--bg-card);
       overflow: hidden;
     }
-    #panel-mode-select {
-      width: 100%; padding: 7px 10px; font-size: 12px; font-weight: 600;
-      background: var(--bg-deep, #0a001a); color: var(--accent-cyan);
-      border: 1px solid var(--accent-cyan); border-radius: 4px;
-      cursor: pointer; text-transform: uppercase; letter-spacing: .08em;
-      appearance: none; -webkit-appearance: none;
-      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%2354EFEA'/%3E%3C/svg%3E");
-      background-repeat: no-repeat; background-position: right 10px center;
+    /* ── Segmentos de acción ───────────────────────────────────── */
+    /* Las cinco acciones de IA, siempre a la vista. Las no disponibles se
+       ven en gris con el motivo en el title, en vez de desaparecer: que el
+       usuario sepa que existen es justamente el objetivo. */
+    #action-seg {
+      display: flex; align-items: stretch;
+      background: var(--bg-input); border: 1px solid var(--border);
+      border-radius: 8px; overflow: hidden;
     }
-    #panel-mode-select:focus { outline: none; box-shadow: 0 0 0 2px rgba(84,239,234,.3); }
+    .act-btn {
+      background: none; border: none; border-left: 1px solid var(--border);
+      color: var(--text-secondary); cursor: pointer;
+      padding: 0 11px; font-family: inherit; font-size: 11px; font-weight: 600;
+      letter-spacing: .03em; white-space: nowrap;
+    }
+    .act-btn:first-child { border-left: none; }
+    .act-btn:hover:not(:disabled) {
+      color: var(--text-primary); background: rgba(255,255,255,.06);
+    }
+    .act-btn.active {
+      background: var(--accent-violet); color: var(--text-primary);
+      box-shadow: inset 0 -2px 0 var(--accent-cyan);
+    }
+    .act-btn:disabled { opacity: .38; cursor: not-allowed; }
+    .act-badge { color: var(--accent-cyan); margin-left: 4px; }
 
     /* ── Controles del panel ───────────────────────────────────── */
     .ctrl-group { display: flex; flex-direction: column; gap: 4px; }
@@ -935,14 +952,18 @@
           <span id="pb-summary-text" class="pb-summary-empty" data-i18n="painter.pb_no_prompt">Sin prompt — clic para escribir</span>
           <span id="pb-summary-style"></span>
         </button>
-        <select id="panel-mode-select">
-          <option value="generate"   data-i18n="painter.tab_generate">Generar</option>
-          <option value="outpaint"   data-i18n="painter.tab_outpaint">Outpaint</option>
-          <option value="upscale"    data-i18n="painter.tab_upscale">Upscale</option>
-        </select>
-        <button class="btn-generate" id="btn-generate" data-i18n="painter.btn_generate">Generar</button>
-        <button class="btn-generate" id="btn-outpaint" style="display:none" data-i18n="painter.btn_outpaint">Outpaint</button>
-        <button class="btn-action"   id="btn-upscale"  style="display:none" data-i18n="painter.btn_upscale">Upscale</button>
+        <div id="action-seg" role="group" aria-label="Acción de IA">
+          <button class="act-btn active" data-action="generate"  data-i18n="painter.tab_generate">Generar</button>
+          <button class="act-btn"        data-action="inpaint"   data-i18n="painter.btn_inpaint">Inpaint</button>
+          <button class="act-btn"        data-action="outpaint"  data-i18n="painter.tab_outpaint">Outpaint</button>
+          <button class="act-btn"        data-action="upscale"   data-i18n="painter.tab_upscale">Upscale</button>
+          <button class="act-btn"        data-action="adetailer">ADetailer<span class="act-badge" id="ad-sec-badge" style="display:none">•</span></button>
+        </div>
+        <button class="btn-generate" id="btn-generate"  data-i18n="painter.btn_generate">Generar</button>
+        <button class="btn-generate" id="btn-inpaint"   style="display:none" data-i18n="painter.btn_inpaint">Inpaint</button>
+        <button class="btn-generate" id="btn-outpaint"  style="display:none" data-i18n="painter.btn_outpaint">Outpaint</button>
+        <button class="btn-action"   id="btn-upscale"   style="display:none" data-i18n="painter.btn_upscale">Upscale</button>
+        <button class="btn-generate" id="btn-adetailer" style="display:none">Run ADetailer</button>
       </div>
 
     </div><!-- /p-promptbar -->
@@ -956,8 +977,9 @@
         <button class="ptab-btn active" data-ptab="model"    data-i18n="painter.ptab_model">Modelo</button>
         <button class="ptab-btn"        data-ptab="sampling" data-i18n="painter.ptab_sampling">Muestreo</button>
         <button class="ptab-btn"        data-ptab="mods"     data-i18n="painter.ptab_mods">Mods</button>
-        <button class="ptab-btn" id="ptab-btn-outpaint" data-ptab="outpaint" hidden data-i18n="painter.tab_outpaint">Outpaint</button>
-        <button class="ptab-btn" id="ptab-btn-upscale"  data-ptab="upscale"  hidden data-i18n="painter.tab_upscale">Upscale</button>
+        <button class="ptab-btn" id="ptab-btn-outpaint"  data-ptab="outpaint"  hidden data-i18n="painter.tab_outpaint">Outpaint</button>
+        <button class="ptab-btn" id="ptab-btn-upscale"   data-ptab="upscale"   hidden data-i18n="painter.tab_upscale">Upscale</button>
+        <button class="ptab-btn" id="ptab-btn-adetailer" data-ptab="adetailer" hidden>ADetailer</button>
       </div>
 
       <!-- ── Pestaña: Modelo ───────────────────────────────────── -->
@@ -1164,87 +1186,79 @@
           </div>
         </div>
 
-        <!-- ── Sección: ADetailer (retoque de la imagen actual) ───────── -->
-        <div class="mod-section">
-          <button class="ad-section-hdr" id="ad-sec-toggle" aria-expanded="false" type="button">
-            <span>ADetailer<span class="sec-badge" id="ad-sec-badge" style="display:none">ON</span></span>
-            <span class="ad-arrow">▾</span>
+      </div><!-- /ptab-mods -->
+
+      <!-- ── Pestaña contextual: ADetailer ─────────────────────── -->
+      <div class="ptab-body" id="ptab-adetailer">
+        <!-- Estado de impact-pack: instalación pendiente -->
+        <div id="ad-install-panel" style="display:none; flex-direction:column; gap:8px; align-items:center; padding:12px; text-align:center;">
+          <p class="panel-note" style="font-style:normal; color:var(--text-secondary)">
+            ADetailer requiere <strong style="color:var(--text-primary)">comfyui-impact-pack</strong>,
+            un nodo de ComfyUI que no está instalado aún.
+          </p>
+          <div id="ad-install-log" style="display:none; width:100%; max-height:120px; overflow-y:auto;
+            background:var(--bg-input); border:1px solid var(--border); border-radius:6px;
+            padding:6px 10px; font-size:10px; font-family:var(--font-mono); text-align:left;
+            color:var(--text-secondary);"></div>
+          <button class="btn-generate" id="btn-ad-install" style="width:auto; padding:6px 20px;">
+            Instalar impact-pack
           </button>
-          <div class="mod-section-body" id="ad-sec-body" style="display:none">
-            <!-- Estado de impact-pack: instalación pendiente -->
-            <div id="ad-install-panel" style="display:none; flex-direction:column; gap:8px; align-items:center; padding:12px; text-align:center;">
-              <p class="panel-note" style="font-style:normal; color:var(--text-secondary)">
-                ADetailer requiere <strong style="color:var(--text-primary)">comfyui-impact-pack</strong>,
-                un nodo de ComfyUI que no está instalado aún.
-              </p>
-              <div id="ad-install-log" style="display:none; width:100%; max-height:120px; overflow-y:auto;
-                background:var(--bg-input); border:1px solid var(--border); border-radius:6px;
-                padding:6px 10px; font-size:10px; font-family:var(--font-mono); text-align:left;
-                color:var(--text-secondary);"></div>
-              <button class="btn-generate" id="btn-ad-install" style="width:auto; padding:6px 20px;">
-                Instalar impact-pack
-              </button>
-              <p class="panel-note" id="ad-install-note">ComfyUI necesitará reiniciarse tras la instalación.</p>
+          <p class="panel-note" id="ad-install-note">ComfyUI necesitará reiniciarse tras la instalación.</p>
+        </div>
+        <div id="ad-controls">
+          <!-- Detectores desplegable -->
+          <div class="ad-section">
+            <button class="ad-section-hdr" id="ad-det-toggle" aria-expanded="true">
+              <span>Detectores</span>
+              <span class="ad-arrow">▾</span>
+            </button>
+            <div id="ad-det-body">
+              <!-- Las filas se generan por JS según _adDetectors -->
+              <div id="ad-det-list"></div>
             </div>
-            <div id="ad-controls">
-              <!-- Detectores desplegable -->
-              <div class="ad-section">
-                <button class="ad-section-hdr" id="ad-det-toggle" aria-expanded="true">
-                  <span>Detectores</span>
-                  <span class="ad-arrow">▾</span>
-                </button>
-                <div id="ad-det-body">
-                  <!-- Las filas se generan por JS según _adDetectors -->
-                  <div id="ad-det-list"></div>
-                </div>
-              </div>
+          </div>
 
-              <div class="panel-divider"></div>
+          <div class="panel-divider"></div>
 
-              <!-- Parámetros -->
-              <div class="ctrl-group">
-                <label class="ctrl-label">Denoise</label>
-                <div class="ctrl-range-row">
-                  <input type="range" class="ctrl-range" id="ad-denoise" min="0" max="1" step="0.01" value="0.4">
-                  <span class="range-val" id="ad-denoise-val">0.40</span>
-                </div>
-              </div>
-              <div class="ctrl-group">
-                <label class="ctrl-label">Guide Size</label>
-                <input type="number" class="ctrl-input" id="ad-guide-size" value="512" min="256" max="1024" step="64">
-              </div>
-              <div class="ctrl-group">
-                <label class="ctrl-label">Threshold</label>
-                <div class="ctrl-range-row">
-                  <input type="range" class="ctrl-range" id="ad-threshold" min="0.1" max="1" step="0.05" value="0.5">
-                  <span class="range-val" id="ad-threshold-val">0.50</span>
-                </div>
-              </div>
-              <div class="ctrl-group">
-                <label class="ctrl-label">Dilation</label>
-                <input type="number" class="ctrl-input" id="ad-dilation" value="10" min="0" max="100" step="1">
-              </div>
+          <!-- Parámetros -->
+          <div class="ctrl-group">
+            <label class="ctrl-label">Denoise</label>
+            <div class="ctrl-range-row">
+              <input type="range" class="ctrl-range" id="ad-denoise" min="0" max="1" step="0.01" value="0.4">
+              <span class="range-val" id="ad-denoise-val">0.40</span>
+            </div>
+          </div>
+          <div class="ctrl-group">
+            <label class="ctrl-label">Guide Size</label>
+            <input type="number" class="ctrl-input" id="ad-guide-size" value="512" min="256" max="1024" step="64">
+          </div>
+          <div class="ctrl-group">
+            <label class="ctrl-label">Threshold</label>
+            <div class="ctrl-range-row">
+              <input type="range" class="ctrl-range" id="ad-threshold" min="0.1" max="1" step="0.05" value="0.5">
+              <span class="range-val" id="ad-threshold-val">0.50</span>
+            </div>
+          </div>
+          <div class="ctrl-group">
+            <label class="ctrl-label">Dilation</label>
+            <input type="number" class="ctrl-input" id="ad-dilation" value="10" min="0" max="100" step="1">
+          </div>
 
-              <div class="panel-divider"></div>
+          <div class="panel-divider"></div>
 
-              <!-- Prompt override desplegable -->
-              <div class="ad-section">
-                <button class="ad-section-hdr" id="ad-prompt-toggle" aria-expanded="false">
-                  <span>Prompt override (opcional)</span>
-                  <span class="ad-arrow">▾</span>
-                </button>
-                <div id="ad-prompt-body" style="display:none">
-                  <p class="panel-note" style="margin-top:4px">Si está vacío, usa el prompt de la barra inferior.</p>
-                  <textarea class="ctrl-textarea" id="ad-prompt-override" rows="3" placeholder="prompt de detalle…"></textarea>
-                </div>
-              </div>
-
-              <button class="btn-generate" id="btn-adetailer" style="margin-top:8px">Run ADetailer</button>
+          <!-- Prompt override desplegable -->
+          <div class="ad-section">
+            <button class="ad-section-hdr" id="ad-prompt-toggle" aria-expanded="false">
+              <span>Prompt override (opcional)</span>
+              <span class="ad-arrow">▾</span>
+            </button>
+            <div id="ad-prompt-body" style="display:none">
+              <p class="panel-note" style="margin-top:4px">Si está vacío, usa el prompt de la barra inferior.</p>
+              <textarea class="ctrl-textarea" id="ad-prompt-override" rows="3" placeholder="prompt de detalle…"></textarea>
             </div>
           </div>
         </div>
-
-      </div><!-- /ptab-mods -->
+      </div><!-- /ptab-adetailer -->
 
       <!-- ── Pestaña contextual: Outpaint ──────────────────────── -->
       <div class="ptab-body" id="ptab-outpaint">
