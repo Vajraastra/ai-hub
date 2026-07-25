@@ -26,7 +26,7 @@ from setup       import run_setup, get_status, quick_check
 from comfy_client import ComfyClient, ComfyError, load_workflow, SUPPORTED_ARCHITECTURES
 from models      import (GenerateRequest, InpaintRequest, OutpaintRequest,
                          UpscaleRequest,
-                         RegionalRequest, RegionalStepRequest, AcceptRequest,
+                         RegionalRequest, RegionalStepRequest,
                          ADetailerRequest, ADetailerDetector,
                          JobResponse, JobStatusResponse, SessionStateResponse, ModelsResponse)
 from session     import session

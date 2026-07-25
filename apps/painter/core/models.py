@@ -92,11 +92,6 @@ class RegionalStepRequest(BaseModel):
     denoise:         float = Field(0.85, ge=0.0, le=1.0)
 
 
-class AcceptRequest(BaseModel):
-    """Frontend envía la imagen de resultado que quiere aceptar como current."""
-    result_b64: str
-
-
 # ── Responses ───────────────────────────────────────────────────────────────
 
 class JobResponse(BaseModel):

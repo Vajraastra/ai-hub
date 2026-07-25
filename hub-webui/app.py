@@ -71,6 +71,11 @@ def _schedule(coro):
     loop = _event_loop
     if loop and loop.is_running():
         asyncio.run_coroutine_threadsafe(coro, loop)
+    else:
+        # Sin loop corriendo (arranque del server o cierre): no hay a quién
+        # emitir. Hay que cerrar la corrutina explícitamente o Python avisa
+        # con "RuntimeWarning: coroutine '_broadcast' was never awaited".
+        coro.close()
 
 
 # ── Handlers del bridge ─────────────────────────────────────────────────────

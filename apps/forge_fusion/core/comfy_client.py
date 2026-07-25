@@ -13,6 +13,10 @@ from typing import Callable
 
 _WORKFLOWS_DIR = Path(__file__).parent.parent / "workflows"
 
+# Timeout de las llamadas HTTP de control (encolar, interrumpir, listar).
+# NO aplica al WebSocket, que espera lo que dure la generación.
+_HTTP_TIMEOUT = aiohttp.ClientTimeout(total=30)
+
 
 def load_workflow(name: str, arch: str) -> dict:
     """Carga un template JSON de la carpeta de la arquitectura indicada."""
@@ -35,13 +39,13 @@ class ComfyClient:
     # ── Helpers ────────────────────────────────────────────────────────────
 
     async def _get(self, path: str) -> dict:
-        async with aiohttp.ClientSession() as s:
+        async with aiohttp.ClientSession(timeout=_HTTP_TIMEOUT) as s:
             async with s.get(f"{self.base_url}{path}") as r:
                 r.raise_for_status()
                 return await r.json()
 
     async def _post(self, path: str, payload: dict) -> dict:
-        async with aiohttp.ClientSession() as s:
+        async with aiohttp.ClientSession(timeout=_HTTP_TIMEOUT) as s:
             async with s.post(f"{self.base_url}{path}", json=payload) as r:
                 if r.status >= 400:
                     body = await r.text()
@@ -103,8 +107,29 @@ class ComfyClient:
         except Exception:
             pass
 
-    @staticmethod
+    async def history_output(self, prompt_id: str) -> dict | None:
+        """
+        Busca en /history el primer output con imágenes del prompt.
+
+        Es la única vía cuando ComfyUI resuelve el grafo entero desde su caché
+        (parámetros idénticos a una ejecución previa): en ese caso no re-ejecuta
+        ningún nodo y el `executed` que emite lleva `output: None`
+        (`execution.py:431`, `_send_cached_ui`).
+        """
+        try:
+            hist = await self._get(f"/history/{prompt_id}")
+        except Exception:
+            return None
+        entry = hist.get(prompt_id)
+        if not entry:
+            return None
+        for output in (entry.get("outputs") or {}).values():
+            if output.get("images"):
+                return output
+        return None
+
     async def _consume_ws(
+        self,
         ws: aiohttp.ClientWebSocketResponse,
         prompt_id: str,
         on_progress: Callable[[int, int], None] | None = None,
@@ -129,6 +154,18 @@ class ComfyClient:
                         if "images" in output:
                             return output
                         # nodo sin imágenes, seguir esperando
+
+                elif mtype == "execution_success":
+                    # El prompt terminó sin habernos dado un `executed` con
+                    # imágenes: pasó por caché. El resultado está en /history.
+                    d = data.get("data", {})
+                    if d.get("prompt_id") == prompt_id:
+                        output = await self.history_output(prompt_id)
+                        if output:
+                            return output
+                        raise ComfyError(
+                            "ComfyUI terminó el prompt sin producir imágenes"
+                        )
 
                 elif mtype == "execution_error":
                     d = data.get("data", {})

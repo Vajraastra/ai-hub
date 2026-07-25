@@ -208,8 +208,7 @@ async def generate(
     phase("render")
     wf = build_workflow(params, scene_ref, donor_refs)
     try:
-        pid, cid = await comfy.queue_prompt(wf)
-        outputs = await comfy.wait_for_completion(pid, cid, on_progress=on_step)
+        outputs = await comfy.run_prompt(wf, on_progress=on_step)
     except ComfyError:
         raise
     except Exception as e:
