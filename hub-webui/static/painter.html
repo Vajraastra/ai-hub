@@ -158,6 +158,10 @@
       padding: 8px 12px 10px;
       border-top: 1px solid var(--border); background: var(--bg-card);
       flex-shrink: 0; position: relative;
+      /* Es item de la columna implícita (auto) de #p-center: sin esto, el
+         resumen sin wrap de la barra plegada fuerza esa columna a crecer a su
+         max-content y desborda hacia la derecha (tapa Generar y el sidebar). */
+      min-width: 0;
     }
     /* Cabecera: etiqueta a la izquierda, estilos a la derecha */
     .pb-hdr {

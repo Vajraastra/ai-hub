@@ -965,7 +965,11 @@ async function onJobDone(jobId) {
 
     previewImg = await loadImageFromB64(b64);
     const pw = previewImg.naturalWidth, ph = previewImg.naturalHeight;
+    // El resultado siempre llena el documento entero: reencuadrar la vista
+    // aunque las dimensiones no cambien, para no heredar el pan/zoom que
+    // dejó una prueba de gestos anterior sobre la generación nueva.
     if (S.imgW !== pw || S.imgH !== ph) resizeCanvases(pw, ph);
+    else zoomToFit();
     S.hasPreview = true;
     S.showMask   = false;
 
