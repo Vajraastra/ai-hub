@@ -869,6 +869,17 @@
         <button class="tool-btn reg-btn" data-region="3" style="color:#FFAA00;border-color:#FFAA00">R4</button>
       </div>
       <div class="tool-divider"></div>
+      <!-- Destino del trazo: máscara (solo alpha, para IA) o capa de dibujo (color real, para ControlNet) -->
+      <div id="target-toggle" style="display:flex;flex-direction:column;gap:3px">
+        <button class="tool-btn active" id="btn-target-mask" title="Pintar máscara">&#9635;</button>
+        <button class="tool-btn"        id="btn-target-draw" title="Pintar capa de dibujo (color)">&#9998;</button>
+      </div>
+      <div id="draw-color-wrap" style="display:none;flex-direction:column;align-items:center;gap:4px;margin-top:2px">
+        <input type="color" id="draw-color" value="#ffffff" title="Color de pintura"
+               style="width:30px;height:24px;padding:0;border:1px solid var(--border);border-radius:4px;background:none;cursor:pointer">
+        <button class="tool-btn" id="btn-clear-draw" title="Limpiar capa de dibujo" style="font-size:11px">&#8855;</button>
+      </div>
+      <div class="tool-divider"></div>
       <div id="brush-size-wrap">
         <span id="brush-size-label">30</span>
         <input type="range" id="brush-size" class="vertical" min="4" max="200" value="30" title="Tamaño de brush">

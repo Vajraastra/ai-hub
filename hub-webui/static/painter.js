@@ -14,6 +14,8 @@ const S = {
   zoomAuto: true,         // true = la vista se re-encaja sola al cambiar el contenedor
   hasMask:    false,
   showMask:   true,   // false mientras se muestra un preview (máscara oculta pero no borrada)
+  paintTarget: 'mask',  // 'mask' (solo alpha, para IA) | 'draw' (color real, capa de dibujo)
+  drawColor:  '#ffffff',
   hasImage:   false,
   hasPreview: false,
   activeJobId: null,
@@ -54,7 +56,7 @@ let _regSeq = {
 };
 
 // ── Canvas ────────────────────────────────────────────────────────────────
-let canvasBg, ctxBg, canvasFg, ctxFg, maskCanvas, ctxMask;
+let canvasBg, ctxBg, canvasFg, ctxFg, maskCanvas, ctxMask, drawCanvas, ctxDraw;
 let currentImg  = null;   // HTMLImageElement — imagen aceptada
 let previewImg  = null;   // HTMLImageElement — preview pendiente
 
@@ -170,6 +172,8 @@ function initCanvas() {
   ctxFg      = canvasFg.getContext('2d');
   maskCanvas = document.createElement('canvas');
   ctxMask    = maskCanvas.getContext('2d');
+  drawCanvas = document.createElement('canvas');
+  ctxDraw    = drawCanvas.getContext('2d');
 
   canvasFg.addEventListener('mousedown',  onMouseDown);
   canvasFg.addEventListener('mousemove',  onMouseMove);
@@ -202,6 +206,7 @@ function resizeCanvases(w, h) {
   S.imgW = w; S.imgH = h;
   [canvasBg, canvasFg].forEach(c => { c.width = w; c.height = h; });
   maskCanvas.width = w; maskCanvas.height = h;
+  drawCanvas.width = w; drawCanvas.height = h;
   zoomToFit();
 }
 
@@ -301,6 +306,7 @@ function toImg(clientX, clientY) {
 function render() {
   ctxFg.clearRect(0, 0, S.imgW, S.imgH);
   if (previewImg) ctxFg.drawImage(previewImg, 0, 0);
+  else ctxFg.drawImage(drawCanvas, 0, 0);
   if (S.regional.active) {
     drawRegionalOverlay();
   } else if (S.hasMask && S.showMask) {
@@ -523,14 +529,26 @@ function getActiveMaskCtx() {
   return S.regional.active ? regionalMasks[S.regional.activeIdx].ctx : ctxMask;
 }
 
+// Contexto donde escriben las 6 herramientas de trazo: la máscara (alpha, para
+// IA) o la capa de dibujo (color real, para ControlNet), según S.paintTarget.
+function getActiveTargetCtx() {
+  return S.paintTarget === 'draw' ? ctxDraw : getActiveMaskCtx();
+}
+
+function _hexToRgb(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+}
+
 function paintBrush(x, y) {
-  const ctx = getActiveMaskCtx();
+  const ctx    = getActiveTargetCtx();
+  const isDraw = S.paintTarget === 'draw';
   ctx.globalCompositeOperation = S.tool === 'eraser' ? 'destination-out' : 'source-over';
   ctx.lineWidth   = S.brushSize;
   ctx.lineCap     = 'round';
   ctx.lineJoin    = 'round';
-  ctx.strokeStyle = 'white';
-  ctx.fillStyle   = 'white';
+  ctx.strokeStyle = isDraw ? S.drawColor : 'white';
+  ctx.fillStyle   = isDraw ? S.drawColor : 'white';
 
   ctx.beginPath();
   if (_prevBrushX !== null) {
@@ -545,6 +563,7 @@ function paintBrush(x, y) {
   }
   _prevBrushX = x; _prevBrushY = y;
 
+  if (isDraw) return;
   if (S.regional.active) {
     regionalMasks[S.regional.activeIdx].hasPixels =
       checkRegionalMaskPixels(S.regional.activeIdx);
@@ -554,11 +573,13 @@ function paintBrush(x, y) {
 }
 
 function commitRect(x0, y0, x1, y1, add, subtract) {
-  const ctx = getActiveMaskCtx();
+  const ctx    = getActiveTargetCtx();
+  const isDraw = S.paintTarget === 'draw';
   ctx.globalCompositeOperation = subtract ? 'destination-out' : 'source-over';
-  ctx.fillStyle = 'white';
+  ctx.fillStyle = isDraw ? S.drawColor : 'white';
   ctx.fillRect(Math.min(x0, x1), Math.min(y0, y1),
                Math.abs(x1 - x0), Math.abs(y1 - y0));
+  if (isDraw) return;
   if (S.regional.active) {
     regionalMasks[S.regional.activeIdx].hasPixels =
       checkRegionalMaskPixels(S.regional.activeIdx);
@@ -567,19 +588,32 @@ function commitRect(x0, y0, x1, y1, add, subtract) {
 }
 
 function commitLasso(add, subtract) {
-  const ctx = getActiveMaskCtx();
+  const ctx    = getActiveTargetCtx();
+  const isDraw = S.paintTarget === 'draw';
   ctx.globalCompositeOperation = subtract ? 'destination-out' : 'source-over';
-  ctx.fillStyle = 'white';
+  ctx.fillStyle = isDraw ? S.drawColor : 'white';
   ctx.beginPath();
   ctx.moveTo(lassoPoints[0][0], lassoPoints[0][1]);
   lassoPoints.slice(1).forEach(([x, y]) => ctx.lineTo(x, y));
   ctx.closePath();
   ctx.fill();
+  if (isDraw) return;
   if (S.regional.active) {
     regionalMasks[S.regional.activeIdx].hasPixels =
       checkRegionalMaskPixels(S.regional.activeIdx);
     updateRegionCards();
   }
+}
+
+function clearDrawLayer() {
+  ctxDraw.clearRect(0, 0, S.imgW, S.imgH);
+}
+
+function setPaintTarget(name) {
+  S.paintTarget = name;
+  document.getElementById('btn-target-mask').classList.toggle('active', name === 'mask');
+  document.getElementById('btn-target-draw').classList.toggle('active', name === 'draw');
+  document.getElementById('draw-color-wrap').style.display = name === 'draw' ? 'flex' : 'none';
 }
 
 function clearMask() {
@@ -2018,18 +2052,20 @@ function wandSelect(imgX, imgY, add, subtract) {
 function applyWandSelection() {
   if (!_wandSel) return;
   const w = S.imgW, h = S.imgH;
-  const ctx  = getActiveMaskCtx();
+  const ctx    = getActiveTargetCtx();
+  const isDraw = S.paintTarget === 'draw';
+  const rgb    = isDraw ? _hexToRgb(S.drawColor) : { r: 255, g: 255, b: 255 };
   const data = ctx.getImageData(0, 0, w, h);
   const md   = data.data;
   for (let i = 0; i < _wandSel.length; i++) {
     if (!_wandSel[i]) continue;
     const mi = i * 4;
-    md[mi] = md[mi+1] = md[mi+2] = 255; md[mi+3] = 255;
+    md[mi] = rgb.r; md[mi+1] = rgb.g; md[mi+2] = rgb.b; md[mi+3] = 255;
   }
   ctx.putImageData(data, 0, 0);
   _wandSel = null;
   document.getElementById('btn-wand-apply').style.display = 'none';
-  updateMaskState();
+  if (!isDraw) updateMaskState();
 }
 
 /** Cancela la selección wand sin aplicar. */
@@ -2048,7 +2084,9 @@ function bucketFill(imgX, imgY, subtract) {
 
   const tol    = parseInt(document.getElementById('wand-tolerance').value);
   const pixels = _floodFillImg(ix, iy, tol);
-  const ctx    = getActiveMaskCtx();
+  const ctx    = getActiveTargetCtx();
+  const isDraw = S.paintTarget === 'draw';
+  const rgb    = isDraw ? _hexToRgb(S.drawColor) : { r: 255, g: 255, b: 255 };
   const data   = ctx.getImageData(0, 0, w, h);
   const md     = data.data;
   for (let i = 0; i < pixels.length; i++) {
@@ -2057,11 +2095,11 @@ function bucketFill(imgX, imgY, subtract) {
     if (subtract) {
       md[mi] = md[mi+1] = md[mi+2] = 0; md[mi+3] = 0;
     } else {
-      md[mi] = md[mi+1] = md[mi+2] = 255; md[mi+3] = 255;
+      md[mi] = rgb.r; md[mi+1] = rgb.g; md[mi+2] = rgb.b; md[mi+3] = 255;
     }
   }
   ctx.putImageData(data, 0, 0);
-  updateMaskState();
+  if (!isDraw) updateMaskState();
 }
 
 function setTool(name) {
@@ -2107,6 +2145,14 @@ function initEvents() {
   document.getElementById('wand-tolerance').addEventListener('input', function () {
     document.getElementById('wand-tol-label').textContent = this.value;
   });
+
+  // Destino del trazo: máscara vs. capa de dibujo (color)
+  document.getElementById('btn-target-mask').addEventListener('click', () => setPaintTarget('mask'));
+  document.getElementById('btn-target-draw').addEventListener('click', () => setPaintTarget('draw'));
+  document.getElementById('draw-color').addEventListener('input', function () {
+    S.drawColor = this.value;
+  });
+  document.getElementById('btn-clear-draw').addEventListener('click', clearDrawLayer);
 
   // Cargar imagen (header + panel)
   const openFilePicker = () => document.getElementById('file-input').click();
