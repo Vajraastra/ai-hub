@@ -1,0 +1,100 @@
+{
+  "_comment": "Prototipo s95 — variante de h3_ref2v.json SIN ninguna referencia conectada, para probar si el checkpoint ref2va sirve como T2V puro (todos los inputs ref_* del nodo son opcionales, min=0). Si esto rinde bien, podria reemplazar a fl2va y consolidar en un solo DiT.",
+  "1": {
+    "class_type": "VAELoader",
+    "inputs": { "vae_name": "{{video_vae_name}}" }
+  },
+  "2": {
+    "class_type": "VAELoader",
+    "inputs": { "vae_name": "{{audio_vae_name}}" }
+  },
+  "3": {
+    "class_type": "UNETLoader",
+    "inputs": { "unet_name": "{{unet_name}}", "weight_dtype": "default" }
+  },
+  "4": {
+    "class_type": "CLIPLoaderMultiGPU",
+    "inputs": { "clip_name": "{{clip_name}}", "type": "minimax", "device": "{{clip_device}}" }
+  },
+  "5": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "model": ["3", 0],
+      "lora_name": "{{turbo_lora_name}}",
+      "strength_model": 1.0
+    }
+  },
+  "6": {
+    "class_type": "MiniMaxH3ReferenceToVideo",
+    "inputs": {
+      "clip": ["4", 0],
+      "vae": ["1", 0],
+      "audio_vae": ["2", 0],
+      "prompt": "{{prompt}}",
+      "width": "{{width}}",
+      "height": "{{height}}",
+      "length": "{{length}}",
+      "ref_image_size": "match"
+    }
+  },
+  "7": {
+    "class_type": "RandomNoise",
+    "inputs": { "noise_seed": "{{seed}}" }
+  },
+  "8": {
+    "class_type": "KSamplerSelect",
+    "inputs": { "sampler_name": "res_multistep" }
+  },
+  "9": {
+    "class_type": "BasicScheduler",
+    "inputs": {
+      "model": ["5", 0],
+      "steps": "{{steps}}",
+      "scheduler": "simple",
+      "denoise": 1
+    }
+  },
+  "10": {
+    "class_type": "BasicGuider",
+    "inputs": {
+      "model": ["5", 0],
+      "conditioning": ["6", 0]
+    }
+  },
+  "11": {
+    "class_type": "SamplerCustomAdvanced",
+    "inputs": {
+      "noise": ["7", 0],
+      "guider": ["10", 0],
+      "sampler": ["8", 0],
+      "sigmas": ["9", 0],
+      "latent_image": ["6", 1]
+    }
+  },
+  "12": {
+    "class_type": "VAEDecode",
+    "inputs": { "samples": ["11", 0], "vae": ["1", 0] }
+  },
+  "13": {
+    "class_type": "VAEDecodeAudio",
+    "inputs": { "samples": ["11", 0], "vae": ["2", 0] }
+  },
+  "14": {
+    "class_type": "CreateVideo",
+    "inputs": {
+      "images": ["12", 0],
+      "audio": ["13", 0],
+      "fps": 24,
+      "bit_depth": 8
+    }
+  },
+  "15": {
+    "class_type": "SaveVideo",
+    "inputs": {
+      "video": ["14", 0],
+      "filename_prefix": "video/MiniMax_H3_Ref2V_T2V",
+      "format": "auto",
+      "codec": "auto"
+    }
+  }
+}

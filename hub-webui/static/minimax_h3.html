@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MiniMax H3 — AI Hub</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+  <style>
+    #tool-wrap { display:flex; flex-direction:column; min-height:100vh; }
+    #tool-header {
+      display:flex; align-items:center; gap:12px;
+      padding:0 16px; height:52px; flex-shrink:0;
+      background:var(--bg-card); border-bottom:1px solid var(--border);
+    }
+    .back-btn {
+      background:none; border:1px solid var(--border); color:var(--text-secondary);
+      border-radius:6px; padding:4px 10px; font-size:12px; cursor:pointer;
+      transition:color .15s, border-color .15s;
+    }
+    .back-btn:hover { color:var(--text-primary); border-color:var(--accent-purple); }
+    #tool-header h1 { font-size:15px; font-weight:600; color:var(--text-primary); }
+    #tool-header .badge { font-size:11px; padding:2px 8px; border-radius:10px;
+      border:1px solid var(--border); color:var(--text-dim); }
+
+    .tabs { display:flex; gap:2px; padding:0 16px; background:var(--bg-card);
+      border-bottom:1px solid var(--border); }
+    .tab { background:none; border:none; border-bottom:2px solid transparent;
+      color:var(--text-dim); padding:10px 16px; font-size:13px; cursor:pointer; }
+    .tab.active { color:var(--text-primary); border-bottom-color:var(--accent-purple); }
+
+    .page { display:none; padding:20px; max-width:1360px; }
+    .page.active { display:block; }
+    .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:16px; align-items:start; }
+    @media (max-width:1080px){ .grid2 { grid-template-columns:1fr; } }
+
+    .card { background:var(--bg-card); border:1px solid var(--border);
+      border-radius:8px; padding:16px 18px; margin-bottom:16px; }
+    .card h2 { font-size:12px; font-weight:600; color:var(--text-secondary);
+      margin-bottom:12px; text-transform:uppercase; letter-spacing:.4px;
+      display:flex; align-items:center; gap:8px; }
+    .card h2 .spacer { flex:1; }
+
+    label.fld { display:block; font-size:12px; color:var(--text-dim); margin:8px 0 4px; }
+    input[type=text], input[type=number], select, textarea {
+      width:100%; background:var(--bg-input,#141414); border:1px solid var(--border);
+      color:var(--text-primary); border-radius:6px; padding:7px 9px; font-size:13px;
+      font-family:inherit; }
+    textarea { resize:vertical; }
+    .row { display:flex; gap:10px; } .row > * { flex:1; }
+    .row3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; }
+
+    button.act { background:var(--accent-purple); border:none; color:#fff;
+      border-radius:6px; padding:9px 16px; font-size:13px; font-weight:600; cursor:pointer; }
+    button.act:disabled { opacity:.5; cursor:not-allowed; }
+    button.ghost { background:none; border:1px solid var(--border); color:var(--text-secondary);
+      border-radius:6px; padding:8px 14px; font-size:12px; cursor:pointer; }
+    button.ghost:hover { border-color:var(--accent-purple); color:var(--text-primary); }
+    button.ghost:disabled { opacity:.5; cursor:not-allowed; }
+
+    .ok{color:#4caf82;} .bad{color:#e05c5c;} .warn{color:#e0a94c;}
+    .mono{font-family:'JetBrains Mono',monospace;} .dim{color:var(--text-dim);font-size:12px;}
+    .status-row{display:flex;justify-content:space-between;font-size:13px;padding:3px 0;}
+
+    .phase-pill { font-size:11px; padding:2px 8px; border-radius:10px;
+      background:var(--bg-input,#141414); border:1px solid var(--border); color:var(--text-dim); }
+    .progress { height:6px; background:var(--bg-input,#141414); border-radius:3px; overflow:hidden; margin-top:8px; }
+    .progress > div { height:100%; width:0; background:var(--accent-purple); transition:width .2s; }
+
+    video.result { max-width:100%; border-radius:8px; border:1px solid var(--border); background:#000; }
+    .gallery { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:12px; }
+    .gcard { background:var(--bg-card); border:1px solid var(--border); border-radius:8px; overflow:hidden; }
+    .gcard video { width:100%; display:block; background:#000; }
+    .gcard .meta { padding:8px 10px; font-size:11px; color:var(--text-dim); }
+    .gcard .prompt { font-size:11px; color:var(--text-secondary); max-height:2.6em; overflow:hidden; }
+    .gcard .actions { display:flex; gap:6px; padding:0 10px 10px; }
+
+    .banner { padding:8px 12px; border-radius:6px; font-size:12px; margin-bottom:12px; }
+    .banner.warn { background:rgba(224,169,76,.1); border:1px solid rgba(224,169,76,.4); color:#e0a94c; }
+    .banner.err  { background:rgba(224,92,92,.1); border:1px solid rgba(224,92,92,.4); color:#e05c5c; }
+    .banner.ok   { background:rgba(76,175,130,.1); border:1px solid rgba(76,175,130,.4); color:#4caf82; }
+
+    /* ── Gate: descarga de modelos ─────────────────────────────────────── */
+    #gate { display:none; }
+    #gate.show { display:block; }
+    #gateList { margin:10px 0; }
+    .gate-item { display:flex; justify-content:space-between; font-size:12px;
+      padding:4px 0; border-bottom:1px solid var(--border); color:var(--text-secondary); }
+    .gate-item:last-child { border-bottom:none; }
+    #gateProgress { margin-top:12px; display:none; }
+    #gateFileLabel { font-size:12px; color:var(--text-secondary); margin-bottom:4px; }
+
+    #genArea { display:none; }
+    #genArea.show { display:block; }
+
+    /* ── LoRA presets (Hearmeman) ─────────────────────────────────────── */
+    .lp-row { display:flex; flex-direction:column; gap:6px; border:1px solid var(--border);
+      border-radius:8px; padding:8px 10px; margin-bottom:6px; background:var(--bg-input,#141414); }
+    .lp-row.stage-action { border-left:2px solid var(--accent-purple); }
+    .lp-top { display:flex; align-items:center; gap:8px; }
+    .lp-toggle { background:none; border:1px solid var(--border); color:var(--text-dim);
+      border-radius:14px; padding:3px 12px; font-size:11px; cursor:pointer; flex-shrink:0;
+      transition:all .15s; }
+    .lp-toggle.on { background:var(--accent-purple); border-color:var(--accent-purple); color:#fff; }
+    .lp-label { font-size:12.5px; color:var(--text-primary); flex:1; }
+    .lp-info { width:16px; height:16px; border-radius:50%; border:1px solid var(--text-dim);
+      color:var(--text-dim); font-size:10px; display:flex; align-items:center; justify-content:center;
+      cursor:help; flex-shrink:0; }
+    .lp-strength { display:none; align-items:center; gap:8px; padding-left:4px; }
+    .lp-strength.show { display:flex; }
+    .lp-strength input[type=range] { flex:1; }
+    .lp-strength input[type=number] { width:64px; padding:3px 5px; font-size:12px; flex:none; }
+    .lp-stage-hdr { font-size:10px; text-transform:uppercase; letter-spacing:.5px;
+      color:var(--text-dim); margin:8px 0 4px; }
+    .lp-stage-hdr:first-child { margin-top:0; }
+
+    /* thumbnail de imagen inicial */
+    #ffPreviewWrap { display:none; margin-top:8px; }
+    #ffPreview { max-width:160px; border-radius:6px; border:1px solid var(--border); }
+  </style>
+</head>
+<body>
+<div id="tool-wrap">
+  <header id="tool-header">
+    <button class="back-btn" onclick="location.href='/'">← Hub</button>
+    <h1>MiniMax H3</h1>
+    <span class="badge">video + audio nativo</span>
+    <span class="spacer" style="flex:1"></span>
+    <span id="hdrStatus" class="dim mono"></span>
+  </header>
+
+  <div class="tabs">
+    <button class="tab active" data-page="gen">Generar</button>
+    <button class="tab" data-page="hist">Historial</button>
+    <button class="tab" data-page="diag">Diagnóstico</button>
+  </div>
+
+  <!-- ══════════════ GENERAR ══════════════ -->
+  <div class="page active" id="page-gen">
+    <div id="genBanner"></div>
+
+    <!-- Gate: modelos no descargados -->
+    <div class="card" id="gate">
+      <h2>Modelos de MiniMax H3</h2>
+      <div class="dim">Los modelos base pesan varios GB y no se bajan solos al instalar el hub.
+        Pulsa el botón para descargarlos una vez — quedan en disco para siempre.</div>
+      <div id="gateList"></div>
+      <button class="act" id="btnDownloadModels" style="margin-top:10px">Descargar modelos para usar MiniMax H3</button>
+      <div id="gateProgress">
+        <div id="gateFileLabel"></div>
+        <div class="progress"><div id="gateBar"></div></div>
+        <div class="dim mono" id="gateStats" style="margin-top:4px"></div>
+      </div>
+    </div>
+
+    <div class="grid2" id="genArea">
+      <!-- Columna izquierda: prompt + imagen inicial -->
+      <div>
+        <div class="card">
+          <h2>Prompt</h2>
+          <textarea id="prompt" rows="8" placeholder="Describe el clip: escena, cámara, y el audio que lo acompaña (diálogo, SFX, música) en un solo bloque."></textarea>
+        </div>
+        <div class="card">
+          <h2>Imagen inicial (opcional — I2V) <span class="spacer"></span>
+            <button class="ghost" id="btnFfClear" style="display:none">Quitar</button>
+          </h2>
+          <input type="file" id="ffFile" accept="image/*" style="display:none">
+          <button class="ghost" id="btnFfLoad">Elegir imagen</button>
+          <div class="dim" style="margin-top:6px">Sin imagen: T2V puro. Con imagen: la primera escena del clip arranca desde ahí.</div>
+          <div id="ffPreviewWrap"><img id="ffPreview"></div>
+        </div>
+      </div>
+
+      <!-- Columna derecha: modelos + params + render + resultado -->
+      <div>
+        <div class="card">
+          <h2>Modelos</h2>
+          <label class="fld">DiT (motor de difusión)</label>
+          <select id="unetName"></select>
+          <div class="row">
+            <div><label class="fld">Text encoder</label><select id="clipName"></select></div>
+            <div><label class="fld">VAE de video</label><select id="videoVae"></select></div>
+          </div>
+          <label class="fld">VAE de audio</label>
+          <select id="audioVae"></select>
+        </div>
+
+        <div class="card">
+          <h2>LoRAs <span class="spacer"></span>
+            <span class="dim" id="lorasSummary"></span>
+          </h2>
+          <div id="loraPresets"></div>
+          <div id="loraExtraWrap" style="display:none; margin-top:10px; border-top:1px solid var(--border); padding-top:8px">
+            <div class="dim" style="margin-bottom:6px">Otros archivos en <span class="mono">loras/h3/</span> (sin preset curado):</div>
+            <div id="loraExtra"></div>
+          </div>
+          <div class="dim" style="margin-top:8px; font-size:11px">
+            Orden de apilado fijo (anatomía → acción), documentado por el autor de los LoRAs — no
+            depende de en qué orden actives los toggles. El turbo LoRA se monta aparte, arriba.
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Geometría / duración</h2>
+          <div class="row3">
+            <div><label class="fld">Ancho</label><input type="number" id="pw" value="1344" step="32"></div>
+            <div><label class="fld">Alto</label><input type="number" id="ph" value="768" step="32"></div>
+            <div><label class="fld">Duración (s, máx 15)</label><input type="number" id="pdur" value="5" step="0.5" min="0.5" max="15"></div>
+          </div>
+          <label class="fld">Seed (-1 = azar)</label>
+          <input type="number" id="pseed" value="-1">
+        </div>
+
+        <div class="card">
+          <h2>Sampling</h2>
+          <label class="fld">
+            <input type="checkbox" id="turboOn" style="width:auto" checked> Modo turbo (LoRA de destilación, 6–8 pasos)
+          </label>
+          <div id="turboOpts">
+            <label class="fld">Turbo LoRA</label>
+            <select id="turboLora"></select>
+            <div class="row3" style="margin-top:6px">
+              <div><label class="fld">Pasos turbo</label><input type="number" id="turboSteps" value="8" min="4" max="8"></div>
+              <div><label class="fld">Fuerza</label><input type="number" id="turboStrength" value="1.0" step="0.05" min="0" max="2"></div>
+              <div></div>
+            </div>
+          </div>
+          <div id="fullOpts" style="display:none">
+            <label class="fld">Steps (sin turbo)</label>
+            <input type="number" id="pstepsFull" value="20" min="4" max="40">
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Render</h2>
+          <button class="act" id="btnGenerate" style="width:100%">Generar clip</button>
+          <div id="jobStatus" style="margin-top:12px; display:none;">
+            <div style="display:flex; align-items:center; gap:8px;">
+              <span class="phase-pill" id="jobPhase">…</span>
+              <span class="dim mono" id="jobStep"></span>
+            </div>
+            <div class="progress"><div id="jobBar"></div></div>
+          </div>
+          <div id="resultBox" style="margin-top:12px;"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════ HISTORIAL ══════════════ -->
+  <div class="page" id="page-hist">
+    <div class="card">
+      <h2>Historial <span class="spacer"></span><button class="ghost" id="btnReloadHist">Recargar</button></h2>
+      <div class="gallery" id="gallery"></div>
+    </div>
+  </div>
+
+  <!-- ══════════════ DIAGNÓSTICO ══════════════ -->
+  <div class="page" id="page-diag">
+    <div class="card">
+      <h2>Servicios <span class="spacer"></span><button class="ghost" id="btnReloadDiag">Recargar</button></h2>
+      <div id="diagServices"></div>
+    </div>
+    <div class="card">
+      <h2>Nodos nativos requeridos</h2>
+      <div id="diagNodes"></div>
+    </div>
+    <div class="card">
+      <h2>Modelos en disco</h2>
+      <div id="diagModels"></div>
+    </div>
+    <div class="card">
+      <h2>Método</h2>
+      <div class="dim" style="line-height:1.7">
+        <p>Generación 100% local vía ComfyUI (nodo nativo <span class="mono">MiniMaxH3ImageToVideo</span>,
+        ComfyUI 0.33+), sin llamadas a la API cloud de MiniMax. Un clip por corrida, hasta ~15s
+        con audio estéreo nativo (voz, SFX y música en un solo forward pass, no capas separadas).</p>
+        <p>Modelo © MiniMax — MiniMax H3 Community License. El uso del contenido generado
+        (incluyendo cualquier LoRA de decensurado) es responsabilidad de quien opera esta instalación.</p>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="/static/minimax_h3.js"></script>
+</body>
+</html>

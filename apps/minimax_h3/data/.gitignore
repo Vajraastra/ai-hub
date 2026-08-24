@@ -1,0 +1,6 @@
+# Historial de generaciones (video + metadata) — local, no se versiona
+history/
+# Resultados de la batería de pruebas — local
+battery/
+# Logs de pruebas/descargas sueltos en la raíz de data/ — local
+*.log
