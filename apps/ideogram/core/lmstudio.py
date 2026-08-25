@@ -111,15 +111,29 @@ class LMStudio:
         except aiohttp.ClientError as e:
             raise LMStudioError(f"error de red con LM Studio: {e}")
         try:
-            content = data["choices"][0]["message"]["content"]
+            choice = data["choices"][0]
+            content = choice["message"]["content"]
         except (KeyError, IndexError):
             raise LMStudioError(f"respuesta inesperada de LM Studio: {str(data)[:400]}")
         # Guard de degeneración: los VLM abliterated/uncensored de Gemma colapsan
         # al procesar imágenes repitiendo tokens especiales (<unused24>, <pad>…)
-        # hasta agotar max_tokens. Los limpiamos; si no queda texto real, el modelo
-        # está roto para visión y avisamos en vez de fallar como "elements vacío".
+        # hasta agotar max_tokens. Los limpiamos; si no queda texto real, hay que
+        # distinguir dos causas que dan el MISMO síntoma, porque acusar a la
+        # equivocada cuesta horas (pasó en s100 con el escritor de MiniMax H3):
         clean = _SPECIAL_TOK.sub("", content or "")
         if not clean.strip():
+            # (a) razonadores (Gemma 4, Qwen3.x…): devuelven el razonamiento en
+            # `reasoning_content` y COBRAN esos tokens contra max_tokens. Con un
+            # prompt largo se lo gastan entero pensando y `content` llega vacío
+            # sin que nada esté roto.
+            used = (data.get("usage") or {}).get("completion_tokens_details") or {}
+            reasoning = used.get("reasoning_tokens") or 0
+            if reasoning or choice["message"].get("reasoning_content"):
+                raise LMStudioError(
+                    f"'{model}' agotó el presupuesto razonando ({reasoning} tokens de "
+                    f"razonamiento, finish_reason={choice.get('finish_reason')}) y no llegó a "
+                    f"escribir la respuesta: sube max_tokens o usa un modelo sin razonamiento")
+            # (b) el modelo sí está roto para visión.
             raise LMStudioError(
                 f"el VLM '{model}' degeneró en tokens basura (probablemente un modelo "
                 "abliterated roto para visión); prueba un VLM distinto, p.ej. un Qwen-VL")

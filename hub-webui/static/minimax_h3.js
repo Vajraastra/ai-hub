@@ -19,6 +19,7 @@ const state = {
   ref2v: null,             // cache de /models/status/ref2v ({ready, missing, names, ...})
   chainJobTimer: null,
   chainJobSeg: null,       // segment_id del tramo que está generando ahora mismo
+  promptDirty: false,      // el usuario editó el prompt final a mano: no pisarlo
 };
 
 // ── Tabs ─────────────────────────────────────────────────────────────────────
@@ -53,6 +54,7 @@ async function init(){
   } catch(e){ $("hdrStatus").innerHTML=`<span class="bad">sin conexión</span>`; }
 
   await checkModelsGate();
+  await loadLlms();
   if (state.modelsReady) await loadModelsAndLoras();
 }
 
@@ -213,11 +215,7 @@ function toggleLoraPreset(id){
     st.strength = suggested;
     row.querySelector(".lp-slider").value = suggested;
     row.querySelector(".lp-num").value = suggested;
-    // Trigger: se agrega al final del prompt si todavía no está (no se retira al desactivar).
-    const box = $("prompt");
-    if (!box.value.toLowerCase().includes(preset.trigger.toLowerCase())){
-      box.value = box.value.trim() ? box.value.trim() + ", " + preset.trigger : preset.trigger;
-    }
+    reapplyLoraTriggers();
   }
   updateLorasSummary();
 }
@@ -328,8 +326,177 @@ $("btnFfClear").onclick = () => {
   $("btnFfClear").style.display = "none";
 };
 
+
+// Los triggers de LoRA van al final y fuera del contrato de H3: no son parte
+// del prompt sino las palabras que despiertan los pesos. Por eso se reponen
+// después de cada reensamblado en vez de vivir dentro de una de las tres cajas
+// —donde el validador los vería como prosa que sobra— y nunca se retiran solos.
+function reapplyLoraTriggers(){
+  const box = $("prompt");
+  (state.loraPresets||[]).forEach(p => {
+    const st = state.loraPresetState[p.id];
+    if (!st || !st.on || !p.trigger) return;
+    if (box.value.toLowerCase().includes(p.trigger.toLowerCase())) return;
+    box.value = box.value.trim() ? box.value.trim() + ", " + p.trigger : p.trigger;
+  });
+}
+
+// ── Enriquecedor de prompts ──────────────────────────────────────────────────
+// H3 completo son tres módulos y MiniMax solo liberó la base: el preprocesador
+// que convierte una idea suelta en el formato estructurado se quedó en su API.
+// Esto lo repone en local — de ahí que enriquecer no sea un lujo: sin ello el
+// mismo texto que funciona en Hailuo sale roto acá.
+// Las tres cajas son los tres campos del contrato, así que reescribir una sola
+// no puede tocar las otras dos.
+
+function pMode(){ return state.ffB64 ? "I2VA" : "T2VA"; }
+
+function pBase(){
+  return {
+    idea: $("pIdea").value.trim(),
+    llm_model: $("pLlm").value,
+    mode: pMode(),
+    duration_s: +$("pdur").value,
+    dialogue: $("pDialogue").value.split("\n").map(s=>s.trim()).filter(Boolean),
+    silence: $("pSilence").checked,
+    images_b64: state.ffB64 ? [state.ffB64] : [],
+  };
+}
+
+function pReadBoxes(){
+  const out = {};
+  document.querySelectorAll("#pBoxes .pbox").forEach(b => {
+    out[b.dataset.field] = b.querySelector("textarea").value.trim();
+  });
+  return out;
+}
+
+function pWriteBoxes(fields){
+  document.querySelectorAll("#pBoxes .pbox").forEach(b => {
+    const v = fields[b.dataset.field];
+    if (v != null) b.querySelector("textarea").value = v;
+  });
+  $("pBoxes").style.display = "";
+}
+
+// El prompt final se rearma solo mientras el usuario no lo toque a mano: en
+// cuanto lo edita, mandan sus letras y dejamos de pisarlas.
+function pSetPrompt(text){
+  $("prompt").value = text;
+  state.promptDirty = false;
+  reapplyLoraTriggers();
+}
+
+function pShowIssues(res){
+  const box = $("pValid");
+  const bad = (res.issues||[]).filter(i => i.severity === "error");
+  const warn = (res.issues||[]).filter(i => i.severity === "warning");
+  if (!bad.length && !warn.length){
+    box.innerHTML = `<div class="banner ok">Cumple el formato de MiniMax H3.</div>`;
+    return;
+  }
+  const line = i => `<div class="issue ${i.severity}">${i.field}: ${i.message}</div>`;
+  box.innerHTML = `<div class="banner ${bad.length?'err':'warn'}">`
+    + (bad.length ? `${bad.length} problema(s) que H3 no va a interpretar bien:` : `Avisos:`)
+    + `</div>` + bad.concat(warn).map(line).join("");
+}
+
+function pApply(res){
+  pWriteBoxes(res.fields || {});
+  pSetPrompt(res.prompt || "");
+  pShowIssues(res);
+  const bits = [];
+  if (res.seconds) bits.push(`${res.seconds}s`);
+  if (res.repairs) bits.push(`${res.repairs} corrección(es)`);
+  $("pEnrichInfo").textContent = bits.join(" · ");
+  banner($("pEnrichBanner"), res.note || "", "warn");
+}
+
+// Reensamblado sin LLM: valida lo que el usuario editó a mano con el mismo
+// contrato que usa el enriquecedor, para que una edición no cuele un prompt
+// que H3 no entiende.
+let pAssembleTimer = null;
+function pAssembleSoon(){
+  clearTimeout(pAssembleTimer);
+  pAssembleTimer = setTimeout(async () => {
+    const b = pBase();
+    try {
+      const res = await jpost("/prompt/assemble", {
+        mode: b.mode, duration_s: b.duration_s, dialogue: b.dialogue,
+        silence: b.silence, n_pictures: b.images_b64.length, fields: pReadBoxes(),
+      });
+      if (!state.promptDirty) pSetPrompt(res.prompt);
+      pShowIssues(res);
+    } catch(e){ /* el validador no es crítico: no bloquear la edición */ }
+  }, 600);
+}
+
+async function loadLlms(){
+  try {
+    const r = await jget("/prompt/models");
+    const sel = $("pLlm");
+    sel.innerHTML = "";
+    (r.llms||[]).forEach(m => {
+      const o = document.createElement("option");
+      o.value = m.id; o.textContent = m.id + (m.type === "vlm" ? "  (ve imágenes)" : "");
+      sel.appendChild(o);
+    });
+    if (r.suggested) sel.value = r.suggested;
+    if (r.lm_error){
+      sel.innerHTML = `<option value="">— LM Studio no responde —</option>`;
+      banner($("pEnrichBanner"), "LM Studio no responde en :1234; arráncalo para poder enriquecer.", "warn");
+    }
+  } catch(e){
+    $("pLlm").innerHTML = `<option value="">— sin conexión —</option>`;
+  }
+}
+
+$("btnEnrich").onclick = async () => {
+  if (!$("pIdea").value.trim()){
+    banner($("pEnrichBanner"), "Escribe tu idea primero.", "warn"); return;
+  }
+  const btn = $("btnEnrich");
+  btn.disabled = true; btn.textContent = "Escribiendo…";
+  banner($("pEnrichBanner"), "", "");
+  $("pEnrichInfo").textContent = "";
+  try {
+    pApply(await jpost("/prompt/enrich", pBase()));
+  } catch(e){
+    banner($("pEnrichBanner"), "No se pudo enriquecer: " + e.message, "err");
+  } finally {
+    btn.disabled = false; btn.textContent = "Enriquecer";
+  }
+};
+
+$("btnUnloadLlm").onclick = async () => {
+  try {
+    const r = await jpost("/prompt/unload-llm");
+    banner($("pEnrichBanner"), r.ok ? "VRAM del modelo de escritura liberada."
+      : "No se pudo (¿falta el CLI lms?): " + (r.reason||r.hint||""), r.ok ? "ok" : "warn");
+  } catch(e){ banner($("pEnrichBanner"), e.message, "err"); }
+};
+
+document.querySelectorAll("#pBoxes .pbox").forEach(box => {
+  const field = box.dataset.field;
+  box.querySelector(".pbtn").onclick = async () => {
+    box.classList.add("busy");
+    try {
+      const res = await jpost("/prompt/rewrite",
+        Object.assign(pBase(), { field, note: box.querySelector(".pnote").value.trim(),
+                                 fields: pReadBoxes() }));
+      pApply(res);
+      box.querySelector(".pnote").value = "";
+    } catch(e){
+      banner($("pEnrichBanner"), "No se pudo reescribir: " + e.message, "err");
+    } finally { box.classList.remove("busy"); }
+  };
+  box.querySelector("textarea").oninput = pAssembleSoon;
+});
+
+$("prompt").oninput = () => { state.promptDirty = true; };
+
 // ── Generar ──────────────────────────────────────────────────────────────────
-const PHASE = { queued:"En cola", build:"Armando workflow", render:"Renderizando", save:"Guardando", done:"Listo" };
+const PHASE = { queued:"En cola", unload:"Liberando VRAM", build:"Armando workflow", render:"Renderizando", save:"Guardando", done:"Listo" };
 
 $("btnGenerate").onclick = async () => {
   const prompt = $("prompt").value.trim();

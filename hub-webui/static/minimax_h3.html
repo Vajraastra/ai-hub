@@ -58,6 +58,13 @@
       font-family:inherit; }
     textarea { resize:vertical; }
     .row { display:flex; gap:10px; } .row > * { flex:1; }
+    .prow { display:flex; gap:8px; align-items:center; }
+    .pbox { border:1px solid var(--border); border-radius:8px; padding:10px 12px; margin-top:10px; }
+    .pbox label.fld { margin-top:0; }
+    .pbox .pnote { flex:1; }
+    .pbox.busy { opacity:.55; pointer-events:none; }
+    .issue { font-size:12px; padding:2px 0; }
+    .issue.error { color:#e05c5c; } .issue.warning { color:#e0a94c; }
     .row3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; }
 
     button.act { background:var(--accent-purple); border:none; color:#fff;
@@ -241,9 +248,64 @@
       <div>
         <div class="card">
           <h2>✍️ Descripción del clip
-            <span class="tip" data-tip="Describe en un solo texto lo que quieres VER y ESCUCHAR: la escena, el movimiento de cámara y el audio (diálogo, sonidos, música). Cuanto más concreto seas, más se parece el resultado a lo que imaginas.">i</span>
+            <span class="tip" data-tip="Cuenta tu idea en español y el asistente la reescribe en el formato que MiniMax H3 entiende: imagen y acción, sonido ambiente y música, cada uno en su caja. Puedes retocar cualquiera de las tres, o escribir el prompt final a mano.">i</span>
           </h2>
+
+          <label class="fld">Tu idea, en tus palabras</label>
+          <textarea id="pIdea" rows="4" placeholder="Un pescador viejo repara su red al amanecer en un muelle de madera; mira al horizonte y sonríe."></textarea>
+
+          <label class="fld">Diálogo, palabra por palabra (opcional — una línea por intervención)
+            <span class="tip" data-tip="Lo que escribas aquí se copia tal cual al prompt, sin traducir ni reformular: es lo que se va a oír. Déjalo vacío si nadie habla.">i</span>
+          </label>
+          <textarea id="pDialogue" rows="2" placeholder="Bajo en la próxima estación."></textarea>
+
+          <label class="fld" style="display:flex; align-items:center; gap:6px">
+            <input type="checkbox" id="pSilence" style="width:auto"> Clip completamente en silencio
+          </label>
+
+          <div class="prow" style="margin-top:10px">
+            <div style="flex:1"><label class="fld" style="margin-top:0">Modelo que escribe el prompt</label>
+              <select id="pLlm"></select></div>
+          </div>
+          <div class="prow" style="margin-top:10px">
+            <button class="act" id="btnEnrich">Enriquecer</button>
+            <button class="ghost" id="btnUnloadLlm" title="Descarga el modelo de escritura de la VRAM">Liberar VRAM</button>
+            <span class="dim mono" id="pEnrichInfo"></span>
+          </div>
+          <div id="pEnrichBanner" style="margin-top:8px"></div>
+
+          <div id="pBoxes" style="display:none">
+            <div class="pbox" data-field="integrated_multimodal_description">
+              <label class="fld">🎥 Imagen y acción</label>
+              <textarea rows="7"></textarea>
+              <div class="prow">
+                <input type="text" class="pnote" placeholder="Qué cambiar (ej. más lento, plano más cerrado)">
+                <button class="ghost pbtn">Reescribir</button>
+              </div>
+            </div>
+            <div class="pbox" data-field="overall_soundscape">
+              <label class="fld">🔊 Sonido ambiente</label>
+              <textarea rows="3"></textarea>
+              <div class="prow">
+                <input type="text" class="pnote" placeholder="Qué cambiar (ej. sin pájaros, más viento)">
+                <button class="ghost pbtn">Reescribir</button>
+              </div>
+            </div>
+            <div class="pbox" data-field="non_diegetic_music">
+              <label class="fld">🎵 Música</label>
+              <textarea rows="3"></textarea>
+              <div class="prow">
+                <input type="text" class="pnote" placeholder="Qué cambiar (ej. solo un acordeón, muy lento)">
+                <button class="ghost pbtn">Reescribir</button>
+              </div>
+            </div>
+          </div>
+
+          <label class="fld" style="margin-top:14px">Prompt que se va a enviar
+            <span class="tip" data-tip="Se arma solo con lo que hay en las tres cajas y se revisa contra el formato oficial de MiniMax. Si lo editas a mano deja de actualizarse solo hasta que vuelvas a enriquecer.">i</span>
+          </label>
           <textarea id="prompt" rows="8" placeholder="Describe el clip: escena, cámara, y el audio que lo acompaña (diálogo, SFX, música) en un solo bloque."></textarea>
+          <div id="pValid" style="margin-top:6px"></div>
         </div>
 
         <div class="card">

@@ -37,10 +37,16 @@ from minimax_h3.core import lora_presets
 from minimax_h3.core import chains
 from minimax_h3.core.pipeline import GenParams, PipelineError
 from minimax_h3.core.chains import ChainError
+from minimax_h3.core.lmstudio import LMStudio, LMStudioError
+from minimax_h3.prompting.schema import (Mode, H3Prompt, H3RefPrompt, BASE_FIELDS,
+                                         REF_FIELDS, effective_duration)
+from minimax_h3.prompting.validator import Context, validate_text
+from minimax_h3.prompting.writer import PromptWriter, WriterConfig, WriterError
 
 minimax_h3_router = APIRouter(prefix="/api/minimax-h3", tags=["minimax-h3"])
 
 _comfy = ComfyClient(port=8188)
+_lm = LMStudio()
 
 
 def _models_root() -> Path:
@@ -245,6 +251,45 @@ def _spawn(coro) -> asyncio.Task:
     return task
 
 
+async def _free_llm_vram(job: dict):
+    """H3 y el LLM no caben juntos en VRAM: antes de encolar se mira qué hay
+    montado y se desmonta.
+
+    Se pregunta primero en vez de disparar `lms unload --all` a ciegas: la
+    consulta es un GET a :1234 y el unload arranca un proceso hijo, así que
+    para quien nunca abrió el enriquecedor esto no cuesta nada. Después se
+    comprueba que de verdad se soltó —un unload fallido es silencioso y el
+    síntoma llegaría veinte minutos más tarde, como un OOM a mitad del render—
+    y se le pide a ComfyUI que recalcule su presupuesto con la VRAM ya libre.
+
+    `unload_models=False` a propósito: vaciar la caché sí, tirar el DiT de H3
+    que quedó cargado del render anterior no — son ~36 GB de recarga.
+
+    Todo best-effort: que LM Studio no esté levantado no es un error."""
+    job["phase"] = "unload"
+    try:
+        loaded = await _lm.loaded_llms()
+    except Exception:
+        loaded = []
+    if not loaded:
+        return
+    try:
+        await _lm.unload_all()
+    except Exception:
+        pass
+    try:
+        still = await _lm.loaded_llms()
+    except Exception:
+        still = []
+    job["llm_unloaded"] = [m for m in loaded if m not in still]
+    if still:
+        job["llm_still_loaded"] = still
+    try:
+        await _comfy.free_memory(unload_models=False, free_memory=True)
+    except Exception:
+        pass
+
+
 async def _run_job(job: dict, params: GenParams):
     global _active_job
 
@@ -257,6 +302,7 @@ async def _run_job(job: dict, params: GenParams):
         job["steps_total"] = total
 
     try:
+        await _free_llm_vram(job)
         manifest = await pipeline.generate(_comfy, params,
                                            on_phase=on_phase, on_step=on_step)
         job["status"] = "done"
@@ -404,6 +450,7 @@ async def _run_chain_job(job: dict, chain_id: str, segment_id: str):
         job["steps_total"] = total
 
     try:
+        await _free_llm_vram(job)
         manifest = await chains.generate_segment_version(
             _comfy, chain_id, segment_id, on_phase=on_phase, on_step=on_step)
         job["status"] = "done"
@@ -481,6 +528,232 @@ async def chain_export(chain_id: str):
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Historial
+# ═══════════════════════════════════════════════════════════════════════════
+# Enriquecedor de prompts — repone H3-Context-IR, que MiniMax no liberó
+#
+# El prompt no se pide de una vez: una llamada por campo, cada una con solo su
+# sección de la guía oficial (ver apps/minimax_h3/prompting/). Estas rutas son
+# la piel de eso — las tres cajas de la UI mapean 1:1 con los tres campos, así
+# que "enriquecer todo" y "reescribir solo la música" comparten motor.
+#
+# Enriquecer y renderizar NO pueden solaparse: el LLM y el DiT de H3 no caben
+# juntos en VRAM. Por eso /prompt/* devuelve 409 con un render en curso, y el
+# render descarga el LLM antes de encolar.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Orden de preferencia medido en tests/bench_prompting.py (15/15 prompts
+# válidos, 11 al primer intento, 13.1 s/prompt el primero). Es una sugerencia
+# para preseleccionar en la UI, nunca una imposición: el modelo lo elige el
+# usuario y viaja en cada petición.
+_LLM_PREFERENCE = ("gemma4-26b-a4b-uncensored", "gemma-4-12b", "gemma-4", "qwen3")
+
+
+class PromptBody(BaseModel):
+    idea: str = ""
+    llm_model: str = ""
+    mode: str = "T2VA"
+    duration_s: float = 5.0
+    dialogue: list[str] = []          # líneas del usuario, se reproducen verbatim
+    silence: bool = False
+    n_videos: int = 0
+    n_audios: int = 0
+    images_b64: list[str] = []        # referencias conectadas, para describirlas
+    temperature: float = 0.4
+    max_repairs: int = 2
+    reasoning: str = "none"
+
+
+class PromptRewriteBody(PromptBody):
+    field: str = ""
+    note: str = ""
+    fields: dict[str, str] = {}
+
+
+class PromptAssembleBody(BaseModel):
+    mode: str = "T2VA"
+    duration_s: float = 5.0
+    dialogue: list[str] = []
+    silence: bool = False
+    n_videos: int = 0
+    n_audios: int = 0
+    n_pictures: int = 0
+    fields: dict[str, str] = {}
+
+
+def _prompt_mode(name: str) -> Mode:
+    try:
+        return Mode[name.strip().upper()]
+    except KeyError:
+        raise HTTPException(400, f"modo desconocido: {name!r}")
+
+
+def _prompt_ctx(body, n_pictures: int) -> Context:
+    return Context(duration_s=body.duration_s,
+                   n_pictures=n_pictures,
+                   n_videos=body.n_videos,
+                   n_audios=body.n_audios,
+                   dialogue=[d for d in body.dialogue if d.strip()],
+                   silence_requested=body.silence)
+
+
+def _prompt_writer(body: PromptBody) -> PromptWriter:
+    if not body.llm_model.strip():
+        raise HTTPException(400, "hace falta elegir un modelo de LM Studio")
+    return PromptWriter(_lm, WriterConfig(model=body.llm_model,
+                                          temperature=body.temperature,
+                                          max_repairs=body.max_repairs,
+                                          reasoning=body.reasoning))
+
+
+def _prompt_build(mode: Mode, duration_s: float, fields: dict):
+    """Campos sueltos (los que el usuario editó a mano) -> dataclass del modo."""
+    if mode is Mode.REF2VA:
+        return H3RefPrompt(duration_s=duration_s,
+                           **{k: fields.get(k, "") for k in REF_FIELDS})
+    return H3Prompt(mode=mode, duration_s=duration_s,
+                    **{k: fields.get(k, "") for k in BASE_FIELDS})
+
+
+def _prompt_payload(prompt, issues, steps=(), note: str = "") -> dict:
+    names = REF_FIELDS if prompt.mode is Mode.REF2VA else BASE_FIELDS
+    return {
+        "mode": prompt.mode.name,
+        "duration_s": prompt.duration_s,
+        "effective_duration": round(effective_duration(prompt.duration_s), 2),
+        "fields": {n: getattr(prompt, n) for n in names},
+        "prompt": prompt.assemble(),
+        "ok": not any(i.severity == "error" for i in issues),
+        "issues": [{"code": i.code, "severity": i.severity, "field": i.field,
+                    "message": i.message} for i in issues],
+        "steps": [{"name": s.name, "seconds": round(s.seconds, 1), "chars": s.chars,
+                   "repaired": s.repaired, "note": s.note} for s in steps],
+        "seconds": round(sum(s.seconds for s in steps), 1),
+        "repairs": sum(s.repaired for s in steps),
+        "note": note,
+    }
+
+
+def _prompt_guard():
+    """Con un render en curso no se enriquece: el LLM le quitaría la VRAM."""
+    if _active_job:
+        raise HTTPException(409, "hay una generación en curso — el LLM y H3 no caben "
+                                 "juntos en VRAM; espera a que termine")
+
+
+async def _free_comfy_vram():
+    """Lo simétrico de `_free_llm_vram`: soltar lo que ComfyUI retiene antes de
+    montar el escritor.
+
+    No es cosmético. Medido en `tests/e2e_pipeline.py`: con el DiT de H3 todavía
+    residente, el mismo enriquecido pasó de 20 s a 78 s porque el LLM no cupo en
+    VRAM y se fue a RAM. Aquí sí se descargan los modelos (`unload_models=True`)
+    —al revés que antes de renderizar—: recargar el DiT del NVMe cuesta bastante
+    menos que escribir el prompt con el LLM a medio volcar."""
+    try:
+        await _comfy.free_memory(unload_models=True, free_memory=True)
+    except Exception:
+        pass
+
+
+async def _is_vlm(model: str) -> bool:
+    try:
+        return any(m.get("id") == model and m.get("type") == "vlm"
+                   for m in await _lm.list_models())
+    except LMStudioError:
+        return False
+
+
+@minimax_h3_router.get("/prompt/models")
+async def prompt_models():
+    """LLMs cargables en LM Studio + cuál conviene preseleccionar."""
+    llms, err = [], ""
+    try:
+        llms = [m for m in await _lm.list_models() if m.get("type") in ("llm", "vlm")]
+    except LMStudioError as e:
+        err = str(e)
+    ids = [m.get("id", "") for m in llms]
+    suggested = next((i for pat in _LLM_PREFERENCE for i in ids if pat in i.lower()), "")
+    return {"llms": llms, "lm_error": err, "suggested": suggested}
+
+
+@minimax_h3_router.post("/prompt/unload-llm")
+async def prompt_unload_llm():
+    """Descarga manual del LLM de la VRAM (botón de la UI)."""
+    try:
+        return await _lm.unload_all()
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@minimax_h3_router.post("/prompt/enrich")
+async def prompt_enrich(body: PromptBody):
+    """Idea suelta -> prompt H3 completo y validado."""
+    _prompt_guard()
+    if not body.idea.strip():
+        raise HTTPException(400, "hace falta una idea")
+    if not await _lm.health_check():
+        raise HTTPException(503, "LM Studio no responde en :1234")
+
+    mode = _prompt_mode(body.mode)
+    ctx = _prompt_ctx(body, n_pictures=len(body.images_b64))
+    writer = _prompt_writer(body)
+    await _free_comfy_vram()
+
+    # Describir las referencias exige un modelo multimodal. Si el elegido es de
+    # solo texto no se aborta: se escribe sin captions y se avisa, porque el
+    # prompt sale igual y la alternativa sería obligar a cargar dos modelos.
+    note = ""
+    images = body.images_b64
+    if images and not await _is_vlm(body.llm_model):
+        note = (f"'{body.llm_model}' no es multimodal: las referencias no se "
+                f"describieron y el prompt se escribió solo desde la idea")
+        images = []
+
+    try:
+        if mode is Mode.REF2VA:
+            res = await writer.write_ref(body.idea, ctx, images_b64=images or None)
+        else:
+            captions = await writer.describe_references(images) if images else None
+            res = await writer.write(body.idea, ctx, mode, captions=captions)
+    except (WriterError, LMStudioError) as e:
+        raise HTTPException(502, str(e))
+    return _prompt_payload(res.prompt, res.issues, res.steps, note)
+
+
+@minimax_h3_router.post("/prompt/rewrite")
+async def prompt_rewrite(body: PromptRewriteBody):
+    """Reescribe UNA caja con la indicación del usuario, sin tocar las demás."""
+    _prompt_guard()
+    if not await _lm.health_check():
+        raise HTTPException(503, "LM Studio no responde en :1234")
+
+    mode = _prompt_mode(body.mode)
+    ctx = _prompt_ctx(body, n_pictures=len(body.images_b64))
+    prompt = _prompt_build(mode, body.duration_s, body.fields)
+    writer = _prompt_writer(body)
+    await _free_comfy_vram()
+    try:
+        res = await writer.rewrite_field(prompt, body.field, ctx,
+                                         note=body.note, idea=body.idea)
+    except WriterError as e:
+        raise HTTPException(400, str(e))
+    except LMStudioError as e:
+        raise HTTPException(502, str(e))
+    return _prompt_payload(res.prompt, res.issues, res.steps)
+
+
+@minimax_h3_router.post("/prompt/assemble")
+async def prompt_assemble(body: PromptAssembleBody):
+    """Valida y ensambla lo que el usuario editó a mano. Sin LLM de por medio:
+    es el mismo contrato que verifica el enriquecedor, para que editar una caja
+    no pueda colar un prompt inválido."""
+    mode = _prompt_mode(body.mode)
+    ctx = _prompt_ctx(body, n_pictures=body.n_pictures)
+    prompt = _prompt_build(mode, body.duration_s, body.fields)
+    _, issues = validate_text(prompt.assemble(), mode, ctx)
+    return _prompt_payload(prompt, issues)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 
 @minimax_h3_router.get("/history")

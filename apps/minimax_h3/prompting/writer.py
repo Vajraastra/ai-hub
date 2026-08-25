@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 
 from .guides import load_guide
 from .schema import (Mode, H3Prompt, H3RefPrompt, BASE_FIELDS, REF_FIELDS,
-                     effective_duration, timecode)
+                     effective_duration, timecode, shots, cuts)
 from .validator import Context, validate_text, errors, repair_brief, Issue
 from ..core.lmstudio import LMStudio, LMStudioError
 
@@ -186,6 +186,25 @@ def _stamp_cuts(body: str, tl: dict, dur: float = 0.0) -> str:
 
     return _SHOT_HEAD.sub(repl, body)
 
+
+
+def _plan_from_prompt(prompt) -> tuple[str, dict]:
+    """Reconstruye el plan de planos desde el cuerpo ya escrito.
+
+    Una reescritura no vuelve a preguntar la línea de tiempo al modelo: los
+    cortes ya están en el texto y volver a planificarlos costaría una llamada
+    para llegar, con suerte, al mismo sitio."""
+    body = (getattr(prompt, "detailed_description", "")
+            or getattr(prompt, "integrated_multimodal_description", ""))
+    at = dict(cuts(body))
+    rows, plan_shots = [], []
+    for n in sorted(set(shots(body)) | {1}):
+        t = 0.0 if n == 1 else at.get(n, 0.0)
+        plan_shots.append({"at": t, "camera": "", "beat": ""})
+        rows.append(f"[Shot {n}] " + ("opens the clip" if n == 1
+                                      else f"cuts at {timecode(t)}"))
+    return ("SHOT PLAN ALREADY FIXED (keep exactly these shots and cut times):\n"
+            + "\n".join(rows)), {"shots": plan_shots}
 
 class PromptWriter:
     def __init__(self, lms: LMStudio, cfg: WriterConfig):
@@ -384,6 +403,39 @@ class PromptWriter:
                              overall_soundscape=soundscape,
                              non_diegetic_music=music)
         return await self._repair(prompt, ctx, Mode.REF2VA, plan, steps)
+
+    # ── reescritura de una sola caja ─────────────────────────────────────────
+
+    async def rewrite_field(self, prompt, field: str, ctx: Context, note: str = "",
+                            idea: str = "") -> Result:
+        """Reescribe UN campo dejando los demás intactos.
+
+        Es el botón "reescribir esta caja" de la interfaz. No se re-planifica la
+        línea de tiempo: los planos y sus cortes se leen del cuerpo que ya está
+        escrito, así que cambiar la música no puede mover un corte de plano."""
+        mode = prompt.mode
+        recipes = self._FIELD_RECIPE_REF if mode is Mode.REF2VA else self._FIELD_RECIPE
+        if field not in recipes:
+            raise WriterError(f"campo desconocido: {field}")
+        guide, recipe = recipes[field]
+        plan, tl = _plan_from_prompt(prompt)
+
+        steps: list[Step] = []
+        user = (_brief(idea, ctx, mode, plan)
+                + f"\n\nTHE {field} AS IT STANDS:\n{getattr(prompt, field).strip()}")
+        if note.strip():
+            user += f"\n\nWHAT THE USER WANTS CHANGED:\n{note.strip()}"
+        out = await self._ask(
+            _system(guide, recipe,
+                    f"Rewrite the {field} field of a prompt that already exists. Apply what "
+                    "the user asks and keep everything else as it was; do not restructure "
+                    "what was not questioned."),
+            user, f"rewrite:{field}", steps)
+
+        if field in ("integrated_multimodal_description", "detailed_description"):
+            out = _stamp_cuts(out, tl, effective_duration(ctx.duration_s))
+        setattr(prompt, field, out)
+        return await self._repair(prompt, ctx, mode, plan, steps)
 
     # ── bucle de reparación ──────────────────────────────────────────────────
 
