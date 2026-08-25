@@ -29,9 +29,10 @@ tested target. `run.sh` remains as a best-effort, untested fallback for Linux.
 | **Forge Fusion** | Checkpoint derivation and block-wise LoRA fusion/purification, across SDXL, Anima, and Z-Image |
 | **Ideogram 4** | Text-heavy image generation via JSON + bounding boxes (sharp typography, controlled layout) |
 | **Face Swap** | Face replacement with real pose (LivePortrait + ReActor/HyperSwap) |
+| **MiniMax H3** | Local video generation with native audio: single clips or chained segments |
 
-Retired modules (kept out of the active tree, history in `BITACORA.md`): FaceFusion,
-dataset-refiner, TagGUI, LoRA Merger, Forge Lab — the last two were superseded by Forge Fusion.
+Retired modules (kept out of the active tree, history in `git log`): FaceFusion, dataset-refiner,
+TagGUI, LoRA Merger, Forge Lab — the last two were superseded by Forge Fusion.
 
 ---
 
@@ -78,9 +79,13 @@ That's it. `run.bat` will:
 
 ## Documentation
 
-- `TASKS.md` — live task list and open work
-- `BITACORA.md` — production log: what was implemented, root causes, fixes
-- `HANDOFF.md` — immediate state for picking work back up
+Each file answers one question, and nothing else:
+
+- `TASKS.md` — what is still open. Finished work is deleted from it, not archived.
+- `BITACORA.md` — why things are the way they are: root causes, measurements that cost GPU time,
+  and approaches that were tried and rejected. Organized by module, not by date — `git log` keeps
+  the chronology.
+- `HANDOFF.md` — where the last session left off. Overwritten each time, not versioned.
 
 ---
 
