@@ -16,20 +16,29 @@ Los casos se extraen de `prompting/guides/*.txt` en caliente, no están copiados
 acá: si MiniMax revisa sus guías, se reemplazan los .txt y el banco se actualiza
 solo.
 
+Con `--llm` se agrega una cuarta pasada que sí usa LM Studio: escribe prompts
+de verdad con uno o varios modelos y los mide con el mismo validador. Es la
+forma de elegir modelo con números en vez de corazonadas.
+
     python apps/minimax_h3/tests/bench_prompting.py
+    python apps/minimax_h3/tests/bench_prompting.py --llm google/gemma-4-12b
+    python apps/minimax_h3/tests/bench_prompting.py --llm modelo-a,modelo-b --keep-loaded
 """
 import re
 import sys
 from pathlib import Path
 from dataclasses import dataclass, field
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# Import por paquete (minimax_h3.prompting.*), nunca módulos sueltos: varios
+# módulos del hub definen nombres iguales y el primero en importarse gana en
+# sys.modules (ver el encabezado de hub-webui/minimax_h3_routes.py).
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-from prompting.guides import load_guide                                    # noqa: E402
-from prompting.schema import Mode, effective_duration                  # noqa: E402
-from prompting.validator import Context, validate_text, errors             # noqa: E402
+from minimax_h3.prompting.guides import load_guide                     # noqa: E402
+from minimax_h3.prompting.schema import Mode, effective_duration       # noqa: E402
+from minimax_h3.prompting.validator import Context, validate_text, errors   # noqa: E402
 
 _BLOCK = re.compile(r"```text\n(.*?)```", re.S)
 _CASE = re.compile(r"### Case \d+: (\w+)")
@@ -167,8 +176,130 @@ def run_roundtrip() -> int:
     return failed
 
 
+# ── Pasada en vivo: comparar modelos de LM Studio ────────────────────────────
+
+# Encargos de prueba. Cubren lo que de verdad se le rompe a un modelo pequeño:
+# diálogo que no debe tocar, silencio explícito, y modos con keyframe.
+IDEAS = [
+    ("t2va-simple", Mode.T2VA,
+     "Un pescador viejo repara su red en el muelle al amanecer, con gaviotas alrededor.",
+     Context(duration_s=6), None),
+    ("t2va-dialogo", Mode.T2VA,
+     "Una mujer joven mira la lluvia desde la ventana de un tren y le habla a su acompañante.",
+     Context(duration_s=10, dialogue=["Bajo en la próxima estación."]), None),
+    ("t2va-silencio", Mode.T2VA,
+     "Plano cenital de una taza de café enfriándose sobre una mesa de madera. Sin sonido alguno.",
+     Context(duration_s=5, silence_requested=True), None),
+    ("i2va-caption", Mode.I2VA,
+     "Que la mujer de la foto se gire hacia la cámara y sonría apenas.",
+     Context(duration_s=5, n_pictures=1),
+     ["A young woman with dark hair in a blue coat stands beside a rain-covered window."]),
+    ("fl2va-caption", Mode.FL2VA,
+     "Una ciclista abre su paraguas bajo la lluvia y se refugia debajo.",
+     Context(duration_s=8, n_pictures=2),
+     ["A cyclist stands beside a silver bicycle holding a closed black umbrella.",
+      "The same cyclist stands under the fully opened umbrella."]),
+]
+
+
+async def _run_model(model: str, keep_loaded: bool, repeat: int, temperature: float) -> dict:
+    """Import perezoso: la pasada offline no debe exigir aiohttp ni LM Studio."""
+    from minimax_h3.core.lmstudio import LMStudio
+    from minimax_h3.prompting.writer import PromptWriter, WriterConfig
+
+    lms = LMStudio()
+    writer = PromptWriter(lms, WriterConfig(model=model, temperature=temperature))
+    stats = {"model": model, "ok": 0, "first": 0, "repairs": 0, "seconds": 0.0,
+             "verbatim": 0, "verbatim_total": 0, "fail": 0, "runs": 0,
+             "rows": [], "by_case": {}}
+
+    for it in range(repeat):
+        for name, mode, idea, ctx, captions in IDEAS:
+            stats["runs"] += 1
+            try:
+                r = await writer.write(idea, ctx, mode, captions=captions)
+            except Exception as e:
+                stats["fail"] += 1
+                stats["rows"].append((name, "ERROR", f"{type(e).__name__}: {str(e)[:70]}"))
+                continue
+            stats["ok"] += r.ok
+            stats["first"] += r.ok and r.repairs == 0
+            stats["repairs"] += r.repairs
+            stats["seconds"] += r.seconds
+            stats["by_case"].setdefault(name, []).append(bool(r.ok))
+            if ctx.dialogue:
+                stats["verbatim_total"] += 1
+                stats["verbatim"] += not any(i.code == "dialogue_not_verbatim"
+                                             for i in r.issues)
+            codes = sorted({i.code for i in errors(r.issues)})
+            tag = f"{name}#{it + 1}" if repeat > 1 else name
+            stats["rows"].append((tag, "OK" if r.ok else "FALLA",
+                                  f"{r.seconds:5.1f}s  {r.repairs} rep."
+                                  + (f"  {codes}" if codes else "")))
+    if not keep_loaded:
+        # el LLM y H3 no caben juntos: se deja la VRAM libre para el render
+        await lms.unload_all()
+    return stats
+
+
+def run_llm(models: list[str], keep_loaded: bool, repeat: int = 1,
+            temperature: float = 0.4) -> int:
+    import asyncio
+    total = len(IDEAS) * repeat
+    print(f"\n=== Escritura en vivo ({len(IDEAS)} encargos x {repeat} pasada(s) "
+          f"x {len(models)} modelo(s), temp {temperature}) ===")
+    results = []
+    for model in models:
+        print(f"\n  -- {model}")
+        try:
+            stats = asyncio.run(_run_model(model, keep_loaded, repeat, temperature))
+        except Exception as e:
+            print(f"     no se pudo evaluar: {type(e).__name__}: {e}")
+            continue
+        for name, verdict, detail in stats["rows"]:
+            print(f"     [{verdict:<5}] {name:<17} {detail}")
+        results.append(stats)
+
+    if not results:
+        return 1
+    print(f"\n  {'modelo':<44} {'válidos':>8} {'al 1er':>7} {'reps':>5} "
+          f"{'verbatim':>9} {'seg/prompt':>11}")
+    for s in sorted(results, key=lambda x: (-x["ok"], -x["first"], x["seconds"])):
+        vb = f"{s['verbatim']}/{s['verbatim_total']}" if s["verbatim_total"] else "-"
+        per = s["seconds"] / max(1, s["runs"] - s["fail"])
+        print(f"  {s['model']:<44} {s['ok']:>4}/{total:<3} {s['first']:>7} "
+              f"{s['repairs']:>5} {vb:>9} {per:>10.1f}s")
+
+    if repeat > 1:
+        # Qué encargo es difícil, y para quién. Con una sola pasada esto no se
+        # ve: un modelo que acierta 4/5 puede fallar en un caso distinto cada
+        # vez, que es un problema muy distinto a fallar siempre en el mismo.
+        print(f"\n  Estabilidad por encargo (aciertos de {repeat} pasadas):")
+        print(f"  {'encargo':<16}" + "".join(f"{s['model'][:16]:>18}" for s in results))
+        for name, *_ in IDEAS:
+            row = "".join(f"{sum(s['by_case'].get(name, [])):>13}/{repeat:<4}"
+                          for s in results)
+            print(f"  {name:<16}{row}")
+    return 0
+
+
 def main() -> int:
+    import argparse
+    ap = argparse.ArgumentParser(description="Banco del contrato de prompts H3")
+    ap.add_argument("--llm", help="modelos de LM Studio a comparar, separados por coma")
+    ap.add_argument("--keep-loaded", action="store_true",
+                    help="no descargar el modelo al terminar (por defecto libera la VRAM)")
+    ap.add_argument("--repeat", type=int, default=1,
+                    help="pasadas por modelo; con 1 sola, la varianza entre corridas "
+                         "es mayor que las diferencias entre modelos")
+    ap.add_argument("--temp", type=float, default=0.4,
+                    help="temperatura del escritor (más baja = más repetible)")
+    args = ap.parse_args()
+
     bad = run_official() + run_mutations() + run_roundtrip()
+    if args.llm:
+        bad += run_llm([m.strip() for m in args.llm.split(",") if m.strip()],
+                       args.keep_loaded, args.repeat, args.temp)
     print("\n" + ("Todo en orden." if not bad else f"{bad} caso(s) fallando."))
     return 1 if bad else 0
 
