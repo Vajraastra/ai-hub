@@ -51,20 +51,31 @@ def hf_url(repo_id: str, filename: str) -> str:
 
 
 # ── Registro de modelos ──────────────────────────────────────────────────────
-# Verificado con fuentes en s94 (ver TASKS.md). Elegido NVFP4 podado para el
-# DiT (no un INT4 puro — no existe como archivo suelto en los repos comunitarios
-# revisados) porque la 5060 Ti es Blackwell y corre NVFP4 con soporte de
-# hardware nativo, además de ser la cuantización más chica que entra con
-# margen en 16GB.
+# Verificado con fuentes en s94 (ver TASKS.md). El DiT fue NVFP4 podado hasta
+# s96: se eligió por soporte de hardware nativo en la 5060 Ti (Blackwell) y
+# por ser la cuantización más chica. Se detectó en s95/s96 que esa NVFP4 es
+# la causa raíz de un problema de calidad "VHS"/textura fibrosa — confirmado
+# con comparación en vivo de las 3 variantes del DiT (NVFP4 / INT8 ConvRot /
+# Mixed INT4-INT8 ConvRot), con y sin turbo LoRA. Veredicto del usuario (s96):
+# NVFP4 inusable; con el turbo LoRA activado, INT8 y Mixed tienen ghosting
+# fuerte; SIN turbo (20 pasos) el ghosting desaparece casi del todo y la
+# diferencia es "abrumadora" a favor de la calidad — e INT8 sin turbo es
+# claramente mejor que Mixed sin turbo, ni se plantea usar Mixed. Decisión:
+# **DiT = INT8 ConvRot, SIN turbo por default** (`GenParams.turbo=False`,
+# ya era el default de la dataclass; lo que cambió acá es qué DiT baja el
+# gate). NVFP4 (`FL2V_NVFP4_DEPRECATED`), Mixed (`FL2V_MIXED_REJECTED`) y el
+# encoder INT8 ConvRot experimental fueron BORRADOS del disco en s98 con
+# aprobación del usuario (~52 GB recuperados) — las listas quedan solo como
+# referencia de re-descarga por si algún día hicieran falta.
 
 GATED_MODELS: list[ModelSpec] = [
     ModelSpec(
-        key="dit", label="DiT (motor de difusión, NVFP4 podado)",
+        key="dit", label="DiT (motor de difusión, INT8 ConvRot)",
         repo_id="Abiray/Minimax-H3-nvfp4-INT4-INT8-Convrot",
-        filename="MiniMax_H3_FL2VA_pruned_nvfp4.safetensors",
+        filename="MiniMax_H3_FL2VA_pruned_int8_convrot.safetensors",
         dest_dir="diffusion_models",
-        dest_name="minimax_h3_fl2va_pruned_nvfp4.safetensors",
-        size_bytes=12_528_636_865,
+        dest_name="minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+        size_bytes=21_000_000_000,
     ),
     ModelSpec(
         key="encoder", label="Text encoder (Qwen3-VL-32B, NVFP4/AWQ)",
@@ -119,6 +130,54 @@ REF2V_MODELS: list[ModelSpec] = [
         dest_dir="loras/h3",
         dest_name="minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors",
         size_bytes=1_956_193_000,
+    ),
+]
+
+# FL2VA NVFP4 (s96, DEPRECADA — borrada del disco en s98) — era el DiT de GATED_MODELS hasta
+# que se identificó como causa raíz del problema de calidad "VHS". Lista solo como referencia
+# de re-descarga; no participa de ningún flujo.
+FL2V_NVFP4_DEPRECATED: list[ModelSpec] = [
+    ModelSpec(
+        key="fl2v_nvfp4_dit", label="DiT FL2VA (NVFP4, deprecado por calidad — s96)",
+        repo_id="Abiray/Minimax-H3-nvfp4-INT4-INT8-Convrot",
+        filename="MiniMax_H3_FL2VA_pruned_nvfp4.safetensors",
+        dest_dir="diffusion_models",
+        dest_name="minimax_h3_fl2va_pruned_nvfp4.safetensors",
+        size_bytes=12_528_636_865,
+    ),
+]
+
+# FL2VA Mixed INT4/INT8 Convrot (s96, RECHAZADA) — probada como alternativa más chica a INT8
+# puro (15.9GB vs 21GB). Comparada en vivo con/sin turbo contra INT8 e NVFP4: sin turbo la
+# diferencia de calidad Mixed-vs-INT8 es "abrumadora" a favor de INT8 (veredicto del usuario) —
+# no se usa para nada. Borrada del disco en s98; lista solo como referencia de re-descarga.
+FL2V_MIXED_REJECTED: list[ModelSpec] = [
+    ModelSpec(
+        key="fl2v_mixed_dit", label="DiT FL2VA (Mixed INT4/INT8 ConvRot, rechazada por calidad — s96)",
+        repo_id="Abiray/Minimax-H3-nvfp4-INT4-INT8-Convrot",
+        filename="MiniMax_H3_FL2VA_pruned_mixed_int4_int8_convrot.safetensors",
+        dest_dir="diffusion_models",
+        dest_name="minimax_h3_fl2va_pruned_mixed_int4_int8_convrot.safetensors",
+        size_bytes=15_900_000_000,
+    ),
+]
+
+# Encoder Qwen3-VL-32B en INT8 ConvRot (s96) — probando si la cuantización agresiva del encoder
+# (NVFP4/AWQ, el de GATED_MODELS) contribuye a la pérdida de identidad en Ref2V. IMPORTANTE:
+# se confirmó en el repo oficial (github.com/MiniMax-AI/MiniMax-H3) que la fidelidad de
+# identidad de las plataformas comerciales depende de "H3-Context-IR", un sistema de
+# preprocesamiento HOSTEADO que MiniMax nunca liberó ("critical to the quality of the final
+# output") — este test probablemente da como máximo una mejora marginal, no cierra esa brecha
+# arquitectónica. Descartado: la pérdida de identidad resultó ser un bug de plomería (s97),
+# no del encoder. Borrado del disco en s98; lista solo como referencia de re-descarga.
+TEXT_ENCODER_INT8_CONVROT: list[ModelSpec] = [
+    ModelSpec(
+        key="encoder_int8_convrot", label="Text encoder Qwen3-VL-32B (INT8 ConvRot, candidato)",
+        repo_id="Comfy-Org/MiniMax-H3",
+        filename="text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+        dest_dir="text_encoders",
+        dest_name="qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+        size_bytes=27_100_000_000,
     ),
 ]
 

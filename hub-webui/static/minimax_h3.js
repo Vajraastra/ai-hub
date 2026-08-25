@@ -9,8 +9,16 @@ const state = {
   modelsReady: false,
   loraPresets: [],        // del endpoint /lora-presets, en orden fijo de apilado
   loraPresetState: {},    // id -> {on, strength}  (strength = valor del slider, escala el resto de archivos del preset proporcionalmente)
-  loraExtra: [],           // archivos de loras/h3/ sin preset curado
-  loraExtraState: {},      // filename -> {on, strength}
+  loraExtra: [],           // archivos de loras/h3/ sin preset curado (candidatos a slot)
+  // Hasta 3 LoRAs propios del usuario, cada uno con su intensidad (s98).
+  loraExtraSlots: [
+    { name:"", strength:1.0 }, { name:"", strength:1.0 }, { name:"", strength:1.0 },
+  ],
+  chain: null,             // cadena cargada actualmente (o null)
+  refStartB64: [],         // imágenes de referencia (sin prefijo data:) para el inicio Ref2V
+  ref2v: null,             // cache de /models/status/ref2v ({ready, missing, names, ...})
+  chainJobTimer: null,
+  chainJobSeg: null,       // segment_id del tramo que está generando ahora mismo
 };
 
 // ── Tabs ─────────────────────────────────────────────────────────────────────
@@ -21,6 +29,7 @@ document.querySelectorAll(".tab").forEach(t => t.onclick = () => {
   $("page-" + t.dataset.page).classList.add("active");
   if (t.dataset.page === "hist") loadHistory();
   if (t.dataset.page === "diag") loadDiag();
+  if (t.dataset.page === "chain"){ loadChainsList(); loadRef2vStatus(); }
 });
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -117,9 +126,10 @@ async function loadModelsAndLoras(){
     state.loraExtra = presetData.extra;
     state.loraPresetState = {};
     presetData.presets.forEach(p => { state.loraPresetState[p.id] = { on:false, strength:p.files[0].default_strength }; });
-    state.loraExtraState = {};
-    presetData.extra.forEach(f => { state.loraExtraState[f] = { on:false, strength:1.0 }; });
+    // Si un slot apunta a un archivo que ya no existe en disco, se vacía.
+    state.loraExtraSlots.forEach(s => { if (s.name && !presetData.extra.includes(s.name)) s.name = ""; });
     renderLoraPresets();
+    renderLoraExtraSlots();
     updateLorasSummary();
   } catch(e){ banner($("genBanner"),"No se pudieron cargar los modelos: "+e.message,"err"); }
 }
@@ -151,19 +161,39 @@ function renderLoraPresets(){
   document.querySelectorAll(".lp-toggle").forEach(btn => btn.onclick = () => toggleLoraPreset(btn.dataset.preset));
   document.querySelectorAll(".lp-slider").forEach(el => el.oninput = () => syncLoraStrength(el.dataset.preset, +el.value));
   document.querySelectorAll(".lp-num").forEach(el => el.onchange = () => syncLoraStrength(el.dataset.preset, +el.value));
+}
 
-  // Extras sin preset (LoRAs nuevas que el usuario agregue a loras/h3/)
-  $("loraExtraWrap").style.display = state.loraExtra.length ? "block" : "none";
-  $("loraExtra").innerHTML = state.loraExtra.map(f => {
-    const name = f.split(/[\\/]/).pop();
-    const st = state.loraExtraState[f];
-    return `<label class="fld" style="display:flex; align-items:center; gap:6px; text-transform:none; letter-spacing:0; font-weight:400">
-      <input type="checkbox" class="lora-extra-chk" data-file="${f}" ${st.on?"checked":""} style="width:auto"> ${name}
-    </label>`;
-  }).join("");
-  document.querySelectorAll(".lora-extra-chk").forEach(cb => cb.onchange = () => {
-    state.loraExtraState[cb.dataset.file].on = cb.checked;
+// Hasta 3 LoRAs propios (archivos de loras/h3/ sin preset curado), cada uno con
+// su selector + intensidad.
+function renderLoraExtraSlots(){
+  const box = $("loraExtraSlots");
+  if (!state.loraExtra.length){
+    box.innerHTML = `<div class="dim" style="font-size:11px">No se encontraron LoRAs propios.
+      Copia tus archivos .safetensors a la subcarpeta <span class="mono">loras/h3/</span> del
+      almacén de modelos y recarga la página.</div>`;
+    return;
+  }
+  const opts = state.loraExtra.map(f =>
+    `<option value="${f}">${f.split(/[\\/]/).pop()}</option>`).join("");
+  box.innerHTML = state.loraExtraSlots.map((s, i) => `
+    <div class="lx-slot">
+      <select class="lx-sel" data-slot="${i}">
+        <option value="">— ninguno —</option>${opts}
+      </select>
+      <input type="number" class="lx-str" data-slot="${i}" value="${s.strength}" step="0.05"
+        min="0" max="2" title="Intensidad del efecto (1.0 = completo)" ${s.name ? "" : "disabled"}>
+    </div>`).join("");
+  state.loraExtraSlots.forEach((s, i) => {
+    if (s.name) document.querySelector(`.lx-sel[data-slot="${i}"]`).value = s.name;
+  });
+  document.querySelectorAll(".lx-sel").forEach(sel => sel.onchange = () => {
+    const i = +sel.dataset.slot;
+    state.loraExtraSlots[i].name = sel.value;
+    document.querySelector(`.lx-str[data-slot="${i}"]`).disabled = !sel.value;
     updateLorasSummary();
+  });
+  document.querySelectorAll(".lx-str").forEach(inp => inp.onchange = () => {
+    state.loraExtraSlots[+inp.dataset.slot].strength = +inp.value;
   });
 }
 
@@ -201,7 +231,7 @@ function syncLoraStrength(id, value){
 
 function updateLorasSummary(){
   const n = Object.values(state.loraPresetState).filter(s=>s.on).length
-          + Object.values(state.loraExtraState).filter(s=>s.on).length;
+          + state.loraExtraSlots.filter(s=>s.name).length;
   $("lorasSummary").textContent = n ? `${n} activo(s)` : "";
 }
 
@@ -217,12 +247,55 @@ function buildLorasPayload(){
       out.push({ name: f.filename, strength: +(st.strength * ratio).toFixed(3) });
     }
   }
-  for (const f of state.loraExtra){
-    const st = state.loraExtraState[f];
-    if (st && st.on) out.push({ name: f, strength: st.strength });
+  const seen = new Set();
+  for (const s of state.loraExtraSlots){
+    if (s.name && !seen.has(s.name)){
+      seen.add(s.name);
+      out.push({ name: s.name, strength: s.strength });
+    }
   }
   return out;
 }
+
+// ── Formato (medidas estándar de monitor / teléfono) ────────────────────────
+// Medidas múltiplo de 32 en torno a ~1MP, el rango donde el modelo rinde bien.
+const FORMATS = [
+  { id:"tv",     ico:"🖥️", label:"Monitor / TV",  w:1280, h:720  },
+  { id:"wide",   ico:"🎞️", label:"Panorámico",    w:1344, h:768  },
+  { id:"phone",  ico:"📱", label:"Teléfono",       w:720,  h:1280 },
+  { id:"phoneL", ico:"📱", label:"Vertical alto",  w:768,  h:1344 },
+  { id:"square", ico:"◻️", label:"Cuadrado",       w:1024, h:1024 },
+  { id:"custom", ico:"⚙️", label:"Personalizado",  w:null, h:null },
+];
+
+function renderFmtChips(){
+  $("fmtChips").innerHTML = FORMATS.map(f => `
+    <button type="button" class="fmt-chip" data-fmt="${f.id}">
+      <span class="fc-ico">${f.ico}</span><span>${f.label}</span>
+      <span class="fc-dims">${f.w ? f.w + "×" + f.h : "a mano"}</span>
+    </button>`).join("");
+  document.querySelectorAll(".fmt-chip").forEach(b => b.onclick = () => applyFormat(b.dataset.fmt));
+  syncFmtSelection();
+}
+
+function applyFormat(id){
+  const f = FORMATS.find(x => x.id === id);
+  if (f.w){ $("pw").value = f.w; $("ph").value = f.h; }
+  else $("pw").focus();
+  syncFmtSelection();
+}
+
+// El chip marcado sigue a los campos ancho/alto: si el usuario los edita a mano
+// y coinciden con un preset se marca ese, si no se marca "Personalizado".
+function syncFmtSelection(){
+  const w = +$("pw").value, h = +$("ph").value;
+  const match = FORMATS.find(f => f.w === w && f.h === h);
+  document.querySelectorAll(".fmt-chip").forEach(b =>
+    b.classList.toggle("on", b.dataset.fmt === (match ? match.id : "custom")));
+}
+$("pw").oninput = syncFmtSelection;
+$("ph").oninput = syncFmtSelection;
+renderFmtChips();
 
 // ── Turbo toggle ─────────────────────────────────────────────────────────────
 function syncTurboUI(){
@@ -350,6 +423,320 @@ async function loadDiag(){
       ? `<div class="banner ok">Todos los modelos base están en disco.</div>`
       : `<div class="banner warn">Faltan ${ms.missing.length} archivo(s), ${fmtGB(ms.total_missing_bytes)} — usa la pestaña Generar para descargarlos.</div>`;
   } catch(e){ $("diagModels").innerHTML = `<div class="bad">Error: ${e.message}</div>`; }
+}
+
+// ── Cadena (encadenado de tramos) ───────────────────────────────────────────
+async function loadChainsList(){
+  let data;
+  try { data = await jget("/chains"); }
+  catch(e){ banner($("chainBanner"),"No se pudo cargar la lista de cadenas: "+e.message,"err"); return; }
+  const sel = $("chainSelect");
+  const cur = state.chain?.id || "";
+  sel.innerHTML = `<option value="">— Sin cadena seleccionada —</option>` + data.chains.map(c =>
+    `<option value="${c.id}">${c.name} (${c.accepted}/${c.segments} tramos)</option>`).join("");
+  sel.value = cur;
+}
+
+$("chainSelect").onchange = () => {
+  const id = $("chainSelect").value;
+  if (!id){ state.chain = null; renderTimeline(); updateChainStartBadge();
+    $("btnDeleteChain").style.display="none"; $("btnExportChain").style.display="none"; return; }
+  loadChain(id);
+};
+
+async function loadChain(id){
+  try {
+    state.chain = await jget("/chains/"+id);
+    $("btnDeleteChain").style.display = "inline-block";
+    $("btnExportChain").style.display = "inline-block";
+    renderTimeline();
+    updateChainStartBadge();
+  } catch(e){ banner($("chainBanner"),"No se pudo cargar la cadena: "+e.message,"err"); }
+}
+
+// ── Inicio con referencias (Ref2V) ──────────────────────────────────────────
+function updateChainStartBadge(){
+  const st = state.chain?.start;
+  const badge = $("chainStartBadge");
+  if (st?.mode === "ref2v"){
+    badge.textContent = `esta cadena arranca en Ref2V (${(st.ref_images_b64||[]).length} refs)`;
+    badge.style.display = "inline-block";
+  } else badge.style.display = "none";
+}
+
+async function loadRef2vStatus(){
+  try { state.ref2v = await jget("/models/status/ref2v"); }
+  catch(e){ $("refStartStatus").textContent = "estado Ref2V no disponible"; return; }
+  if (state.ref2v.ready){
+    $("refStartStatus").textContent = "modelos Ref2V listos";
+    $("btnRefDownload").style.display = "none";
+  } else {
+    $("refStartStatus").textContent =
+      `faltan modelos Ref2V (${fmtGB(state.ref2v.total_missing_bytes)})`;
+    $("btnRefDownload").style.display = "inline-block";
+  }
+}
+
+function renderRefThumbs(){
+  $("refThumbs").innerHTML = state.refStartB64.map((b64, i) =>
+    `<img src="data:image/png;base64,${b64}" title="Picture ${i+1} — clic para quitar" data-i="${i}">`).join("");
+  $("refThumbs").querySelectorAll("img").forEach(img => img.onclick = () => {
+    state.refStartB64.splice(+img.dataset.i, 1);
+    renderRefThumbs();
+  });
+  $("btnRefClear").style.display = state.refStartB64.length ? "inline-block" : "none";
+}
+
+$("btnRefAdd").onclick = () => $("refFiles").click();
+$("refFiles").onchange = () => {
+  const files = [...$("refFiles").files].slice(0, 9 - state.refStartB64.length);
+  if (!files.length) return;
+  let pending = files.length;
+  files.forEach(f => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      state.refStartB64.push(reader.result.split(",")[1]);
+      if (--pending === 0) renderRefThumbs();
+    };
+    reader.readAsDataURL(f);
+  });
+  $("refFiles").value = "";
+};
+$("btnRefClear").onclick = () => { state.refStartB64 = []; renderRefThumbs(); };
+
+$("btnRefDownload").onclick = () => {
+  $("btnRefDownload").disabled = true;
+  const es = new EventSource(API + "/models/download/ref2v");
+  es.onmessage = (ev) => {
+    const d = JSON.parse(ev.data);
+    if (d.type === "file_start")
+      $("refStartStatus").textContent = `[${d.index}/${d.total_files}] ${d.label}…`;
+    else if (d.type === "progress")
+      $("refStartStatus").textContent = `${fmtGB(d.bytes_done)} / ${fmtGB(d.bytes_total)} — ${d.pct}%`;
+    else if (d.type === "all_done"){
+      es.close(); $("btnRefDownload").disabled = false; loadRef2vStatus();
+    } else if (d.type === "error"){
+      es.close(); $("btnRefDownload").disabled = false;
+      banner($("chainBanner"), "Descarga Ref2V fallida: " + d.msg, "err");
+    }
+  };
+};
+
+$("btnNewChain").onclick = async () => {
+  if (!state.modelsReady){ banner($("chainBanner"),"Descarga los modelos primero (pestaña Generar).","warn"); return; }
+  let refStart = null;
+  if (state.refStartB64.length){
+    if (!state.ref2v?.ready){
+      banner($("chainBanner"),"Hay imágenes de referencia cargadas pero faltan los modelos Ref2V — descárgalos o quita las imágenes.","warn");
+      return;
+    }
+    refStart = {
+      unet_name: state.ref2v.names.ref2v_dit,
+      turbo_lora_name: state.ref2v.names.ref2v_turbo,
+      turbo_strength: 1.0,
+      turbo_steps: 4,
+      ref_images_b64: state.refStartB64,
+    };
+  }
+  const name = prompt("Nombre de la cadena:", "Escena nueva");
+  if (name === null) return;
+  const turbo = $("turboOn").checked;
+  const body = {
+    name,
+    unet_name: $("unetName").value,
+    clip_name: $("clipName").value,
+    video_vae_name: $("videoVae").value,
+    audio_vae_name: $("audioVae").value,
+    width: +$("pw").value,
+    height: +$("ph").value,
+    turbo,
+    turbo_lora_name: turbo ? $("turboLora").value : "",
+    turbo_strength: +$("turboStrength").value,
+    turbo_steps: +$("turboSteps").value,
+    steps: +$("pstepsFull").value,
+    loras: buildLorasPayload(),
+    first_frame_b64: refStart ? null : state.ffB64,
+    ref_start: refStart,
+  };
+  try {
+    const chain = await jpost("/chains", body);
+    state.refStartB64 = []; renderRefThumbs();
+    await loadChainsList();
+    $("chainSelect").value = chain.id;
+    await loadChain(chain.id);
+    banner($("chainBanner"),"","");
+  } catch(e){ banner($("chainBanner"),"Error creando la cadena: "+e.message,"err"); }
+};
+
+$("btnDeleteChain").onclick = async () => {
+  if (!state.chain) return;
+  if (!confirm(`¿Borrar la cadena "${state.chain.name}"? Los clips ya generados quedan en el Historial.`)) return;
+  try {
+    await jdel("/chains/"+state.chain.id);
+    state.chain = null;
+    await loadChainsList();
+    renderTimeline();
+    $("btnDeleteChain").style.display="none"; $("btnExportChain").style.display="none";
+  } catch(e){ banner($("chainBanner"),"Error: "+e.message,"err"); }
+};
+
+$("btnExportChain").onclick = async () => {
+  if (!state.chain) return;
+  $("btnExportChain").disabled = true;
+  try {
+    const r = await jpost(`/chains/${state.chain.id}/export`, {});
+    $("exportResult").innerHTML = `<video class="result" controls autoplay src="${API}/history/${r.run_id}/video?t=${Date.now()}"></video>`;
+  } catch(e){ banner($("chainBanner"),"Error exportando: "+e.message,"err"); }
+  $("btnExportChain").disabled = false;
+};
+
+function renderTimeline(){
+  const tl = $("timeline");
+  if (!state.chain){ tl.innerHTML = `<div class="dim">Elige o crea una cadena para empezar.</div>`; return; }
+  const segs = state.chain.segments;
+  let html = segs.map((seg, i) => segCardHtml(seg, i, segs)).join("");
+
+  const canAdd = segs.length === 0 || !!segs[segs.length-1].accepted;
+  html += `
+    <div class="seg-add-card">
+      <div class="seg-hdr">Tramo ${segs.length+1}</div>
+      <textarea id="newSegPrompt" placeholder="Prompt del nuevo tramo (continúa la escena)..." ${canAdd?"":"disabled"}></textarea>
+      <div class="seg-row">
+        <div><label class="fld">Duración (s)</label><input type="number" id="newSegDur" value="5" step="0.5" min="0.5" max="15" ${canAdd?"":"disabled"}></div>
+        <div><label class="fld">Seed</label><input type="number" id="newSegSeed" value="-1" ${canAdd?"":"disabled"}></div>
+      </div>
+      <button class="act" id="btnAddSeg" ${canAdd?"":"disabled"}>+ Agregar tramo</button>
+      ${canAdd?"":`<div class="dim" style="font-size:11px">Acepta una versión del último tramo antes de agregar el siguiente.</div>`}
+    </div>`;
+  tl.innerHTML = html;
+
+  document.querySelectorAll(".btn-gen-seg").forEach(b => b.onclick = () => generateSegmentVersion(b.dataset.seg));
+  document.querySelectorAll(".btn-del-seg").forEach(b => b.onclick = () => deleteSegmentCascade(b.dataset.seg));
+  document.querySelectorAll(".btn-accept-ver").forEach(b => b.onclick = () => acceptVersion(b.dataset.seg, b.dataset.run));
+  document.querySelectorAll(".btn-del-ver").forEach(b => b.onclick = () => deleteVersion(b.dataset.seg, b.dataset.run));
+  const btnAdd = $("btnAddSeg");
+  if (btnAdd) btnAdd.onclick = addSegment;
+}
+
+function segCardHtml(seg, i, segs){
+  const pending = !seg.accepted;
+  const versions = seg.versions.slice().reverse().map(runId => `
+    <div class="ver-item ${runId===seg.accepted?'accepted':''}">
+      <video controls preload="metadata" src="${API}/history/${runId}/video"></video>
+      <div class="dim" style="font-size:10px; margin-top:2px">${runId}${runId===seg.accepted?' · <span class="ok">aceptada</span>':''}</div>
+      <div class="ver-actions">
+        ${runId===seg.accepted ? "" : `<button class="ghost btn-accept-ver" data-seg="${seg.id}" data-run="${runId}">Aceptar</button>
+        <button class="ghost btn-del-ver" data-seg="${seg.id}" data-run="${runId}">Borrar</button>`}
+      </div>
+    </div>`).join("") || `<div class="dim" style="font-size:11px">Sin versiones todavía — genera la primera.</div>`;
+
+  const isLast = i === segs.length - 1;
+  const genDisabled = state.chainJobSeg ? "disabled" : "";
+  return `
+    <div class="seg-card ${pending?'pending':''}">
+      <div class="seg-hdr">
+        <span>Tramo ${i+1}${seg.accepted?'':' · pendiente'}</span>
+        ${isLast ? `<button class="ghost btn-del-seg" data-seg="${seg.id}" style="padding:2px 8px">Borrar desde aquí</button>` : ""}
+      </div>
+      <textarea data-prompt-for="${seg.id}">${seg.prompt}</textarea>
+      <div class="seg-row">
+        <div><label class="fld">Duración (s)</label><input type="number" value="${seg.duration_s}" step="0.5" min="0.5" max="15" data-dur-for="${seg.id}"></div>
+        <div><label class="fld">Seed</label><input type="number" value="${seg.seed}" data-seed-for="${seg.id}"></div>
+      </div>
+      <button class="act btn-gen-seg" data-seg="${seg.id}" ${genDisabled}>${seg.versions.length ? "Generar otra versión" : "Generar"}</button>
+      <div class="ver-list">${versions}</div>
+    </div>`;
+}
+
+async function addSegment(){
+  const prompt_ = $("newSegPrompt").value.trim();
+  if (!prompt_){ banner($("chainBanner"),"Escribe un prompt para el tramo.","warn"); return; }
+  try {
+    await jpost(`/chains/${state.chain.id}/segments`, {
+      prompt: prompt_, duration_s: +$("newSegDur").value, seed: +$("newSegSeed").value,
+    });
+    await loadChain(state.chain.id);
+    await loadChainsList();
+  } catch(e){ banner($("chainBanner"),"Error: "+e.message,"err"); }
+}
+
+async function generateSegmentVersion(segId){
+  // Tomar el prompt/duración/seed editados en la tarjeta antes de generar.
+  const seg = state.chain.segments.find(s => s.id === segId);
+  const promptEl = document.querySelector(`[data-prompt-for="${segId}"]`);
+  const durEl = document.querySelector(`[data-dur-for="${segId}"]`);
+  const seedEl = document.querySelector(`[data-seed-for="${segId}"]`);
+  seg.prompt = promptEl.value.trim();
+  seg.duration_s = +durEl.value;
+  seg.seed = +seedEl.value;
+  if (!seg.prompt){ banner($("chainBanner"),"El tramo necesita un prompt.","warn"); return; }
+
+  banner($("chainBanner"),"","");
+  $("chainJobCard").style.display = "block";
+  state.chainJobSeg = segId;
+  renderTimeline();
+  try {
+    const r = await jpost(`/chains/${state.chain.id}/segments/${segId}/generate`, {
+      prompt: seg.prompt, duration_s: seg.duration_s, seed: seg.seed,
+    });
+    pollChainJob(r.job_id);
+  } catch(e){
+    banner($("chainBanner"),"Error: "+e.message,"err");
+    $("chainJobCard").style.display = "none";
+    state.chainJobSeg = null;
+    renderTimeline();
+  }
+}
+
+function pollChainJob(jobId){
+  clearInterval(state.chainJobTimer);
+  state.chainJobTimer = setInterval(async () => {
+    let j; try{ j = await jget("/jobs/"+jobId); } catch(e){ return; }
+    $("chainJobPhase").textContent = PHASE[j.phase] || j.phase;
+    if (j.phase === "render" && j.steps_total){
+      $("chainJobStep").textContent = `${j.step||0}/${j.steps_total}`;
+      $("chainJobBar").style.width = (100*(j.step||0)/j.steps_total)+"%";
+    }
+    if (j.status === "done"){
+      clearInterval(state.chainJobTimer);
+      $("chainJobCard").style.display = "none";
+      state.chainJobSeg = null;
+      await loadChain(state.chain.id);
+      await loadChainsList();
+    }
+    if (j.status === "error"){
+      clearInterval(state.chainJobTimer);
+      $("chainJobCard").style.display = "none";
+      state.chainJobSeg = null;
+      banner($("chainBanner"),"Error generando el tramo: "+j.error,"err");
+      renderTimeline();
+    }
+  }, 800);
+}
+
+async function acceptVersion(segId, runId){
+  try {
+    await jpost(`/chains/${state.chain.id}/segments/${segId}/accept`, {run_id: runId});
+    await loadChain(state.chain.id);
+    await loadChainsList();
+  } catch(e){ banner($("chainBanner"),"Error: "+e.message,"err"); }
+}
+
+async function deleteVersion(segId, runId){
+  if (!confirm("¿Borrar esta versión?")) return;
+  try {
+    await jdel(`/chains/${state.chain.id}/segments/${segId}/versions/${runId}`);
+    await loadChain(state.chain.id);
+  } catch(e){ banner($("chainBanner"),"Error: "+e.message,"err"); }
+}
+
+async function deleteSegmentCascade(segId){
+  if (!confirm("Esto borra este tramo Y todos los que vienen después (su continuidad ya no sería válida). ¿Seguir?")) return;
+  try {
+    await jdel(`/chains/${state.chain.id}/segments/${segId}`);
+    await loadChain(state.chain.id);
+    await loadChainsList();
+  } catch(e){ banner($("chainBanner"),"Error: "+e.message,"err"); }
 }
 
 init();

@@ -42,7 +42,7 @@
       "width": "{{width}}",
       "height": "{{height}}",
       "length": "{{length}}",
-      "ref_image_size": "match"
+      "ref_image_size": "{{ref_image_size}}"
     }
   },
   "7": {

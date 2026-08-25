@@ -200,3 +200,8 @@ hub/test_*.py
 hub/poc_*.py
 config/state.json
 *.zip
+
+# Estado runtime de Painter (estilos guardados por el usuario)
+hub-webui/painter_styles.json
+# Backups de requirements (regla D1) — locales, no versionar
+*.txt.bak

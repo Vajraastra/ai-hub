@@ -1,5 +1,14 @@
 # Historial de generaciones (video + metadata) — local, no se versiona
 history/
+# Cadenas (encadenado de tramos v2) — local, referencia run_ids de history/
+chains/
+# Frames extraídos para pruebas de continuidad — local
+continuity_frames/
+# Clips de comparación de calidad entre variantes de cuantización — local
+quality_test/
+# Fotos de referencia del usuario para pruebas de Ref2V — local, no versionar
+# fotos reales de personas
+reference_samples/
 # Resultados de la batería de pruebas — local
 battery/
 # Logs de pruebas/descargas sueltos en la raíz de data/ — local

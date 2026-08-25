@@ -1,5 +1,5 @@
 {
-  "_comment": "Prototipo s95 — variante de h3_ref2v.json SIN ninguna referencia conectada, para probar si el checkpoint ref2va sirve como T2V puro (todos los inputs ref_* del nodo son opcionales, min=0). Si esto rinde bien, podria reemplazar a fl2va y consolidar en un solo DiT.",
+  "_comment": "Base del MODO DE INICIO Ref2V de una cadena (s96): el checkpoint ref2va NO da continuidad literal de frame (confirmado en vivo, TASKS.md) asi que nunca reemplaza a fl2va para encadenar -- pero sirve para arrancar un tramo 1 con varias imagenes de referencia (identidad/estilo). pipeline.py inyecta 1-9 nodos ETN_LoadImageBase64 en tiempo de ejecucion (ref_images no viene fijo en este JSON). Desde el tramo 2 en adelante la cadena SIEMPRE usa fl2va+I2V (h3_video.json), sin excepcion.",
   "1": {
     "class_type": "VAELoader",
     "inputs": { "vae_name": "{{video_vae_name}}" }
@@ -21,7 +21,7 @@
     "inputs": {
       "model": ["3", 0],
       "lora_name": "{{turbo_lora_name}}",
-      "strength_model": 1.0
+      "strength_model": "{{turbo_strength}}"
     }
   },
   "6": {
@@ -34,7 +34,7 @@
       "width": "{{width}}",
       "height": "{{height}}",
       "length": "{{length}}",
-      "ref_image_size": "match"
+      "ref_image_size": "{{ref_image_size}}"
     }
   },
   "7": {

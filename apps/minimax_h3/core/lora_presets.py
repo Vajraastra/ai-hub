@@ -33,9 +33,13 @@ class LoraPreset:
 # Orden de apilado documentado por el autor: anatomía primero, acción encima. Este orden es EL
 # que se aplica siempre al construir el workflow — independiente del orden en que el usuario
 # active los toggles en la UI.
+#
+# Labels discretos (petición del usuario, s98): los nombres visibles en la UI evitan términos
+# explícitos — el detalle real queda en el tooltip (description), que solo aparece al pasar el
+# cursor. El mapeo archivo↔preset no cambia.
 HEARMEMAN_PRESETS: list[LoraPreset] = [
     LoraPreset(
-        id="hm_pussy", label="Anatomía genital femenina (HMPussy)",
+        id="hm_pussy", label="Detalle anatómico F·1",
         trigger="Vagina, hmpussy", stage="anatomy",
         description="Restituye legibilidad estructural en anatomía genital femenina explícita "
                      "(el modelo base la renderiza como forma aproximada sin esto). Dos archivos "
@@ -47,7 +51,7 @@ HEARMEMAN_PRESETS: list[LoraPreset] = [
         ],
     ),
     LoraPreset(
-        id="hm_innie", label="Variante “innie” (HMInnie)",
+        id="hm_innie", label="Detalle anatómico F·2 (variante)",
         trigger="inniepussy", stage="anatomy",
         description="Variante de forma genital “innie” — en el prompt la trigger "
                      "'inniepussy' REEMPLAZA la palabra 'pussy', no se usan las dos juntas. "
@@ -56,7 +60,7 @@ HEARMEMAN_PRESETS: list[LoraPreset] = [
         files=[LoraFile("HMInnie_v1_e50.safetensors", 1.0)],
     ),
     LoraPreset(
-        id="hm_breasts", label="Anatomía de pecho (HMBreasts)",
+        id="hm_breasts", label="Detalle de busto",
         trigger="HMBreasts", stage="anatomy",
         description="Controla tamaño, forma, areola y color de pezón vía ejes descritos en "
                      "inglés natural en el prompt (ej. “large, natural breasts, medium "
@@ -64,14 +68,14 @@ HEARMEMAN_PRESETS: list[LoraPreset] = [
         files=[LoraFile("HMBreasts_085e0750_e40.safetensors", 1.0)],
     ),
     LoraPreset(
-        id="hm_penis", label="Anatomía masculina (HMPenis)",
+        id="hm_penis", label="Detalle anatómico M",
         trigger="HMPenis", stage="anatomy",
         description="Anatomía masculina explícita — funciona mejor en tamaños medio-grandes. "
                      "Especificar ángulo de cámara (frente/atrás/lado) en el prompt.",
         files=[LoraFile("HMPenis_v2_e35.safetensors", 1.0)],
     ),
     LoraPreset(
-        id="hm_nsfw_aio", label="Acción / movimiento (HMNSFW AIO)",
+        id="hm_nsfw_aio", label="Movimiento de acción",
         trigger="hmmotion", stage="action",
         description="Movimiento y acción explícitos: missionary, doggy, cowgirl, handjob, "
                      "blowjob, penetración. El autor recomienda mantener la fuerza en 0.5 o "
@@ -79,7 +83,7 @@ HEARMEMAN_PRESETS: list[LoraPreset] = [
         files=[LoraFile("HMNSFW_AIO_V2.safetensors", 0.5)],
     ),
     LoraPreset(
-        id="hm_cumshot", label="Cumshot (HMCumshot)",
+        id="hm_cumshot", label="Acción final (clímax)",
         trigger="cumshot", stage="action",
         description="Se apila SOBRE HMPussy/HMPenis (no reemplaza la anatomía, la complementa). "
                      "Fuerza sugerida depende del modo: 0.9 en generación normal, ~0.2 con Turbo "

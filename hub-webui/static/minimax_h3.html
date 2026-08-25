@@ -9,6 +9,14 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/style.css">
   <style>
+    /* Alias: este módulo se escribió contra --accent-purple/--text-dim, que no
+       existen en la paleta de style.css — sin esto el botón Generar quedaba
+       transparente (var() inválida = sin fondo) y los textos "dim" heredaban
+       cualquier color (s98). */
+    :root {
+      --accent-purple: var(--accent-violet, #7c3aed);
+      --text-dim: var(--text-meta, #8a8a99);
+    }
     #tool-wrap { display:flex; flex-direction:column; min-height:100vh; }
     #tool-header {
       display:flex; align-items:center; gap:12px;
@@ -92,8 +100,10 @@
     #gateProgress { margin-top:12px; display:none; }
     #gateFileLabel { font-size:12px; color:var(--text-secondary); margin-bottom:4px; }
 
+    /* display:grid, no block: genArea ES la .grid2 y una regla por ID pisa a
+       la clase — con block el layout de 2 columnas nunca se aplicaba (s98). */
     #genArea { display:none; }
-    #genArea.show { display:block; }
+    #genArea.show { display:grid; }
 
     /* ── LoRA presets (Hearmeman) ─────────────────────────────────────── */
     .lp-row { display:flex; flex-direction:column; gap:6px; border:1px solid var(--border);
@@ -116,9 +126,79 @@
       color:var(--text-dim); margin:8px 0 4px; }
     .lp-stage-hdr:first-child { margin-top:0; }
 
+    /* ── Tooltips no técnicos (ⓘ) ─────────────────────────────────────── */
+    .tip { display:inline-flex; width:15px; height:15px; border-radius:50%;
+      border:1px solid var(--text-dim); color:var(--text-dim); font-size:10px;
+      align-items:center; justify-content:center; cursor:help; position:relative;
+      margin-left:6px; vertical-align:middle; flex-shrink:0; font-weight:400;
+      text-transform:none; letter-spacing:0; }
+    .tip::after { content:attr(data-tip); position:absolute; top:calc(100% + 7px);
+      left:50%; transform:translateX(-50%); background:#1c1c22; color:#d8d8de;
+      border:1px solid var(--border); border-radius:8px; padding:9px 11px;
+      font-size:11.5px; line-height:1.55; width:min(250px,60vw); white-space:normal;
+      text-align:left; opacity:0; pointer-events:none; transition:opacity .12s;
+      z-index:60; box-shadow:0 6px 18px rgba(0,0,0,.45); }
+    .tip:hover::after { opacity:1; }
+    .tip.tip-r::after { left:auto; right:-6px; transform:none; }
+
+    /* ── Chips de formato (monitor / teléfono / cuadrado) ─────────────── */
+    .fmt-chips { display:flex; flex-wrap:wrap; gap:7px; }
+    .fmt-chip { background:var(--bg-input,#141414); border:1px solid var(--border);
+      color:var(--text-secondary); border-radius:9px; padding:8px 12px; font-size:12px;
+      cursor:pointer; display:flex; flex-direction:column; align-items:center; gap:2px;
+      min-width:92px; transition:border-color .15s, background .15s, color .15s; }
+    .fmt-chip .fc-ico { font-size:17px; line-height:1; }
+    .fmt-chip .fc-dims { font-size:10px; color:var(--text-dim);
+      font-family:'JetBrains Mono',monospace; }
+    .fmt-chip.on { border-color:var(--accent-purple); color:var(--text-primary);
+      background:rgba(139,92,246,.09); }
+    .fmt-custom { margin-top:10px; }
+
+    /* ── LoRAs extra (hasta 3 slots) ──────────────────────────────────── */
+    .lx-slot { display:flex; gap:8px; align-items:center; margin-bottom:6px; }
+    .lx-slot select { flex:1; }
+    .lx-slot input[type=number] { width:74px; flex:none; padding:5px 6px; font-size:12px; }
+
+    /* ── Sección avanzada plegable (Modelos) ──────────────────────────── */
+    details.adv { border:1px solid var(--border); border-radius:8px;
+      background:var(--bg-card); margin-bottom:16px; }
+    details.adv > summary { list-style:none; cursor:pointer; padding:12px 18px;
+      font-size:12px; font-weight:600; color:var(--text-dim);
+      text-transform:uppercase; letter-spacing:.4px; user-select:none; }
+    details.adv > summary::before { content:"▸ "; }
+    details.adv[open] > summary::before { content:"▾ "; }
+    details.adv > .adv-body { padding:0 18px 16px; }
+
     /* thumbnail de imagen inicial */
     #ffPreviewWrap { display:none; margin-top:8px; }
     #ffPreview { max-width:160px; border-radius:6px; border:1px solid var(--border); }
+
+    /* ── Cadena (timeline de tramos) ──────────────────────────────────── */
+    .chain-toolbar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+    .chain-toolbar select { flex:1; min-width:220px; }
+    #timeline { display:flex; gap:14px; overflow-x:auto; padding:6px 2px 14px; margin-top:14px; }
+    .seg-card { flex:0 0 300px; background:var(--bg-input,#141414); border:1px solid var(--border);
+      border-radius:8px; padding:12px; display:flex; flex-direction:column; gap:8px; }
+    .seg-card.pending { border-color:var(--accent-purple); }
+    .seg-hdr { display:flex; align-items:center; justify-content:space-between; font-size:11px;
+      color:var(--text-dim); text-transform:uppercase; letter-spacing:.4px; }
+    .seg-card textarea { min-height:64px; font-size:12px; }
+    .seg-row { display:flex; gap:8px; }
+    .seg-row input[type=number] { width:auto; flex:1; }
+    .seg-accepted-video { width:100%; border-radius:6px; background:#000; border:1px solid var(--border); }
+    .ver-list { display:flex; flex-direction:column; gap:6px; max-height:220px; overflow-y:auto; }
+    .ver-item { border:1px solid var(--border); border-radius:6px; padding:6px; }
+    .ver-item.accepted { border-color:#4caf82; }
+    .ver-item video { width:100%; border-radius:4px; background:#000; display:block; }
+    .ver-item .ver-actions { display:flex; gap:6px; margin-top:4px; }
+    .ver-item .ver-actions button { flex:1; font-size:11px; padding:4px 6px; }
+    .seg-add-card { flex:0 0 260px; border:1px dashed var(--border); border-radius:8px;
+      padding:12px; display:flex; flex-direction:column; gap:8px; justify-content:center; }
+    .chain-hint { font-size:11px; color:var(--text-dim); line-height:1.5; margin-top:10px; }
+    .ref-thumbs { display:flex; gap:6px; flex-wrap:wrap; margin-top:8px; }
+    .ref-thumbs img { height:64px; border-radius:6px; border:1px solid var(--border);
+      cursor:pointer; }
+    .ref-thumbs img:hover { outline:2px solid #c33; }
   </style>
 </head>
 <body>
@@ -133,6 +213,7 @@
 
   <div class="tabs">
     <button class="tab active" data-page="gen">Generar</button>
+    <button class="tab" data-page="chain">Cadena</button>
     <button class="tab" data-page="hist">Historial</button>
     <button class="tab" data-page="diag">Diagnóstico</button>
   </div>
@@ -156,85 +237,47 @@
     </div>
 
     <div class="grid2" id="genArea">
-      <!-- Columna izquierda: prompt + imagen inicial -->
+      <!-- Columna izquierda: qué generar (prompt → imagen → formato → generar) -->
       <div>
         <div class="card">
-          <h2>Prompt</h2>
+          <h2>✍️ Descripción del clip
+            <span class="tip" data-tip="Describe en un solo texto lo que quieres VER y ESCUCHAR: la escena, el movimiento de cámara y el audio (diálogo, sonidos, música). Cuanto más concreto seas, más se parece el resultado a lo que imaginas.">i</span>
+          </h2>
           <textarea id="prompt" rows="8" placeholder="Describe el clip: escena, cámara, y el audio que lo acompaña (diálogo, SFX, música) en un solo bloque."></textarea>
         </div>
+
         <div class="card">
-          <h2>Imagen inicial (opcional — I2V) <span class="spacer"></span>
+          <h2>🖼️ Imagen inicial (opcional)
+            <span class="tip" data-tip="Si eliges una imagen, el video empieza exactamente en esa imagen y la pone en movimiento. Sin imagen, el video se crea solo a partir del texto.">i</span>
+            <span class="spacer"></span>
             <button class="ghost" id="btnFfClear" style="display:none">Quitar</button>
           </h2>
           <input type="file" id="ffFile" accept="image/*" style="display:none">
           <button class="ghost" id="btnFfLoad">Elegir imagen</button>
-          <div class="dim" style="margin-top:6px">Sin imagen: T2V puro. Con imagen: la primera escena del clip arranca desde ahí.</div>
           <div id="ffPreviewWrap"><img id="ffPreview"></div>
         </div>
-      </div>
-
-      <!-- Columna derecha: modelos + params + render + resultado -->
-      <div>
-        <div class="card">
-          <h2>Modelos</h2>
-          <label class="fld">DiT (motor de difusión)</label>
-          <select id="unetName"></select>
-          <div class="row">
-            <div><label class="fld">Text encoder</label><select id="clipName"></select></div>
-            <div><label class="fld">VAE de video</label><select id="videoVae"></select></div>
-          </div>
-          <label class="fld">VAE de audio</label>
-          <select id="audioVae"></select>
-        </div>
 
         <div class="card">
-          <h2>LoRAs <span class="spacer"></span>
-            <span class="dim" id="lorasSummary"></span>
+          <h2>📐 Formato y duración
+            <span class="tip" data-tip="Elige la forma del video según dónde se va a ver: monitor o TV (horizontal), teléfono (vertical) o cuadrado. Las medidas se ajustan solas.">i</span>
           </h2>
-          <div id="loraPresets"></div>
-          <div id="loraExtraWrap" style="display:none; margin-top:10px; border-top:1px solid var(--border); padding-top:8px">
-            <div class="dim" style="margin-bottom:6px">Otros archivos en <span class="mono">loras/h3/</span> (sin preset curado):</div>
-            <div id="loraExtra"></div>
+          <div class="fmt-chips" id="fmtChips"></div>
+          <div class="row fmt-custom">
+            <div><label class="fld">Ancho (px)</label><input type="number" id="pw" value="1344" step="32"></div>
+            <div><label class="fld">Alto (px)</label><input type="number" id="ph" value="768" step="32"></div>
           </div>
-          <div class="dim" style="margin-top:8px; font-size:11px">
-            Orden de apilado fijo (anatomía → acción), documentado por el autor de los LoRAs — no
-            depende de en qué orden actives los toggles. El turbo LoRA se monta aparte, arriba.
-          </div>
-        </div>
-
-        <div class="card">
-          <h2>Geometría / duración</h2>
-          <div class="row3">
-            <div><label class="fld">Ancho</label><input type="number" id="pw" value="1344" step="32"></div>
-            <div><label class="fld">Alto</label><input type="number" id="ph" value="768" step="32"></div>
-            <div><label class="fld">Duración (s, máx 15)</label><input type="number" id="pdur" value="5" step="0.5" min="0.5" max="15"></div>
-          </div>
-          <label class="fld">Seed (-1 = azar)</label>
-          <input type="number" id="pseed" value="-1">
-        </div>
-
-        <div class="card">
-          <h2>Sampling</h2>
-          <label class="fld">
-            <input type="checkbox" id="turboOn" style="width:auto" checked> Modo turbo (LoRA de destilación, 6–8 pasos)
-          </label>
-          <div id="turboOpts">
-            <label class="fld">Turbo LoRA</label>
-            <select id="turboLora"></select>
-            <div class="row3" style="margin-top:6px">
-              <div><label class="fld">Pasos turbo</label><input type="number" id="turboSteps" value="8" min="4" max="8"></div>
-              <div><label class="fld">Fuerza</label><input type="number" id="turboStrength" value="1.0" step="0.05" min="0" max="2"></div>
-              <div></div>
-            </div>
-          </div>
-          <div id="fullOpts" style="display:none">
-            <label class="fld">Steps (sin turbo)</label>
-            <input type="number" id="pstepsFull" value="20" min="4" max="40">
+          <div class="row" style="margin-top:6px">
+            <div><label class="fld">Duración en segundos (máx 15)
+              <span class="tip" data-tip="Cuánto dura el clip. Más segundos = más tiempo de espera al generar.">i</span></label>
+              <input type="number" id="pdur" value="5" step="0.5" min="0.5" max="15"></div>
+            <div><label class="fld">Seed
+              <span class="tip" data-tip="Número de 'semilla' del azar: con la misma semilla y el mismo texto, el resultado se repite igual. Déjalo en -1 para que cada generación sea distinta.">i</span></label>
+              <input type="number" id="pseed" value="-1"></div>
           </div>
         </div>
 
         <div class="card">
-          <h2>Render</h2>
+          <h2>🎬 Generar</h2>
           <button class="act" id="btnGenerate" style="width:100%">Generar clip</button>
           <div id="jobStatus" style="margin-top:12px; display:none;">
             <div style="display:flex; align-items:center; gap:8px;">
@@ -246,7 +289,119 @@
           <div id="resultBox" style="margin-top:12px;"></div>
         </div>
       </div>
+
+      <!-- Columna derecha: cómo generarlo (estilo → calidad → avanzado) -->
+      <div>
+        <div class="card">
+          <h2>🧬 Complementos (LoRAs)
+            <span class="tip tip-r" data-tip="Complementos opcionales que mejoran detalles específicos del video. Activa solo los que necesites — el orden interno correcto se aplica solo, sin importar en qué orden los actives.">i</span>
+            <span class="spacer"></span>
+            <span class="dim" id="lorasSummary"></span>
+          </h2>
+          <div id="loraPresets"></div>
+          <div style="margin-top:12px; border-top:1px solid var(--border); padding-top:10px">
+            <div class="dim" style="margin-bottom:6px">LoRAs propios (hasta 3)
+              <span class="tip" data-tip="Si copiaste tus propios archivos LoRA a la carpeta loras/h3 del almacén de modelos, aquí puedes activar hasta 3 a la vez y ajustar la intensidad de cada uno (1.0 = efecto completo).">i</span>
+            </div>
+            <div id="loraExtraSlots"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>⚙️ Calidad de render
+            <span class="tip tip-r" data-tip="Controla el balance entre calidad y tiempo de espera. El modo normal (20 pasadas) da la mejor calidad; el modo rápido termina antes pero se nota la diferencia.">i</span>
+          </h2>
+          <label class="fld" style="display:flex; align-items:center; gap:6px">
+            <input type="checkbox" id="turboOn" style="width:auto"> Modo rápido (turbo)
+            <span class="tip" data-tip="Genera en una fracción del tiempo usando menos pasadas, pero con calidad visiblemente inferior. Útil para probar ideas antes de la versión final.">i</span>
+          </label>
+          <div id="turboOpts">
+            <label class="fld">Turbo LoRA</label>
+            <select id="turboLora"></select>
+            <div class="row3" style="margin-top:6px">
+              <div><label class="fld">Pasos turbo</label><input type="number" id="turboSteps" value="8" min="4" max="8"></div>
+              <div><label class="fld">Fuerza</label><input type="number" id="turboStrength" value="1.0" step="0.05" min="0" max="2"></div>
+              <div></div>
+            </div>
+          </div>
+          <div id="fullOpts" style="display:none">
+            <label class="fld">Pasadas de refinado
+              <span class="tip" data-tip="Cuántas veces el modelo refina el video antes de entregarlo. Más pasadas = mejor calidad y más tiempo. 20 es el punto recomendado.">i</span></label>
+            <input type="number" id="pstepsFull" value="20" min="4" max="40">
+          </div>
+        </div>
+
+        <details class="adv">
+          <summary>🧩 Modelos (avanzado)
+            <span class="tip" data-tip="Los archivos del motor que generan el video y el audio. Normalmente no hay que tocar nada: ya vienen seleccionados los correctos. Solo se listan archivos de MiniMax H3.">i</span>
+          </summary>
+          <div class="adv-body">
+            <label class="fld">DiT (motor de difusión)</label>
+            <select id="unetName"></select>
+            <div class="row">
+              <div><label class="fld">Text encoder</label><select id="clipName"></select></div>
+              <div><label class="fld">VAE de video</label><select id="videoVae"></select></div>
+            </div>
+            <label class="fld">VAE de audio</label>
+            <select id="audioVae"></select>
+          </div>
+        </details>
+      </div>
     </div>
+  </div>
+
+  <!-- ══════════════ CADENA (encadenado de tramos) ══════════════ -->
+  <div class="page" id="page-chain">
+    <div id="chainBanner"></div>
+    <div class="card">
+      <h2>Cadena
+        <span class="tip" data-tip="Una cadena une varios clips cortos en una sola escena larga: cada tramo continúa exactamente donde terminó el anterior. Genera tramo por tramo, acepta la versión que te guste y exporta el video completo al final.">i</span>
+        <span class="spacer"></span>
+        <button class="ghost" id="btnExportChain" style="display:none">Exportar clip final</button>
+      </h2>
+      <div class="chain-toolbar">
+        <select id="chainSelect"><option value="">— Sin cadena seleccionada —</option></select>
+        <button class="ghost" id="btnNewChain">+ Nueva cadena</button>
+        <button class="ghost" id="btnDeleteChain" style="display:none">Borrar cadena</button>
+      </div>
+      <div class="chain-hint">
+        Cada tramo continúa desde el último frame del tramo ANTERIOR aceptado (I2V). Por eso la
+        cadena crece en un solo sentido: para cambiar algo a la mitad, borra desde ese tramo en
+        adelante y vuelve a generar — reordenar libremente rompería la continuidad de lo que sigue.
+      </div>
+      <div id="refStartWrap" style="margin-top:12px">
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap">
+          <b style="font-size:12px">Inicio con referencias (Ref2V)</b>
+          <span class="tip" data-tip="Sube fotos de una persona, objeto o estilo y el PRIMER tramo de la cadena se genera respetando esa identidad. No copia la foto tal cual: crea una toma nueva donde esa persona/cosa se reconoce.">i</span>
+          <span class="phase-pill" id="chainStartBadge" style="display:none"></span>
+          <button class="ghost" id="btnRefAdd">+ Añadir imágenes</button>
+          <button class="ghost" id="btnRefClear" style="display:none">Quitar todas</button>
+          <button class="ghost" id="btnRefDownload" style="display:none">Descargar modelos Ref2V</button>
+          <span class="dim mono" id="refStartStatus" style="font-size:11px"></span>
+        </div>
+        <input type="file" id="refFiles" accept="image/*" multiple style="display:none">
+        <div class="ref-thumbs" id="refThumbs"></div>
+        <div class="chain-hint">
+          Opcional y solo al CREAR una cadena: el tramo 1 se genera con el motor Ref2V usando
+          estas imágenes (hasta 9) como referencia de identidad/estilo — nómbralas en el prompt
+          como &lt;Picture 1&gt;…&lt;Picture N&gt; en el mismo orden. No es continuidad literal de
+          frame: del tramo 2 en adelante la cadena sigue con I2V normal. Clic en una miniatura
+          para quitarla.
+        </div>
+      </div>
+      <div id="exportResult" style="margin-top:10px"></div>
+    </div>
+
+    <div class="card" id="chainJobCard" style="display:none">
+      <h2>Generando tramo</h2>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <span class="phase-pill" id="chainJobPhase">…</span>
+        <span class="dim mono" id="chainJobStep"></span>
+      </div>
+      <div class="progress"><div id="chainJobBar"></div></div>
+    </div>
+
+    <div id="timeline"></div>
   </div>
 
   <!-- ══════════════ HISTORIAL ══════════════ -->

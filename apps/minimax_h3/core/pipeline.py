@@ -24,6 +24,7 @@ from .comfy_client import ComfyClient, load_workflow
 _DATA = Path(__file__).parent.parent / "data"
 HISTORY_DIR = _DATA / "history"
 _WORKFLOW = "h3_video.json"
+_REF2V_WORKFLOW = "h3_ref2v_t2v.json"
 
 MAX_SEED = 0xFFFFFFFFFFFFFFFF
 # Native H3 grid: length = 17n + 5 frames a 24fps ("duration (seconds) ->
@@ -59,6 +60,34 @@ class GenParams:
     seed: int = -1
     # LoRAs extra (decensurado, etc.) — [{name, strength}]
     loras: list = field(default_factory=list)
+
+
+@dataclass
+class Ref2VParams:
+    """Modo de inicio Ref2V de una cadena (ver core/chains.py): genera un
+    clip con el checkpoint ref2va usando 1-9 imágenes de referencia
+    (identidad/estilo). NO da continuidad literal de frame (confirmado en
+    vivo, s96 — TASKS.md) así que solo tiene sentido para el TRAMO 1; el
+    resto de la cadena siempre usa `generate()` con fl2va+I2V."""
+    prompt: str = ""
+    unet_name: str = ""            # ref2va DiT
+    clip_name: str = ""             # compartido con fl2va, no propio de Ref2V
+    video_vae_name: str = ""        # ídem
+    audio_vae_name: str = ""        # ídem
+    ref_images_b64: list = field(default_factory=list)   # 1-9, sin prefijo data:
+    # "match" (default del nodo) reduce cada referencia al área de píxeles del
+    # canvas de salida; "max" usa hasta 2048px de lado corto -- el propio nodo
+    # lo documenta como "best identity fidelity" a costa de más VRAM/tiempo
+    # (los tokens de referencia viajan en cada paso de sampling). Nunca se
+    # había probado "max" hasta s96 -- ver TASKS.md.
+    ref_image_size: str = "max"
+    width: int = 1344
+    height: int = 768
+    duration_s: float = 5.0
+    turbo_lora_name: str = ""       # el turbo de Ref2V es propio (4 pasos), no el de fl2va
+    turbo_strength: float = 1.0
+    turbo_steps: int = 4
+    seed: int = -1
 
 
 def _resolve_seed(seed: int) -> int:
@@ -143,6 +172,76 @@ def _apply_first_frame(wf: dict, params: GenParams):
     wf["20"] = {"class_type": "ETN_LoadImageBase64",
                "inputs": {"image": params.first_frame_b64}}
     wf["6"]["inputs"]["first_frame"] = ["20", 0]
+
+
+def _apply_ref_images(wf: dict, ref_images_b64: list):
+    """Inyecta 1-9 imágenes de referencia (ETN_LoadImageBase64, IDs 20+, no
+    chocan con el resto del grafo) en MiniMaxH3ReferenceToVideo."""
+    if not ref_images_b64:
+        raise PipelineError("Ref2V necesita al menos una imagen de referencia")
+    # Los inputs Autogrow del nodo van como claves planas punteadas en el
+    # formato API ("ref_images.ref_image_0"); un dict anidado bajo
+    # "ref_images" es descartado en silencio por el ejecutor y el nodo corre
+    # sin referencias (causa del "cero parecido" de s96).
+    for i, b64 in enumerate(ref_images_b64[:9]):
+        nid = 20 + i
+        wf[str(nid)] = {"class_type": "ETN_LoadImageBase64", "inputs": {"image": b64}}
+        wf["6"]["inputs"][f"ref_images.ref_image_{i}"] = [str(nid), 0]
+
+
+async def generate_ref2v(comfy: ComfyClient, params: Ref2VParams,
+                         on_phase=None, on_step=None) -> dict:
+    """Genera el tramo 1 de una cadena con el checkpoint Ref2V (varias
+    imágenes de referencia). Ver docstring de `Ref2VParams` — nunca se usa
+    para continuar una cadena, solo para arrancarla."""
+    def phase(name, **extra):
+        if on_phase:
+            on_phase(name, extra)
+
+    if not params.prompt.strip():
+        raise PipelineError("hace falta un prompt")
+    for field_name in ("unet_name", "clip_name", "video_vae_name", "audio_vae_name",
+                       "turbo_lora_name"):
+        if not getattr(params, field_name):
+            raise PipelineError(f"falta {field_name} — ¿modelos Ref2V descargados?")
+
+    seed = _resolve_seed(params.seed)
+    length = _frame_length(params.duration_s)
+
+    phase("build")
+    if not await comfy.health_check():
+        raise PipelineError("ComfyUI no responde en :8188 — arráncalo desde el Hub")
+    available_loras = await comfy.get_models("loras")
+    turbo_lora_name = _resolve_lora(params.turbo_lora_name, available_loras)
+    wf = load_workflow(_REF2V_WORKFLOW)
+    _apply_ref_images(wf, params.ref_images_b64)
+
+    phase("render", seed=seed, length=length)
+    render_params = {
+        "unet_name": params.unet_name,
+        "clip_name": params.clip_name,
+        "clip_device": "cuda:0",
+        "video_vae_name": params.video_vae_name,
+        "audio_vae_name": params.audio_vae_name,
+        "turbo_lora_name": turbo_lora_name,
+        "turbo_strength": float(params.turbo_strength),
+        "prompt": params.prompt,
+        "width": int(params.width),
+        "height": int(params.height),
+        "length": length,
+        "seed": seed,
+        "steps": int(params.turbo_steps),
+        "ref_image_size": params.ref_image_size,
+    }
+    data, filename = await comfy.run_workflow(wf, render_params, on_progress=on_step)
+    ext = Path(filename).suffix.lstrip(".") or "mp4"
+    render_params["ref2v"] = True
+    render_params["ref_image_count"] = len(params.ref_images_b64)
+
+    phase("save")
+    manifest = _save(data, ext, params, seed, length, render_params)
+    phase("done", run_id=manifest["id"])
+    return manifest
 
 
 async def generate(comfy: ComfyClient, params: GenParams,
