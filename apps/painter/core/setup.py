@@ -2,14 +2,18 @@
 Painter — setup de primer uso.
 Verifica ComfyUI, instala custom nodes, detecta modelos disponibles.
 """
+import sys
 import json
-import os
-import subprocess
 import asyncio
 from pathlib import Path
 from typing import AsyncGenerator
 
 from comfy_client import ComfyClient
+
+# El instalador de custom nodes es transversal (ComfyUI es un proceso
+# compartido), así que vive en hub/ y no en este módulo.
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "hub"))
+from modules.comfy_nodes import install_nodes_async
 
 _HERE       = Path(__file__).parent                        # apps/painter/core
 _PAINTER    = _HERE.parent                                 # apps/painter
@@ -108,96 +112,6 @@ async def _download_file(url: str, dest: Path) -> tuple[bool, str]:
     return await asyncio.to_thread(_blocking)
 
 
-def _git_clone(repo: str, dest: Path) -> tuple[bool, str]:
-    try:
-        result = subprocess.run(
-            ["git", "clone", "--depth", "1", repo, str(dest)],
-            capture_output=True, text=True, timeout=120
-        )
-        if result.returncode != 0:
-            return False, result.stderr.strip()
-        return True, ""
-    except Exception as e:
-        return False, str(e)
-
-
-def _pip_cmd(comfyui_dir: Path) -> list[str]:
-    """Devuelve el comando base de pip para el venv de ComfyUI."""
-    bin_dir = comfyui_dir / "venv" / ("Scripts" if os.name == "nt" else "bin")
-    exe     = ".exe" if os.name == "nt" else ""
-    uv      = bin_dir / f"uv{exe}"
-    pip     = bin_dir / f"pip{exe}"
-    python  = bin_dir / f"python{exe}"
-    if uv.exists():
-        # uv necesita --python explícito cuando no hay venv activo en el subprocess
-        return [str(uv), "pip", "install", "--python", str(python)]
-    return [str(pip), "install"]
-
-
-def _pip_install(comfyui_dir: Path, node_dir: Path) -> tuple[bool, str]:
-    req = node_dir / "requirements.txt"
-    if not req.exists():
-        return True, ""
-
-    lines = [l.strip() for l in req.read_text(encoding="utf-8").splitlines()
-             if l.strip() and not l.startswith("#")]
-    normal = [l for l in lines if not l.startswith("git+")]
-    git_deps = [l for l in lines if l.startswith("git+")]
-
-    pip = _pip_cmd(comfyui_dir)
-
-    # Instalar deps normales — requeridas para que el nodo cargue
-    if normal:
-        try:
-            result = subprocess.run(pip + normal, capture_output=True, text=True, timeout=300)
-            if result.returncode != 0:
-                return False, result.stderr.strip()
-        except Exception as e:
-            return False, str(e)
-
-    # Instalar deps git (ej. sam2) — best-effort, no bloquear el setup si fallan
-    for dep in git_deps:
-        try:
-            subprocess.run(pip + [dep], capture_output=True, text=True, timeout=180)
-        except Exception:
-            pass
-
-    return True, ""
-
-
-def _pip_install_packages(comfyui_dir: Path, packages: list[str]) -> tuple[bool, str]:
-    """Instala paquetes pip individuales en el venv de ComfyUI."""
-    if not packages:
-        return True, ""
-    cmd = _pip_cmd(comfyui_dir) + packages
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-        if result.returncode != 0:
-            return False, result.stderr.strip()
-        return True, ""
-    except Exception as e:
-        return False, str(e)
-
-
-def _install_local_node(comfyui_dir: Path, local_src: str) -> tuple[bool, str]:
-    """
-    Copia el nodo local al directorio custom_nodes de ComfyUI.
-    local_src es relativo a _ROOT (ej: 'apps/painter/comfyui_nodes/my_node.py').
-    """
-    src  = _ROOT / local_src
-    if not src.exists():
-        return False, f"Archivo local no encontrado: {src}"
-    dest_dir = comfyui_dir / "custom_nodes"
-    dest     = dest_dir / src.name
-    try:
-        import shutil
-        shutil.copy2(src, dest)
-        return True, ""
-    except Exception as e:
-        return False, str(e)
-
-
-
 # ── Orquestador principal ───────────────────────────────────────────────────
 
 async def run_setup() -> AsyncGenerator[dict, None]:
@@ -236,138 +150,27 @@ async def run_setup() -> AsyncGenerator[dict, None]:
     yield event("comfyui_running", "ok", "ComfyUI activo")
 
     # ── Paso 3: Custom nodes ───────────────────────────────────────────────
-    custom_nodes_dir = comfyui_dir / "custom_nodes"
-    new_nodes_installed = False
+    # La instalación la hace hub/modules/comfy_nodes.py, compartido con el
+    # bootstrap y con los demás módulos; acá solo se traduce a eventos SSE.
+    # ComfyUI está vivo a esta altura, así que se le pregunta qué nodos tiene
+    # cargados UNA vez: `probe_node` bajaba /object_info entero por cada nodo.
+    try:
+        loaded = set(await client.get_object_info())
+    except Exception:
+        loaded = set()
 
-    all_nodes = [
-        (entry, "required")  for entry in registry.get("required", [])
-    ] + [
-        (entry, "enhanced")  for entry in registry.get("enhanced", [])
-    ]
-
-    for entry, kind in all_nodes:
-        node_id    = entry["id"]
-        probe_node = entry["probe_node"]
-        reason     = entry["reason"]
-        local_src  = entry.get("local_src")   # nodo local (no git)
-        repo       = entry.get("repo")        # nodo externo (git)
-
-        # Verificar si ya está cargado en ComfyUI
-        already_loaded = await client.probe_node(probe_node)
-        if already_loaded:
-            yield event(f"node_{node_id}", "ok", f"{node_id} — ya cargado")
-            continue
-
-        # ── Nodo local (painter_sam.py, etc.) ────────────────────────────
-        if local_src:
-            dest_file = custom_nodes_dir / Path(local_src).name
-            file_already_existed = dest_file.exists()
-
-            if not file_already_existed:
-                yield event(f"node_{node_id}", "info", f"Instalando {node_id} ({reason})…")
-                ok, err = _install_local_node(comfyui_dir, local_src)
-                if not ok:
-                    msg = f"Error copiando {node_id}: {err}"
-                    if kind == "required":
-                        yield event(f"node_{node_id}", "error", msg)
-                        return
-                    else:
-                        yield event(f"node_{node_id}", "warning", msg)
-                        status_data["warnings"].append(msg)
-                        continue
-
-            # Instalar pip_packages aunque el archivo ya existiera
-            # (puede que un run anterior copiara el archivo pero fallara el pip install)
-            pip_pkgs = entry.get("pip_packages", [])
-            if pip_pkgs:
-                yield event(f"node_{node_id}", "info",
-                            f"Verificando dependencias pip de {node_id}…")
-                ok, err = _pip_install_packages(comfyui_dir, pip_pkgs)
-                if not ok:
-                    msg = f"Error instalando deps de {node_id}: {err}"
-                    if kind == "required":
-                        yield event(f"node_{node_id}", "error", msg)
-                        return
-                    else:
-                        yield event(f"node_{node_id}", "warning", msg)
-                        status_data["warnings"].append(msg)
-                        continue
-
-            if file_already_existed:
-                # Archivo ya estaba; ComfyUI necesita reiniciarse para cargarlo
-                status_data["needs_restart"] = True
-                yield event(f"node_{node_id}", "info",
-                            f"{node_id} — instalado, ComfyUI necesita reiniciarse")
-            else:
-                new_nodes_installed = True
-                yield event(f"node_{node_id}", "ok", f"{node_id} instalado correctamente")
-            continue
-
-        # ── Nodo externo (git clone) ──────────────────────────────────────
-        dest = custom_nodes_dir / node_id
-        if dest.exists():
-            # El directorio ya existe pero probe_node falló.
-            # Si ComfyUI está corriendo, es un error de carga (dep faltante) — re-instalar.
-            # Si ComfyUI está offline, simplemente necesita reiniciarse.
-            comfy_alive = await client.health_check()
-            if comfy_alive:
-                yield event(f"node_{node_id}", "info",
-                            f"{node_id} instalado pero no cargado — reinstalando dependencias…")
-                ok, err = _pip_install(comfyui_dir, dest)
-                if not ok:
-                    msg = f"Error reinstalando deps de {node_id}: {err}"
-                    if kind == "required":
-                        yield event(f"node_{node_id}", "error", msg)
-                        return
-                    else:
-                        yield event(f"node_{node_id}", "warning", msg)
-                        status_data["warnings"].append(msg)
-                        continue
-                else:
-                    yield event(f"node_{node_id}", "info",
-                                f"{node_id} — dependencias reinstaladas, reinicia ComfyUI")
-            status_data["needs_restart"] = True
-            yield event(f"node_{node_id}", "info",
-                        f"{node_id} — instalado, ComfyUI necesita reiniciarse")
-            continue
-
-        yield event(f"node_{node_id}", "info", f"Instalando {node_id} ({reason})…")
-        ok, err = _git_clone(repo, dest)
-        if not ok:
-            msg = f"Error clonando {node_id} desde {repo}: {err}"
-            if kind == "required":
-                yield event(f"node_{node_id}", "error", msg)
+    async for ev in install_nodes_async(comfyui_dir, _ROOT / "apps", _ROOT,
+                                        loaded_nodes=loaded, only_modules=["painter"]):
+        data = ev.get("data")
+        if data:
+            status_data["needs_restart"] = data["needs_restart"]
+            status_data["warnings"].extend(data["warnings"])
+            status_data["fallbacks"].update(data["fallbacks"])
+            if data["failed"]:
+                yield event("nodes", "error", ev["msg"])
                 return
-            else:
-                yield event(f"node_{node_id}", "warning", msg)
-                fallback = entry.get("fallback_workflow")
-                if fallback:
-                    status_data["fallbacks"][node_id] = fallback
-                    status_data["warnings"].append(msg)
-                continue
-
-        yield event(f"node_{node_id}", "info", f"Instalando dependencias de {node_id}…")
-        ok, err = _pip_install(comfyui_dir, dest)
-        if not ok:
-            msg = f"Error instalando deps de {node_id}: {err}"
-            if kind == "required":
-                yield event(f"node_{node_id}", "error", msg)
-                return
-            else:
-                yield event(f"node_{node_id}", "warning", msg)
-                fallback = entry.get("fallback_workflow")
-                if fallback:
-                    status_data["fallbacks"][node_id] = fallback
-                    status_data["warnings"].append(msg)
-                continue
-
-        new_nodes_installed = True
-        yield event(f"node_{node_id}", "ok", f"{node_id} instalado correctamente")
-
-    if new_nodes_installed:
-        status_data["needs_restart"] = True
-        yield event("restart_required", "warning",
-                    "Se instalaron nuevos nodos. ComfyUI necesita reiniciarse para cargarlos.")
+            continue
+        yield event(ev["step"], ev["status"], ev["msg"])
 
     # ── Paso 4: Modelos ────────────────────────────────────────────────────
     yield event("models", "info", "Verificando modelos disponibles…")

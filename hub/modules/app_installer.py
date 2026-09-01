@@ -742,6 +742,24 @@ def install_app(app_config: dict, apps_dir: str, cuda_env: dict,
             result["error"] = f"Error ejecutando post_install: {e}"
             return result
 
+    # Step 8: Custom nodes de ComfyUI declarados por nuestros módulos.
+    # ComfyUI es un proceso compartido y `custom_nodes/` está gitignored, así
+    # que en una instalación limpia Painter, Face Swap, Forge Fusion y MiniMax
+    # H3 arrancarían rotos si no se clonan aquí. Declarativo (no por app_id)
+    # para no acoplar el instalador a un nombre concreto.
+    if app_config.get("install_comfy_nodes"):
+        from modules.comfy_nodes import install_nodes_logged
+        repo_root = os.path.dirname(os.path.abspath(apps_dir))
+        nodes = install_nodes_logged(app_dir, apps_dir, repo_root, logger=logger)
+        result["comfy_nodes"] = nodes
+        if nodes.get("failed"):
+            # Un pack `required` que no se pudo clonar deja un módulo inservible;
+            # se reporta como error de instalación, no como aviso enterrado.
+            result["error"] = ("Custom nodes obligatorios no instalados: "
+                               + ", ".join(nodes["failed"]))
+            return result
+        result["steps_completed"].append("comfy_nodes")
+
     result["steps_completed"].append("configured")
     result["success"] = True
 

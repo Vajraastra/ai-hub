@@ -1,0 +1,25 @@
+{
+  "_comment": [
+    "Custom nodes de ComfyUI que necesita Face Swap. Lo instala",
+    "hub/modules/comfy_nodes.py (compartido); el formato está documentado ahí.",
+    "Los dos son 'required': el módulo es exactamente la cadena LivePortrait →",
+    "ReActor, sin ellos no queda nada que degradar."
+  ],
+  "required": [
+    {
+      "id": "ComfyUI-AdvancedLivePortrait",
+      "repo": "https://github.com/PowerHouseMan/ComfyUI-AdvancedLivePortrait",
+      "commit": "3bba732915e22f18af0d221b9c5c282990181f1b",
+      "probe_node": "AdvancedLivePortrait",
+      "reason": "Reanima al donante con la pose y expresión de la foto de escena"
+    },
+    {
+      "id": "ComfyUI-ReActor",
+      "repo": "https://github.com/Gourieff/ComfyUI-ReActor",
+      "commit": "6ad6b35a4df250d14cb2abf0808c9ffedf59f747",
+      "probe_node": "ReActorFaceSwap",
+      "reason": "Compone el rostro sobre la escena (HyperSwap, MIT) y su máscara"
+    }
+  ],
+  "enhanced": []
+}

@@ -1,0 +1,16 @@
+{
+  "_comment": [
+    "Custom nodes de ComfyUI que necesita Forge Fusion. Lo instala",
+    "hub/modules/comfy_nodes.py (compartido); el formato está documentado ahí."
+  ],
+  "required": [
+    {
+      "id": "comfyUI-Realtime-Lora",
+      "repo": "https://github.com/shootthesound/comfyUI-Realtime-Lora",
+      "commit": "0b0b0fd1096c620b2405f31ddb6d1fa2ffe18dd7",
+      "probe_node": "SDXLSelectiveLoRALoader",
+      "reason": "Aplica un LoRA bloque a bloque (SDXL/Anima/Z-Image); es el nodo sobre el que corre toda la exploración de dominancia"
+    }
+  ],
+  "enhanced": []
+}

@@ -71,6 +71,7 @@
             "python_version": "3.12",
             "use_uv": true,
             "install_deps": true,
+            "install_comfy_nodes": true,
             "launch_type": "python",
             "launch_script": "main.py",
             "pre_install_commands": [

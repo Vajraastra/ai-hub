@@ -1,4 +1,11 @@
 {
+  "_comment": [
+    "Custom nodes de ComfyUI que necesita Painter. Lo instala hub/modules/comfy_nodes.py",
+    "(compartido por todos los módulos); el formato está documentado en ese archivo.",
+    "Los tres packs sin 'commit' se instalaron a mano antes de que existiera este",
+    "mecanismo y no tienen repositorio git propio, así que no hay SHA que fijar: se",
+    "clonarán en HEAD hasta que se reclonen y se anote su commit."
+  ],
   "required": [
     {
       "id": "comfyui-tooling-nodes",
@@ -9,8 +16,8 @@
     {
       "id": "comfyui_controlnet_aux",
       "repo": "https://github.com/comfyorg/comfyui-controlnet-aux",
-      "probe_node": "ControlNetPreprocessorSelector",
-      "reason": "Preprocessors de ControlNet (Canny, Depth, DWPose, etc.)"
+      "probe_node": "AIO_Preprocessor",
+      "reason": "Preprocesadores de ControlNet (Canny, Depth, DWPose, etc.)"
     }
   ],
   "enhanced": [
@@ -24,12 +31,14 @@
     {
       "id": "comfyui-impact-pack",
       "repo": "https://github.com/ltdrdata/ComfyUI-Impact-Pack",
+      "commit": "429d0159ad429e64d2b3916e6e7be9c22d025c3c",
       "probe_node": "FaceDetailer",
       "reason": "ADetailer — detección YOLO y refinado de caras/manos/personas"
     },
     {
       "id": "comfyui-impact-subpack",
       "repo": "https://github.com/ltdrdata/ComfyUI-Impact-Subpack",
+      "commit": "50c7b71a6a224734cc9b21963c6d1926816a97f1",
       "probe_node": "UltralyticsDetectorProvider",
       "reason": "ADetailer — UltralyticsDetectorProvider para cargar modelos YOLO (.pt)"
     }
