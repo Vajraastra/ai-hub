@@ -56,3 +56,6 @@ nuevo, no después.
 
 `TASKS.md` = qué falta · `BITACORA.md` = por qué es así y qué ya se descartó (por módulo, se busca,
 no se lee entera) · `HANDOFF.md` = dónde quedamos. Regla completa en C2 del CLAUDE.md global.
+
+Este repo es la **referencia ya migrada** de esa arquitectura: el procedimiento para llevar a otro
+proyecto hasta acá está en `E:\githubs\.claude\SANEO-DOCUMENTAL.md`.

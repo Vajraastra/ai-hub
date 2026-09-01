@@ -1,7 +1,6 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python3 -c \":*)",
       "Bash(python3 -c \"import py_compile; py_compile.compile\\(''apps/model_vault/ui/components.py'', doraise=True\\); print\\(''OK''\\)\")",
       "Bash(uv pip install --system numpy safetensors)",
       "Bash(pip install numpy safetensors)",
