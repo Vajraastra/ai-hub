@@ -54,7 +54,8 @@ def load_csv(csv_name: str, path: Path | None = None) -> int:
     tags: list[Tag] = []
     with open(p, encoding='utf-8', newline='', errors='replace') as f:
         reader = csv.reader(f)
-        next(reader, None)                     # saltar cabecera
+        # Sin salto de cabecera: el CSV de DraconicDragon no la trae (la primera
+        # fila ya es un tag) y una cabecera real cae sola en el except ValueError.
         for row in reader:
             if len(row) < 3:
                 continue

@@ -303,6 +303,9 @@ function toImg(clientX, clientY) {
 }
 
 // ── Render ────────────────────────────────────────────────────────────────
+// render() pinta UNA vez y no se re-agenda: el bucle continuo vive solo en
+// startRenderLoop(), que es idempotente. Llamar render() directo desde
+// cualquier sitio es un repintado puntual y no crea bucles extra.
 function render() {
   ctxFg.clearRect(0, 0, S.imgW, S.imgH);
   if (previewImg) ctxFg.drawImage(previewImg, 0, 0);
@@ -314,7 +317,14 @@ function render() {
   }
   if (_wandSel) _renderWandSelection();
   if (S.imgW > 0 && _cursorVisible) drawToolPreview();
-  requestAnimationFrame(render);
+}
+
+let _renderLoopOn = false;
+function startRenderLoop() {
+  if (_renderLoopOn) return;
+  _renderLoopOn = true;
+  const loop = () => { render(); requestAnimationFrame(loop); };
+  requestAnimationFrame(loop);
 }
 
 function drawRegionalOverlay() {
@@ -746,7 +756,7 @@ function confirmSizeDialog() {
   const [gw, gh] = fitGenDims(w, h);
   document.getElementById('inp-width').value  = gw;
   document.getElementById('inp-height').value = gh;
-  requestAnimationFrame(render);
+  startRenderLoop();
 }
 
 // Ajusta unas dimensiones al rango válido de generación SDXL (512–2048,
@@ -965,27 +975,60 @@ function trackJob(jobId) {
     const ws    = new WebSocket(`${proto}://${location.host}${API}/progress/${jobId}`);
     S.ws        = ws;
 
+    // La promise resuelve true si el job terminó bien, false si falló:
+    // los flujos encadenados (secuencia regional) necesitan distinguirlo.
+    let settled = false;
+    const finish = ok => { settled = true; resolve(ok); };
+
     ws.onmessage = async ({ data }) => {
       const ev = JSON.parse(data);
       if (ev.type === 'progress') {
         setProgress(ev.step, ev.total);
       } else if (ev.type === 'done') {
+        settled = true;          // antes del close: que onclose no re-entre
         ws.close();
         await onJobDone(jobId);
-        resolve();
+        resolve(true);
       } else if (ev.type === 'error') {
+        settled = true;
         ws.close();
         showProgress(false);
         toast(t('painter.job_error').replace('{msg}', ev.msg || ''));
         S.activeJobId = null;
-        resolve();
+        resolve(false);
+      }
+      // 'ping' y 'queued' se ignoran a propósito
+    };
+
+    // Cierre sin evento final (reinicio del hub, red caída): consultar el
+    // estado real del job por HTTP en vez de dejar la promise colgada con el
+    // overlay clavado y todo job posterior dando 409.
+    ws.onclose = async () => {
+      if (settled) return;
+      try {
+        while (!settled) {
+          const st = await apiGet(`/jobs/${jobId}`);
+          if (st.status === 'done') {
+            await onJobDone(jobId);
+            finish(true); return;
+          }
+          if (st.status === 'error') {
+            showProgress(false);
+            toast(t('painter.job_error').replace('{msg}', st.error || ''));
+            S.activeJobId = null;
+            finish(false); return;
+          }
+          await new Promise(r => setTimeout(r, 2000));
+        }
+      } catch (_) {
+        showProgress(false);
+        toast(t('painter.conn_error'));
+        S.activeJobId = null;
+        finish(false);
       }
     };
-    ws.onerror = () => {
-      showProgress(false);
-      toast(t('painter.conn_error'));
-      resolve();
-    };
+    // onerror siempre viene seguido de onclose: el fallback vive allí
+    ws.onerror = () => {};
   });
 }
 
@@ -1517,7 +1560,13 @@ async function _runRegStep() {
   };
   try {
     const { job_id } = await apiPost('/regional_step', body);
-    await trackJob(job_id);
+    const ok = await trackJob(job_id);
+    if (!ok) {
+      // El job falló vía WS (trackJob no lanza): cortar la secuencia para que
+      // el siguiente Accept no entre por _acceptRegStep() con lastB64 nulo.
+      _regSeq.active = false;
+      updateButtons();
+    }
   } catch (e) {
     _regSeq.active = false;
     toast(e.message || t('painter.conn_error'));
@@ -1882,7 +1931,7 @@ async function backgroundInit() {
     // Todo en orden — arrancar normalmente
     loadModels();
     showSizeDialog();
-    requestAnimationFrame(render);
+    startRenderLoop();
     return;
   }
 
@@ -1908,7 +1957,7 @@ async function backgroundInit() {
       _showBanner('Se instalaron nodos nuevos. Reinicia ComfyUI para activarlos.', null, null);
       loadModels();
       showSizeDialog();
-      requestAnimationFrame(render);
+      startRenderLoop();
       return;
     }
 
@@ -1920,7 +1969,7 @@ async function backgroundInit() {
       }
       loadModels();
       showSizeDialog();
-      requestAnimationFrame(render);
+      startRenderLoop();
     }
   };
 
@@ -1952,7 +2001,7 @@ function initKeyboard() {
       }
       return;
     }
-    if (e.key === 'Escape') { cancelSelection(); return; }
+    if (e.key === 'Escape') { clearWandSelection(); return; }
     if (e.key.toLowerCase() === 'i') { invertMask(); return; }
     switch (e.key.toLowerCase()) {
       case 'b': setTool('brush');  break;
@@ -2002,10 +2051,13 @@ function _floodFillImg(ix, iy, tol) {
     const db = srcData[pi+2] - seedB;
     if (Math.sqrt(dr*dr + dg*dg + db*db) > tol) continue;
     result[idx] = 1;
-    const nb = [px-1+py*w, px+1+py*w, px+(py-1)*w, px+(py+1)*w];
-    for (const n of nb) {
-      const nx = n % w, ny = (n / w) | 0;
-      if (nx < 0 || nx >= w || ny < 0 || ny >= h || visited[n]) continue;
+    // Vecinos como coordenadas, no como índice lineal: px-1 en px=0 daría el
+    // último píxel de la fila anterior y la selección sangraría entre bordes.
+    const nb = [[px-1, py], [px+1, py], [px, py-1], [px, py+1]];
+    for (const [nx, ny] of nb) {
+      if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+      const n = nx + ny * w;
+      if (visited[n]) continue;
       visited[n] = 1;
       queue.push(n);
     }
@@ -2013,18 +2065,32 @@ function _floodFillImg(ix, iy, tol) {
   return result;
 }
 
-/** Dibuja la selección activa como overlay cyan en canvasFg. */
-function _renderWandSelection() {
-  if (!_wandSel) return;
+// Canvas cacheado del overlay: se reconstruye solo cuando cambia _wandSel.
+// Se compone con drawImage — putImageData directo sobre ctxFg reemplazaría
+// (y borraría) el preview, el dibujo y la máscara ya pintados en el frame.
+let _wandOverlayCv = null;
+
+function _rebuildWandOverlay() {
+  if (!_wandSel) { _wandOverlayCv = null; return; }
   const w = S.imgW, h = S.imgH;
-  const overlay = ctxFg.createImageData(w, h);
+  const cv  = document.createElement('canvas');
+  cv.width  = w; cv.height = h;
+  const ctx = cv.getContext('2d');
+  const overlay = ctx.createImageData(w, h);
   const od = overlay.data;
   for (let i = 0; i < _wandSel.length; i++) {
     if (!_wandSel[i]) continue;
     const mi = i * 4;
     od[mi]   = 84; od[mi+1] = 239; od[mi+2] = 234; od[mi+3] = 100;
   }
-  ctxFg.putImageData(overlay, 0, 0);
+  ctx.putImageData(overlay, 0, 0);
+  _wandOverlayCv = cv;
+}
+
+/** Dibuja la selección activa como overlay cyan en canvasFg. */
+function _renderWandSelection() {
+  if (!_wandOverlayCv) return;
+  ctxFg.drawImage(_wandOverlayCv, 0, 0);
 }
 
 /** Magic Wand: actualiza _wandSel sin tocar la máscara. */
@@ -2044,6 +2110,7 @@ function wandSelect(imgX, imgY, add, subtract) {
   } else {
     _wandSel = pixels;
   }
+  _rebuildWandOverlay();
   render();
   document.getElementById('btn-wand-apply').style.display = _wandSel ? '' : 'none';
 }
@@ -2064,6 +2131,7 @@ function applyWandSelection() {
   }
   ctx.putImageData(data, 0, 0);
   _wandSel = null;
+  _wandOverlayCv = null;
   document.getElementById('btn-wand-apply').style.display = 'none';
   if (!isDraw) updateMaskState();
 }
@@ -2071,6 +2139,7 @@ function applyWandSelection() {
 /** Cancela la selección wand sin aplicar. */
 function clearWandSelection() {
   _wandSel = null;
+  _wandOverlayCv = null;
   document.getElementById('btn-wand-apply').style.display = 'none';
   render();
 }

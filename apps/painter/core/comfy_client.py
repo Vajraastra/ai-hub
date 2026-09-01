@@ -539,7 +539,10 @@ class ComfyClient:
                         "inputs": {"samples": ["12", 0], "mask": ["11", 0]}}
             latent_src = ["13", 0]
         else:
-            # Sin imagen base → generar desde cero (txt2img)
+            # Sin imagen base → generar desde cero (txt2img). Un latent vacío
+            # exige denoising completo: con el denoise de inpaint (~0.85) el
+            # ruido inicial no se limpia y sale una imagen gris/lavada.
+            denoise = 1.0
             wf["10"] = {"class_type": "EmptyLatentImage",
                         "inputs": {"width": width, "height": height, "batch_size": 1}}
             latent_src = ["10", 0]

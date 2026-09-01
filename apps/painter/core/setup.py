@@ -123,9 +123,11 @@ def _git_clone(repo: str, dest: Path) -> tuple[bool, str]:
 
 def _pip_cmd(comfyui_dir: Path) -> list[str]:
     """Devuelve el comando base de pip para el venv de ComfyUI."""
-    uv     = comfyui_dir / "venv" / "bin" / "uv"
-    pip    = comfyui_dir / "venv" / "bin" / "pip"
-    python = comfyui_dir / "venv" / "bin" / "python"
+    bin_dir = comfyui_dir / "venv" / ("Scripts" if os.name == "nt" else "bin")
+    exe     = ".exe" if os.name == "nt" else ""
+    uv      = bin_dir / f"uv{exe}"
+    pip     = bin_dir / f"pip{exe}"
+    python  = bin_dir / f"python{exe}"
     if uv.exists():
         # uv necesita --python explícito cuando no hay venv activo en el subprocess
         return [str(uv), "pip", "install", "--python", str(python)]

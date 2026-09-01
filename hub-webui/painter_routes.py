@@ -325,17 +325,23 @@ async def get_models():
     )
 
 
-def _apply_prompt_loras(wf: dict, prompt: str) -> tuple[dict, str]:
-    """Extrae tokens <lora:...> del prompt, los resuelve e inyecta en el workflow."""
+def _parse_prompt_loras(prompt: str) -> tuple[str, list[dict]]:
+    """Extrae y resuelve tokens <lora:...>; devuelve (prompt limpio, loras)."""
     from image_utils import parse_lora_tokens, resolve_lora_name
     cleaned, tokens = parse_lora_tokens(prompt)
     if not tokens:
-        return wf, prompt
+        return prompt, []
     loras = []
     for t in tokens:
         name = resolve_lora_name(t["name"], _loras_cache)
         if name:
             loras.append({"name": name, "strength": t["strength"]})
+    return cleaned, loras
+
+
+def _apply_prompt_loras(wf: dict, prompt: str) -> tuple[dict, str]:
+    """Extrae tokens <lora:...> del prompt, los resuelve e inyecta en el workflow."""
+    cleaned, loras = _parse_prompt_loras(prompt)
     if loras:
         wf = ComfyClient.inject_loras(wf, loras)
     return wf, cleaned
@@ -498,9 +504,13 @@ async def regional_step(req: RegionalStepRequest):
     blurred.save(buf, format="PNG")
     mask_processed = base64.b64encode(buf.getvalue()).decode()
 
+    # El workflow se construye ya montado (sin placeholders): limpiar el prompt
+    # antes de construir e inyectar los LoRAs después.
+    prompt_clean, loras = _parse_prompt_loras(req.prompt)
+
     wf = ComfyClient.build_regional_step_workflow(
         checkpoint      = req.checkpoint,
-        prompt          = req.prompt,
+        prompt          = prompt_clean,
         negative_prompt = req.negative_prompt,
         mask_b64        = mask_processed,
         image_b64       = req.image_b64,
@@ -512,6 +522,8 @@ async def regional_step(req: RegionalStepRequest):
         height          = req.height,
         scheduler       = req.scheduler,
     )
+    if loras:
+        wf = ComfyClient.inject_loras(wf, loras)
     job_id = await _launch(wf, {})
     return JobResponse(job_id=job_id)
 
@@ -611,11 +623,12 @@ async def _run_adetailer_job(job_id: str, req: ADetailerRequest):
 
     try:
         for det_id in enabled:
-            wf = load_workflow("adetailer.json", req.arch)
+            wf, prompt_clean = _apply_prompt_loras(
+                load_workflow("adetailer.json", req.arch), req.prompt)
             params = {
                 "checkpoint":      req.checkpoint,
                 "image_b64":       current_b64,
-                "prompt":          req.prompt,
+                "prompt":          prompt_clean,
                 "negative_prompt": req.negative_prompt,
                 "detector_model":  f"bbox/{det_map[det_id]}",
                 "seed":            resolve_seed(req.seed),
@@ -732,11 +745,28 @@ async def progress_ws(ws: WebSocket, job_id: str):
 
     try:
         while True:
-            event = await asyncio.wait_for(q.get(), timeout=120)
+            try:
+                event = await asyncio.wait_for(q.get(), timeout=120)
+            except asyncio.TimeoutError:
+                # Silencio ≠ job muerto: /upscale no emite ningún progress y una
+                # carga de checkpoint lenta tampoco. Si el job ya terminó (el
+                # evento final lo consumió otra conexión), reenviar el estado;
+                # si sigue vivo, ping (detecta clientes muertos) y seguir.
+                status = _jobs.get(job_id, {}).get("status")
+                if status == "done":
+                    await ws.send_json({"type": "done"})
+                    break
+                if status == "error":
+                    await ws.send_json({"type": "error",
+                                        "msg": _jobs[job_id].get("error", "")})
+                    break
+                await ws.send_json({"type": "ping"})
+                continue
             await ws.send_json(event)
             if event["type"] in ("done", "error"):
                 break
-    except (asyncio.TimeoutError, WebSocketDisconnect):
+    except Exception:
+        # WebSocketDisconnect o send sobre un cliente ya desaparecido
         pass
     finally:
         try:
