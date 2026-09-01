@@ -11,5 +11,7 @@ quality_test/
 reference_samples/
 # Resultados de la batería de pruebas — local
 battery/
+# Resultados del banco de aceleración de atención (tests/bench_attention.py) — local
+bench_attention/
 # Logs de pruebas/descargas sueltos en la raíz de data/ — local
 *.log
