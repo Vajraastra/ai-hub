@@ -90,7 +90,7 @@ models_base = hub_path("models") or "E:/Models"
 venv_dir = (os.environ.get("VENV_DIR") or os.path.join(APP_DIR, "venv")).replace("\\", "/")
 dit = f"{models_base}/diffusion_models/anima/anima-base-v1.0.safetensors"
 te  = f"{models_base}/clip/anima/qwen_3_06b_base.safetensors"
-vae = f"{models_base}/vae/anima/qwen_image_vae.safetensors"
+vae = f"{models_base}/vae/qwen_image_vae.safetensors"
 
 print("\n[config] Escribiendo training-ui/global_config.toml...")
 cfg_toml = f'''venv_path = "{venv_dir}"
