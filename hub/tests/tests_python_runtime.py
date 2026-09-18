@@ -168,6 +168,18 @@ class PythonRuntimeTests(unittest.TestCase):
                 uv, "pip", "install", "--python", runtime_python
             ])
 
+    def test_comfy_nodes_accept_explicit_runtime_during_rebuild(self):
+        cmd = pip_cmd(
+            "E:/project/apps/comfyui",
+            "E:/project/runtimes/staging/Scripts/python.exe",
+            "E:/project/hub/tools/win/uv.exe"
+        )
+
+        self.assertEqual(cmd, [
+            "E:/project/hub/tools/win/uv.exe", "pip", "install", "--python",
+            "E:/project/runtimes/staging/Scripts/python.exe"
+        ])
+
 
 if __name__ == "__main__":
     unittest.main()

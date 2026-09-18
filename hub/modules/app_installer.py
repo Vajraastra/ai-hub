@@ -807,7 +807,11 @@ def install_app(app_config: dict, apps_dir: str, cuda_env: dict,
     if app_config.get("install_comfy_nodes"):
         from modules.comfy_nodes import install_nodes_logged
         repo_root = os.path.dirname(os.path.abspath(apps_dir))
-        nodes = install_nodes_logged(app_dir, apps_dir, repo_root, logger=logger)
+        runtime = resolve_python_runtime(app_config, app_dir)
+        nodes = install_nodes_logged(
+            app_dir, apps_dir, repo_root, logger=logger,
+            python_path=runtime.python, uv_path=_get_uv_path()
+        )
         result["comfy_nodes"] = nodes
         if nodes.get("failed"):
             # Un pack `required` que no se pudo clonar deja un módulo inservible;

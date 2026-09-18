@@ -172,8 +172,11 @@ def clone_node(repo: str, dest: Path, commit: str = "") -> tuple[bool, str]:
     return True, ""
 
 
-def pip_cmd(comfyui_dir: Path) -> list[str]:
+def pip_cmd(comfyui_dir: Path, python_path: Path | None = None,
+            uv_path: Path | None = None) -> list[str]:
     """Comando base de pip contra el venv de ComfyUI (uv si está disponible)."""
+    if python_path is not None and uv_path is not None:
+        return [str(uv_path), "pip", "install", "--python", str(python_path)]
     comfyui_dir = Path(comfyui_dir)
     repo_root = comfyui_dir.parent.parent
     registry = repo_root / "hub" / "config" / "app_registry.json"
@@ -206,7 +209,9 @@ def pip_cmd(comfyui_dir: Path) -> list[str]:
 
 
 def install_deps(comfyui_dir: Path, node_dir: Path,
-                 extra_packages: list[str] | None = None) -> tuple[bool, str]:
+                 extra_packages: list[str] | None = None,
+                 python_path: Path | None = None,
+                 uv_path: Path | None = None) -> tuple[bool, str]:
     """
     Instala el `requirements.txt` del nodo más los `pip_packages` declarados.
 
@@ -214,7 +219,7 @@ def install_deps(comfyui_dir: Path, node_dir: Path,
     pesados y opcionales (sam2 y compañía), y un fallo ahí no debe tumbar un
     nodo que por lo demás carga.
     """
-    pip = pip_cmd(comfyui_dir)
+    pip = pip_cmd(comfyui_dir, python_path, uv_path)
     req = Path(node_dir) / "requirements.txt"
     normal: list[str] = list(extra_packages or [])
     git_deps: list[str] = []
@@ -269,7 +274,9 @@ def installed_commit(node_dir: Path) -> str:
 def install_nodes(comfyui_dir: Path, apps_dir: Path, repo_root: Path,
                   loaded_nodes: set[str] | None = None,
                   only_modules: list[str] | None = None,
-                  dry_run: bool = False) -> Iterator[dict]:
+                  dry_run: bool = False,
+                  python_path: Path | None = None,
+                  uv_path: Path | None = None) -> Iterator[dict]:
     """
     Instala lo que declaren los registros de los módulos.
 
@@ -372,7 +379,9 @@ def install_nodes(comfyui_dir: Path, apps_dir: Path, repo_root: Path,
                     continue
             pkgs = entry.get("pip_packages", [])
             if pkgs:
-                ok, err = install_deps(comfyui_dir, dest_file.parent, pkgs)
+                ok, err = install_deps(
+                    comfyui_dir, dest_file.parent, pkgs, python_path, uv_path
+                )
                 if not ok:
                     ev, stop = fail(f"Error instalando deps de {node_id}: {err}")
                     yield ev
@@ -395,7 +404,10 @@ def install_nodes(comfyui_dir: Path, apps_dir: Path, repo_root: Path,
             if loaded_nodes is not None and not dry_run:
                 yield event(step, "info",
                             f"{node_id} presente pero no cargado — reinstalando dependencias")
-                ok, err = install_deps(comfyui_dir, dest, entry.get("pip_packages"))
+                ok, err = install_deps(
+                    comfyui_dir, dest, entry.get("pip_packages"),
+                    python_path, uv_path
+                )
                 if not ok:
                     ev, stop = fail(f"Error reinstalando deps de {node_id}: {err}")
                     yield ev
@@ -441,7 +453,9 @@ def install_nodes(comfyui_dir: Path, apps_dir: Path, repo_root: Path,
             continue
 
         yield event(step, "info", f"Instalando dependencias de {node_id}…")
-        ok, err = install_deps(comfyui_dir, dest, entry.get("pip_packages"))
+        ok, err = install_deps(
+            comfyui_dir, dest, entry.get("pip_packages"), python_path, uv_path
+        )
         if not ok:
             ev, stop = fail(f"Error instalando deps de {node_id}: {err}")
             yield ev
@@ -466,7 +480,9 @@ def install_nodes(comfyui_dir: Path, apps_dir: Path, repo_root: Path,
 async def install_nodes_async(comfyui_dir: Path, apps_dir: Path, repo_root: Path,
                               loaded_nodes: set[str] | None = None,
                               only_modules: list[str] | None = None,
-                              dry_run: bool = False):
+                              dry_run: bool = False,
+                              python_path: Path | None = None,
+                              uv_path: Path | None = None):
     """
     `install_nodes` sin bloquear el event loop.
 
@@ -485,7 +501,8 @@ async def install_nodes_async(comfyui_dir: Path, apps_dir: Path, repo_root: Path
     def _worker():
         try:
             for ev in install_nodes(comfyui_dir, apps_dir, repo_root,
-                                    loaded_nodes, only_modules, dry_run):
+                                    loaded_nodes, only_modules, dry_run,
+                                    python_path, uv_path):
                 loop.call_soon_threadsafe(queue.put_nowait, ev)
         except Exception as e:                       # no dejar el SSE colgado
             loop.call_soon_threadsafe(queue.put_nowait, {
@@ -509,7 +526,8 @@ async def install_nodes_async(comfyui_dir: Path, apps_dir: Path, repo_root: Path
 
 def install_nodes_logged(comfyui_dir: Path, apps_dir: Path, repo_root: Path,
                          only_modules: list[str] | None = None,
-                         logger=None) -> dict:
+                         logger=None, python_path: Path | None = None,
+                         uv_path: Path | None = None) -> dict:
     """
     Envoltorio para el bootstrap: consume el generador contra un HubLogger y
     devuelve el resumen. Offline por definición — durante la instalación
@@ -517,8 +535,10 @@ def install_nodes_logged(comfyui_dir: Path, apps_dir: Path, repo_root: Path,
     """
     _LOG = {"ok": "success", "error": "error", "warning": "warn", "info": "info"}
     summary = {}
-    for ev in install_nodes(comfyui_dir, apps_dir, repo_root, loaded_nodes=None,
-                            only_modules=only_modules):
+    for ev in install_nodes(
+            comfyui_dir, apps_dir, repo_root, loaded_nodes=set(),
+            only_modules=only_modules, python_path=python_path,
+            uv_path=uv_path):
         if logger:
             getattr(logger, _LOG.get(ev["status"], "info"))("custom_nodes", ev["msg"])
         else:
