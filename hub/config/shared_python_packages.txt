@@ -1,0 +1,4 @@
+# One physical copy of the CUDA runtime is installed in the shared venv.
+torch
+torchvision
+torchaudio

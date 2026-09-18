@@ -21,7 +21,8 @@ APP_DIR  = os.environ["APP_DIR"]
 HUB_DIR  = os.environ["HUB_DIR"]
 CUDA_TAG = os.environ.get("CUDA_TAG", "cu130")
 TORCH_VERSION = os.environ.get("TORCH_VERSION", "2.10.0")
-PY = sys.executable  # = venv de la app (app_installer lo ejecuta con get_app_python)
+PY = sys.executable
+SHARED_RUNTIME = os.environ.get("AI_HUB_SHARED_RUNTIME") == "1"
 
 def pip(*args):
     subprocess.run([PY, "-m", "pip", "install", "--no-cache-dir", *args],
@@ -32,11 +33,13 @@ print(f"  APP_DIR : {APP_DIR}")
 print(f"  PLATFORM: {os.environ.get('PLATFORM', sys.platform)}")
 print(f"  torch   : {TORCH_VERSION}+{CUDA_TAG}")
 
-# ── torch (lo fuerza el guardian; el requirements pinea 2.7.0+cu128 → lo ignoramos) ──
-print(f"\n[torch] Instalando torch {TORCH_VERSION} ({CUDA_TAG})...")
-pip(f"torch=={TORCH_VERSION}", "torchvision", "torchaudio",
-    "--index-url", f"https://download.pytorch.org/whl/{CUDA_TAG}")
-print("[torch] OK")
+# El instalador genérico ya construye el runtime y la capa cuando se comparte.
+if not SHARED_RUNTIME:
+    # ── torch (lo fuerza el guardian; el requirements pinea 2.7.0+cu128 → lo ignoramos) ──
+    print(f"\n[torch] Instalando torch {TORCH_VERSION} ({CUDA_TAG})...")
+    pip(f"torch=={TORCH_VERSION}", "torchvision", "torchaudio",
+        "--index-url", f"https://download.pytorch.org/whl/{CUDA_TAG}")
+    print("[torch] OK")
 
 # ── requirements.txt filtrado ───────────────────────────────────────────────
 # Quitamos: comentarios/vacíos, --extra-index-url/--index-url (índice cu128 del
@@ -51,26 +54,28 @@ if os.path.isfile(reqs):
         for line in f:
             if not SKIP.match(line.strip()):
                 filtered.append(line.strip())
-if filtered:
+if filtered and not SHARED_RUNTIME:
     print(f"\n[pip] Instalando requirements.txt filtrado ({len(filtered)} paquetes)...")
     pip(*filtered)
     print("[pip] OK")
 
 # ── Paquetes locales (Python puro: cuda_direct_pkg, wd_parallel_pkg, raíz) ────
-print("\n[local] Instalando paquetes locales...")
-for sub in ("cuda_direct_pkg", "wd_parallel_pkg"):
-    if os.path.isdir(os.path.join(APP_DIR, sub)):
-        pip(f"./{sub}")
-        print(f"[local] OK {sub}")
-if os.path.isfile(os.path.join(APP_DIR, "pyproject.toml")) or \
-   os.path.isfile(os.path.join(APP_DIR, "setup.py")):
-    pip("-e", ".")
-    print("[local] OK paquete raíz (-e .)")
+if not SHARED_RUNTIME:
+    print("\n[local] Instalando paquetes locales...")
+    for sub in ("cuda_direct_pkg", "wd_parallel_pkg"):
+        if os.path.isdir(os.path.join(APP_DIR, sub)):
+            pip(f"./{sub}")
+            print(f"[local] OK {sub}")
+    if os.path.isfile(os.path.join(APP_DIR, "pyproject.toml")) or \
+       os.path.isfile(os.path.join(APP_DIR, "setup.py")):
+        pip("-e", ".")
+        print("[local] OK paquete raíz (-e .)")
 
 # ── bitsandbytes (AdamW8bit) ─────────────────────────────────────────────────
-print("\n[bnb] Instalando bitsandbytes...")
-pip("bitsandbytes")
-print("[bnb] OK")
+if not SHARED_RUNTIME:
+    print("\n[bnb] Instalando bitsandbytes...")
+    pip("bitsandbytes")
+    print("[bnb] OK")
 
 # ── global_config.toml con rutas del hub ─────────────────────────────────────
 def hub_path(key, default=""):
@@ -82,7 +87,7 @@ def hub_path(key, default=""):
         return default
 
 models_base = hub_path("models") or "E:/Models"
-venv_dir = os.path.join(APP_DIR, "venv")
+venv_dir = os.environ.get("VENV_DIR") or os.path.join(APP_DIR, "venv")
 dit = f"{models_base}/diffusion_models/anima/anima-base-v1.0.safetensors"
 te  = f"{models_base}/clip/anima/qwen_3_06b_base.safetensors"
 vae = f"{models_base}/vae/anima/qwen_image_vae.safetensors"

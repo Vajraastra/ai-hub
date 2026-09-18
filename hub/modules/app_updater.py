@@ -101,7 +101,9 @@ def update_app(app_dir: str, branch: str, backups_dir: str,
         logger.info("update", f"Current commit: {result['old_commit'][:8] if result['old_commit'] else 'unknown'}")
 
     # Step 2: Backup requirements
-    backup_file = app_installer.backup_requirements(app_dir, backups_dir, logger)
+    backup_file = app_installer.backup_requirements(
+        app_dir, backups_dir, logger, app_config
+    )
 
     # Step 3: Git pull
     if logger:
@@ -144,10 +146,19 @@ def update_app(app_dir: str, branch: str, backups_dir: str,
 
         uv = app_installer._get_uv_path()
         env = app_installer._get_install_env()
-        env["VIRTUAL_ENV"] = os.path.join(app_dir, "venv")
+        runtime = app_installer.resolve_python_runtime(app_config, app_dir)
+        app_installer.apply_python_runtime_env(env, runtime)
         env.update(cuda_env)
 
-        cmd = [uv, "pip", "install", "-r", reqs_file]
+        shared_excludes = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "config", "shared_python_packages.txt"
+        )
+        if runtime.overlay_dir:
+            os.makedirs(runtime.overlay_dir, exist_ok=True)
+        cmd = app_installer._requirements_install_command(
+            uv, runtime, reqs_file, shared_excludes
+        )
         if cuda_config and cuda_config.get("index_url"):
             cmd += ["--extra-index-url", cuda_config["index_url"]]
 
@@ -164,7 +175,7 @@ def update_app(app_dir: str, branch: str, backups_dir: str,
                 logger.warn("update", f"Could not update dependencies: {e}")
 
     # Step 5: Verify CUDA (if venv exists and torch is installed)
-    python_path = app_installer.get_app_python(app_dir)
+    python_path = app_installer.get_app_python(app_dir, app_config)
     if os.path.exists(python_path):
         if logger:
             logger.info("update", "Verifying CUDA post-update...")

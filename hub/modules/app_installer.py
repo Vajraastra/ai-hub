@@ -13,6 +13,7 @@ import shutil
 import stat
 
 from modules.runtime_env import build_runtime_env
+from modules.python_runtime import apply_python_runtime_env, resolve_python_runtime
 
 
 def robust_rmtree(path: str, retries: int = 5, retry_delay: float = 0.5) -> None:
@@ -169,6 +170,20 @@ def _get_install_env() -> dict:
     return build_runtime_env()
 
 
+def _requirements_install_command(uv: str, runtime, requirements_file: str,
+                                  shared_excludes: str) -> list[str]:
+    """Build an explicit uv command for either a venv or an app overlay."""
+    cmd = [uv, "pip", "install", "--python", runtime.python]
+    if runtime.overlay_dir:
+        cmd.extend([
+            "--target", runtime.overlay_dir,
+            "--excludes", shared_excludes,
+            "--index-strategy", "unsafe-best-match",
+        ])
+    cmd.extend(["-r", requirements_file])
+    return cmd
+
+
 def install_uv(logger=None) -> bool:
     """Check if uv is available (portable or system)."""
     uv = _get_uv_path()
@@ -240,10 +255,11 @@ def clone_app(repo_url: str, branch: str, target_dir: str, logger=None) -> bool:
 
 
 def create_app_venv(app_dir: str, python_version: str, use_uv: bool = True,
-                    logger=None) -> bool:
-    """Create an isolated venv for the app with the specified Python version."""
-    venv_dir = os.path.join(app_dir, "venv")
-    venv_python = get_app_python(app_dir)
+                    logger=None, app_config: dict | None = None) -> bool:
+    """Create the app's legacy venv or its project-wide shared runtime."""
+    runtime = resolve_python_runtime(app_config or {}, app_dir)
+    venv_dir = runtime.env_dir
+    venv_python = runtime.python
 
     # Sólo reutilizar el venv si tiene el python EJECUTABLE de ESTA plataforma.
     # Un dir "venv" puede ser un venv de otro SO arrastrado (p. ej. ELF Linux
@@ -402,17 +418,18 @@ def install_npm_deps(app_dir: str, app_config: dict, logger=None) -> bool:
     return True
 
 
-def get_app_python(app_dir: str) -> str:
-    """Get the path to an app's venv Python binary."""
-    if os.name == "nt":
-        return os.path.join(app_dir, "venv", "Scripts", "python.exe")
-    else:
-        return os.path.join(app_dir, "venv", "bin", "python")
+def get_app_python(app_dir: str, app_config: dict | None = None) -> str:
+    """Get the Python binary selected for an app."""
+    return resolve_python_runtime(app_config or {}, app_dir).python
 
 
-def backup_requirements(app_dir: str, backups_dir: str, logger=None) -> str | None:
+def backup_requirements(app_dir: str, backups_dir: str, logger=None,
+                        app_config: dict | None = None) -> str | None:
     """Snapshot current pip freeze for rollback capability."""
-    python_path = get_app_python(app_dir)
+    runtime = resolve_python_runtime(app_config or {}, app_dir)
+    python_path = runtime.python
+    env = build_runtime_env()
+    apply_python_runtime_env(env, runtime)
     app_name = os.path.basename(app_dir)
 
     os.makedirs(backups_dir, exist_ok=True)
@@ -424,7 +441,7 @@ def backup_requirements(app_dir: str, backups_dir: str, logger=None) -> str | No
     try:
         proc = subprocess.run(
             [python_path, "-m", "pip", "freeze"],
-            capture_output=True, text=True, timeout=30
+            capture_output=True, text=True, timeout=30, env=env
         )
         if proc.returncode == 0:
             with open(backup_file, "w") as f:
@@ -493,7 +510,7 @@ def install_app(app_config: dict, apps_dir: str, cuda_env: dict,
     result["steps_completed"].append("cloned")
 
     # Step 3: Create venv
-    if not create_app_venv(app_dir, python_version, use_uv, logger):
+    if not create_app_venv(app_dir, python_version, use_uv, logger, app_config):
         result["error"] = "Failed to create venv"
         return result
     result["steps_completed"].append("venv_created")
@@ -513,7 +530,7 @@ def install_app(app_config: dict, apps_dir: str, cuda_env: dict,
         pre_cmds = app_config.get("pre_install_commands", [])
         if pre_cmds:
             if not _run_pre_install_commands(pre_cmds, app_dir, cuda_env,
-                                             cuda_config, logger):
+                                             cuda_config, logger, app_config):
                 result["error"] = "Pre-install commands failed"
                 return result
             result["steps_completed"].append("pre_install")
@@ -523,7 +540,8 @@ def install_app(app_config: dict, apps_dir: str, cuda_env: dict,
         if os.path.isfile(reqs_file):
             uv = _get_uv_path()
             env = _get_install_env()
-            env["VIRTUAL_ENV"] = os.path.join(app_dir, "venv")
+            runtime = resolve_python_runtime(app_config, app_dir)
+            apply_python_runtime_env(env, runtime)
             env.update(cuda_env)
 
             if logger:
@@ -571,7 +589,15 @@ def install_app(app_config: dict, apps_dir: str, cuda_env: dict,
                     active_reqs_file = reqs_file
 
             # Build uv pip install command
-            cmd = [uv, "pip", "install", "-r", active_reqs_file]
+            shared_excludes = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                "config", "shared_python_packages.txt"
+            )
+            if runtime.overlay_dir:
+                os.makedirs(runtime.overlay_dir, exist_ok=True)
+            cmd = _requirements_install_command(
+                uv, runtime, active_reqs_file, shared_excludes
+            )
 
             # Handle pip_overrides: force specific versions for Python/CUDA compat
             overrides = app_config.get("pip_overrides", [])
@@ -678,9 +704,13 @@ def install_app(app_config: dict, apps_dir: str, cuda_env: dict,
         base = hub_dir or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
         env = _get_install_env()
+        runtime = resolve_python_runtime(app_config, app_dir)
+        apply_python_runtime_env(env, runtime)
         env["APP_DIR"]          = app_dir
-        env["VENV_DIR"]         = os.path.join(app_dir, "venv")
-        env["VENV_PYTHON"]      = get_app_python(app_dir)   # Scripts\python.exe en Windows
+        env["VENV_DIR"]         = runtime.env_dir
+        env["VENV_PYTHON"]      = runtime.python
+        env["PYTHON_PACKAGES"]  = runtime.overlay_dir or ""
+        env["AI_HUB_SHARED_RUNTIME"] = "1" if app_config.get("shared_runtime") else "0"
         env["HUB_DIR"]          = base
         env["PLATFORM"]         = sys.platform  # linux, win32, darwin
         env["CUDA_TAG"]         = cuda_config.get("tag", "cu126")          if cuda_config else "cu126"
@@ -694,7 +724,7 @@ def install_app(app_config: dict, apps_dir: str, cuda_env: dict,
 
         if post_py:
             script_path = post_py if os.path.isabs(post_py) else os.path.join(base, post_py)
-            runner = [get_app_python(app_dir), script_path]
+            runner = [runtime.python, script_path]
         else:
             script_path = post_script if os.path.isabs(post_script) else os.path.join(base, post_script)
             runner = ["bash", script_path]
@@ -760,7 +790,7 @@ def install_app(app_config: dict, apps_dir: str, cuda_env: dict,
 
 def _run_pre_install_commands(commands: list, app_dir: str,
                               cuda_env: dict, cuda_config: dict = None,
-                              logger=None) -> bool:
+                              logger=None, app_config: dict | None = None) -> bool:
     """
     Run pre-install commands (e.g., install torch before requirements.txt).
     Template vars:
@@ -771,7 +801,8 @@ def _run_pre_install_commands(commands: list, app_dir: str,
     """
     uv = _get_uv_path()
     env = _get_install_env()
-    env["VIRTUAL_ENV"] = os.path.join(app_dir, "venv")
+    runtime = resolve_python_runtime(app_config or {}, app_dir)
+    apply_python_runtime_env(env, runtime)
     env.update(cuda_env)
 
     # Extract parameters from cuda_config or fallback to env URLs
