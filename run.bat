@@ -146,7 +146,7 @@ echo   [5/6] Verificando entorno de la WebUI...
 set "VENV_NEEDS_REBUILD="
 if not exist "%VENV_PY%" set "VENV_NEEDS_REBUILD=1"
 if exist "%VENV_PY%" (
-    findstr /i /b /l /c:"home = %UV_PYTHON_INSTALL_DIR%\" "%VENV_DIR%\pyvenv.cfg" >nul 2>&1
+    findstr /i /b /l /c:"home = %UV_PYTHON_INSTALL_DIR%" "%VENV_DIR%\pyvenv.cfg" >nul 2>&1
     if errorlevel 1 set "VENV_NEEDS_REBUILD=1"
 )
 
