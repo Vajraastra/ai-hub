@@ -11,6 +11,7 @@ import os
 import json
 import re
 import signal
+import shlex
 import sys
 
 from modules.runtime_env import build_runtime_env
@@ -242,6 +243,11 @@ def _get_launch_command(app_config: dict, app_dir: str) -> list:
             return ["bash", script_path]
 
 
+def _serialize_commandline_args(args: list) -> str:
+    """Serialize tokens for launchers that parse COMMANDLINE_ARGS with shlex."""
+    return shlex.join(str(arg) for arg in args)
+
+
 
 def launch_app(app_config: dict, app_dir: str, cuda_env: dict,
                model_args: list = None, extra_args: list = None,
@@ -320,7 +326,7 @@ def launch_app(app_config: dict, app_dir: str, cuda_env: dict,
     if model_args:
         # For forge-neo, these go into COMMANDLINE_ARGS env var
         existing_args = env.get("COMMANDLINE_ARGS", "")
-        extra_cli = " ".join(model_args)
+        extra_cli = _serialize_commandline_args(model_args)
         if existing_args:
             env["COMMANDLINE_ARGS"] = f"{existing_args} {extra_cli}"
         else:
@@ -331,7 +337,7 @@ def launch_app(app_config: dict, app_dir: str, cuda_env: dict,
     # Add extra user args
     if extra_args:
         existing = env.get("COMMANDLINE_ARGS", "")
-        extra_cli = " ".join(extra_args)
+        extra_cli = _serialize_commandline_args(extra_args)
         env["COMMANDLINE_ARGS"] = f"{existing} {extra_cli}".strip()
 
     # Determine working directory (npm apps may use a subdir)

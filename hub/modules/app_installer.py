@@ -221,6 +221,40 @@ def _requirements_install_command(uv: str, runtime, requirements_file: str,
     return cmd
 
 
+def _package_install_command(uv: str, runtime, packages: list[str],
+                             shared_excludes: str,
+                             no_deps: bool = False) -> list[str]:
+    """Build an explicit uv command for registry-managed extra packages."""
+    cmd = [uv, "pip", "install", "--python", runtime.python]
+    if runtime.overlay_dir:
+        cmd.extend([
+            "--target", runtime.overlay_dir,
+            "--excludes", shared_excludes,
+            "--index-strategy", "unsafe-best-match",
+        ])
+    if no_deps:
+        cmd.append("--no-deps")
+    cmd.extend(packages)
+    return cmd
+
+
+def _extra_package_install_commands(app_config: dict, uv: str, runtime,
+                                    shared_excludes: str) -> list[list[str]]:
+    """Return optional resolved/no-deps package commands declared by an app."""
+    commands = []
+    packages = app_config.get("pip_extra_packages", [])
+    if packages:
+        commands.append(_package_install_command(
+            uv, runtime, packages, shared_excludes
+        ))
+    no_deps_packages = app_config.get("pip_no_deps_packages", [])
+    if no_deps_packages:
+        commands.append(_package_install_command(
+            uv, runtime, no_deps_packages, shared_excludes, no_deps=True
+        ))
+    return commands
+
+
 def install_uv(logger=None) -> bool:
     """Check if uv is available (portable or system)."""
     uv = _get_uv_path()
@@ -574,13 +608,19 @@ def install_app(app_config: dict, apps_dir: str, cuda_env: dict,
 
         # Step 5: Install requirements.txt if present
         reqs_file = os.path.join(app_dir, "requirements.txt")
-        if os.path.isfile(reqs_file):
-            uv = _get_uv_path()
-            env = _get_install_env()
-            runtime = resolve_python_runtime(app_config, app_dir)
-            apply_python_runtime_env(env, runtime)
-            env.update(cuda_env)
+        uv = _get_uv_path()
+        env = _get_install_env()
+        runtime = resolve_python_runtime(app_config, app_dir)
+        apply_python_runtime_env(env, runtime)
+        env.update(cuda_env)
+        shared_excludes = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "config", "shared_python_packages.txt"
+        )
+        if runtime.overlay_dir:
+            os.makedirs(runtime.overlay_dir, exist_ok=True)
 
+        if os.path.isfile(reqs_file):
             if logger:
                 logger.info("install", "Installing requirements.txt...")
 
@@ -626,12 +666,6 @@ def install_app(app_config: dict, apps_dir: str, cuda_env: dict,
                     active_reqs_file = reqs_file
 
             # Build uv pip install command
-            shared_excludes = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                "config", "shared_python_packages.txt"
-            )
-            if runtime.overlay_dir:
-                os.makedirs(runtime.overlay_dir, exist_ok=True)
             cmd = _requirements_install_command(
                 uv, runtime, active_reqs_file, shared_excludes
             )
@@ -681,6 +715,27 @@ def install_app(app_config: dict, apps_dir: str, cuda_env: dict,
         else:
             if logger:
                 logger.info("install", "No requirements.txt found.")
+
+        # Some upstream launchers keep mandatory packages outside requirements.txt
+        # (Forge manages Gradio this way). Install them declaratively into the same
+        # venv/layer so first launch never mutates the shared runtime.
+        extra_commands = _extra_package_install_commands(
+            app_config, uv, runtime, shared_excludes
+        )
+        for extra_cmd in extra_commands:
+            try:
+                returncode = _run_streamed(
+                    extra_cmd, cwd=app_dir, env=env, logger=logger,
+                    tag="install", timeout=900
+                )
+            except (OSError, FileNotFoundError) as e:
+                result["error"] = f"Extra package install error: {e}"
+                return result
+            if returncode != 0:
+                result["error"] = f"Extra package install failed (exit {returncode})"
+                return result
+        if extra_commands:
+            result["steps_completed"].append("extra_packages")
     else:
         # App handles deps on first launch (e.g., forge-neo via launch.py)
         if logger:
