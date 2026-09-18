@@ -39,6 +39,8 @@ set "UV_BIN=%TOOLS_DIR%\uv.exe"
 REM -- Entorno uv: NO latchear a Pythons PEP 514 de otros proyectos
 set "UV_PYTHON_PREFERENCE=only-managed"
 set "UV_CACHE_DIR=%SCRIPT_DIR%\.cache\uv"
+set "UV_LINK_MODE=hardlink"
+set "UV_PYTHON_INSTALL_DIR=%SCRIPT_DIR%\hub\tools\python"
 set "PYTHONUNBUFFERED=1"
 
 if not exist "%TOOLS_DIR%" mkdir "%TOOLS_DIR%"
@@ -74,11 +76,13 @@ REM [2/6] uv
 REM ============================================================
 echo   [2/6] Verificando uv...
 
-REM Preferir uv del sistema si esta en PATH
-where uv >nul 2>&1
-if not errorlevel 1 set "UV_BIN=uv"
+REM El resultado instalado siempre conserva uv dentro del Hub. Si existe uno
+REM en PATH se copia para evitar la descarga; si no, se descarga el portable.
+if not exist "%UV_BIN%" (
+    for /f "delims=" %%U in ('where uv 2^>nul') do if not exist "%UV_BIN%" copy /y "%%U" "%UV_BIN%" >nul
+)
 
-if not exist "%TOOLS_DIR%\uv.exe" if /i "%UV_BIN%"=="%TOOLS_DIR%\uv.exe" (
+if not exist "%UV_BIN%" (
     echo   Descargando uv portable...
     powershell -NoProfile -ExecutionPolicy Bypass -Command "try { Invoke-WebRequest -Uri 'https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip' -OutFile '%TOOLS_DIR%\uv.zip'; Expand-Archive -Path '%TOOLS_DIR%\uv.zip' -DestinationPath '%TOOLS_DIR%' -Force; Remove-Item '%TOOLS_DIR%\uv.zip' -Force } catch { exit 1 }"
     if errorlevel 1 (
@@ -139,8 +143,15 @@ REM [5/6] venv de la WebUI + dependencias
 REM ============================================================
 echo   [5/6] Verificando entorno de la WebUI...
 
-if not exist "%VENV_PY%" (
-    echo   Creando venv [descarga Python %HUB_PY_VERSION% managed si hace falta]...
+set "VENV_NEEDS_REBUILD="
+if not exist "%VENV_PY%" set "VENV_NEEDS_REBUILD=1"
+if exist "%VENV_PY%" (
+    findstr /i /b /l /c:"home = %UV_PYTHON_INSTALL_DIR%\" "%VENV_DIR%\pyvenv.cfg" >nul 2>&1
+    if errorlevel 1 set "VENV_NEEDS_REBUILD=1"
+)
+
+if defined VENV_NEEDS_REBUILD (
+    echo   Creando/reparando venv con Python portable del Hub...
     REM --clear limpia cualquier venv residual de Linux arrastrado del disco externo
     "%UV_BIN%" venv --clear --python %HUB_PY_VERSION% "%VENV_DIR%"
     if errorlevel 1 (
