@@ -127,6 +127,9 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+runtimes/
+.python-packages/
+.prototype/
 
 # Spyder project settings
 .spyderproject

@@ -14,6 +14,7 @@ import signal
 import sys
 
 from modules.runtime_env import build_runtime_env
+from modules.python_runtime import apply_python_runtime_env, resolve_python_runtime
 
 
 def _inject_output_config(app_config: dict, app_dir: str,
@@ -186,11 +187,7 @@ def _get_launch_command(app_config: dict, app_dir: str) -> list:
     launch_type = app_config.get("launch_type", "shell")
 
     if launch_type == "python":
-        # Run via the app's own venv Python
-        if os.name == "nt":
-            python = os.path.join(app_dir, "venv", "Scripts", "python.exe")
-        else:
-            python = os.path.join(app_dir, "venv", "bin", "python")
+        python = resolve_python_runtime(app_config, app_dir).python
         script = app_config.get("launch_script", "launch.py")
         cmd = [python, os.path.join(app_dir, script)]
 
@@ -301,17 +298,10 @@ def launch_app(app_config: dict, app_dir: str, cuda_env: dict,
     if node_dir and os.path.isdir(node_dir):
         env["PATH"] = node_dir + os.pathsep + env.get("PATH", "")
 
-    # Set VIRTUAL_ENV so uv and pip detect the app's venv
-    venv_dir = os.path.join(app_dir, "venv")
-    if os.path.isdir(venv_dir):
-        env["VIRTUAL_ENV"] = venv_dir
-        # Add venv bin to PATH so npm workers can access Python + torch
-        if os.name == "nt":
-            venv_bin = os.path.join(venv_dir, "Scripts")
-        else:
-            venv_bin = os.path.join(venv_dir, "bin")
-        if os.path.isdir(venv_bin):
-            env["PATH"] = venv_bin + os.pathsep + env.get("PATH", "")
+    # Shared runtimes also serve npm child processes (Anima invokes Python).
+    runtime = resolve_python_runtime(app_config, app_dir)
+    if os.path.isdir(runtime.env_dir):
+        apply_python_runtime_env(env, runtime)
 
     if logger:
         for key, value in cuda_env.items():
