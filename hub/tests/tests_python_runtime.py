@@ -2,16 +2,62 @@ import os
 import json
 import sys
 import tempfile
+import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from modules.python_runtime import apply_python_runtime_env, resolve_python_runtime
-from modules.app_installer import _requirements_install_command
+from modules.app_installer import _requirements_install_command, _run_streamed
 from modules.comfy_nodes import pip_cmd
 
 
 class PythonRuntimeTests(unittest.TestCase):
+    class _Logger:
+        def __init__(self):
+            self.warnings = []
+
+        def info(self, _tag, _message):
+            pass
+
+        def warn(self, _tag, message):
+            self.warnings.append(message)
+
+    def test_download_runner_retries_after_forced_timeout(self):
+        with tempfile.TemporaryDirectory() as root:
+            marker = os.path.join(root, "attempt.txt")
+            orphan = os.path.join(root, "uv", ".tmp-incomplete")
+            os.makedirs(orphan)
+            code = (
+                "from pathlib import Path; import time; "
+                f"p=Path({marker!r}); "
+                "exists=p.exists(); p.write_text('attempt', encoding='utf-8'); "
+                "time.sleep(2) if not exists else None"
+            )
+            logger = self._Logger()
+            started = time.monotonic()
+
+            result = _run_streamed(
+                [sys.executable, "-c", code],
+                env={**os.environ, "UV_CACHE_DIR": os.path.join(root, "uv")},
+                logger=logger, timeout=0.2, _timeout_retries=1
+            )
+
+            self.assertEqual(result, 0)
+            self.assertEqual(len(logger.warnings), 1)
+            self.assertFalse(os.path.exists(orphan))
+            self.assertLess(time.monotonic() - started, 5)
+
+    def test_download_runner_does_not_retry_success(self):
+        logger = self._Logger()
+        result = _run_streamed(
+            [sys.executable, "-c", "print('ok')"],
+            logger=logger, timeout=5
+        )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(logger.warnings, [])
+
     def test_pilot_apps_share_runtime_with_distinct_layers(self):
         registry_path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),

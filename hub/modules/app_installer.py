@@ -78,7 +78,8 @@ def _find_uv_cache_corruption_packages(lines: list) -> list:
 
 
 def _run_streamed(cmd, cwd=None, env=None, logger=None, tag="install",
-                  timeout=None, shell=False, _retry=True) -> int:
+                  timeout=None, shell=False, _retry=True,
+                  _timeout_retries=2, _attempt=1) -> int:
     """
     Run a subprocess routing each output line through the logger (stderr fused
     into stdout). Without esto, en la webui la salida real de git/uv/npm iba
@@ -119,10 +120,44 @@ def _run_streamed(cmd, cwd=None, env=None, logger=None, tag="install",
     try:
         returncode = proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
-        proc.kill()
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                capture_output=True, text=True, timeout=30
+            )
+        elif proc.poll() is None:
+            proc.kill()
         proc.wait()
+        pump.join(timeout=5)
+        if proc.stdout:
+            proc.stdout.close()
+
+        if _timeout_retries > 0:
+            cache_dir = (env or {}).get("UV_CACHE_DIR", "")
+            if cache_dir and os.path.isdir(cache_dir):
+                cache_root = os.path.abspath(cache_dir)
+                for walk_root, dirs, _files in os.walk(cache_root, topdown=False):
+                    for name in dirs:
+                        if not name.startswith(".tmp"):
+                            continue
+                        candidate = os.path.abspath(os.path.join(walk_root, name))
+                        if os.path.commonpath([cache_root, candidate]) == cache_root:
+                            shutil.rmtree(candidate, ignore_errors=True)
+            if logger:
+                logger.warn(
+                    tag,
+                    f"Timeout tras {timeout}s (intento {_attempt}); "
+                    f"reintentando {_timeout_retries} vez/veces..."
+                )
+            return _run_streamed(
+                cmd, cwd=cwd, env=env, logger=logger, tag=tag,
+                timeout=timeout, shell=shell, _retry=_retry,
+                _timeout_retries=_timeout_retries - 1, _attempt=_attempt + 1
+            )
         raise
     pump.join(timeout=5)
+    if proc.stdout:
+        proc.stdout.close()
 
     if returncode != 0 and _retry:
         cmd_str = cmd if isinstance(cmd, str) else " ".join(cmd)
@@ -138,7 +173,9 @@ def _run_streamed(cmd, cwd=None, env=None, logger=None, tag="install",
                     subprocess.run([uv, "cache", "clean", pkg], cwd=cwd, env=env,
                                     capture_output=True, text=True, timeout=60)
                 return _run_streamed(cmd, cwd=cwd, env=env, logger=logger, tag=tag,
-                                     timeout=timeout, shell=shell, _retry=False)
+                                     timeout=timeout, shell=shell, _retry=False,
+                                     _timeout_retries=_timeout_retries,
+                                     _attempt=_attempt)
 
     return returncode
 
@@ -620,8 +657,10 @@ def install_app(app_config: dict, apps_dir: str, cuda_env: dict,
                     logger.info("install", f"  Overrides: {overrides}")
 
             try:
-                returncode = _run_streamed(cmd, cwd=app_dir, env=env,
-                                           logger=logger, tag="install")
+                returncode = _run_streamed(
+                    cmd, cwd=app_dir, env=env, logger=logger,
+                    tag="install", timeout=900
+                )
 
                 # Cleanup temp files
                 if overrides_file and os.path.isfile(overrides_file):
@@ -840,13 +879,15 @@ def _run_pre_install_commands(commands: list, app_dir: str,
             logger.info("pre_install", f"  $ {cmd_str}")
 
         try:
-            returncode = _run_streamed(cmd_str, shell=True, cwd=app_dir, env=env,
-                                       logger=logger, tag="pre_install")
+            returncode = _run_streamed(
+                cmd_str, shell=True, cwd=app_dir, env=env,
+                logger=logger, tag="pre_install", timeout=900
+            )
             if returncode != 0:
                 if logger:
                     logger.error("pre_install", f"Command failed (exit {returncode})")
                 return False
-        except OSError as e:
+        except (OSError, subprocess.TimeoutExpired) as e:
             if logger:
                 logger.error("pre_install", f"Error: {e}")
             return False
