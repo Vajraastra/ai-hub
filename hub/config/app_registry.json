@@ -44,7 +44,10 @@
             "description": "LoRA trainer for Flux, SDXL, and SD models",
             "repo": "https://github.com/ostris/ai-toolkit",
             "branch": "main",
-            "python_version": "3.13",
+            "python_version": "3.12",
+            "shared_runtime": "py312-torch",
+            "python_layer": "overlay",
+            "python_hide_packages": ["mediapipe"],
             "use_uv": true,
             "install_deps": true,
             "launch_type": "npm",
@@ -55,7 +58,13 @@
             "pre_install_commands": [
                 "{uv} pip install torch=={torch_version} torchvision=={torchvision_version} torchaudio=={torchaudio_version} --index-url https://download.pytorch.org/whl/{cuda_tag}"
             ],
-            "pip_overrides": ["scipy>=1.14.1", "numpy>=2.1.0", "gradio<6.0"],
+            "pip_overrides": [
+                "scipy==1.18.0",
+                "numpy==2.4.4",
+                "opencv-python==5.0.0.93",
+                "opencv-python-headless==5.0.0.93",
+                "gradio==5.50.0"
+            ],
             "output_map": { "method": "none" },
             "cuda_env_vars": { "torch_index": "PIP_EXTRA_INDEX_URL" },
             "default_port": 8675,

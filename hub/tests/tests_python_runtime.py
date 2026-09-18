@@ -58,7 +58,7 @@ class PythonRuntimeTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertEqual(logger.warnings, [])
 
-    def test_pilot_apps_share_runtime_with_distinct_layers(self):
+    def test_migrated_apps_share_runtime_with_distinct_layers(self):
         registry_path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
             "config", "app_registry.json"
@@ -68,11 +68,21 @@ class PythonRuntimeTests(unittest.TestCase):
 
         comfy = apps["comfyui"]
         anima = apps["anima-standalone-trainer"]
+        ai_toolkit = apps["ai-toolkit"]
+        forge = apps["sd-webui-forge-neo"]
         self.assertEqual(comfy["shared_runtime"], anima["shared_runtime"])
+        self.assertEqual(comfy["shared_runtime"], ai_toolkit["shared_runtime"])
         self.assertEqual(comfy["python_layer"], "base")
         self.assertEqual(anima["python_layer"], "overlay")
+        self.assertEqual(ai_toolkit["python_layer"], "overlay")
+        self.assertEqual(ai_toolkit["python_version"], "3.12")
+        self.assertEqual(ai_toolkit["python_hide_packages"], ["mediapipe"])
         self.assertTrue(anima["install_deps"])
         self.assertTrue(anima["pre_install_commands"])
+        self.assertTrue(ai_toolkit["install_deps"])
+        self.assertTrue(ai_toolkit["pre_install_commands"])
+        self.assertEqual(forge["python_version"], "3.13")
+        self.assertNotIn("shared_runtime", forge)
 
     def test_legacy_app_keeps_its_own_venv(self):
         with tempfile.TemporaryDirectory() as root:
@@ -112,6 +122,34 @@ class PythonRuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             with self.assertRaises(ValueError):
                 resolve_python_runtime({"shared_runtime": "../outside"}, root, root)
+
+    def test_hidden_base_package_is_shadowed_before_overlay(self):
+        with tempfile.TemporaryDirectory() as root:
+            app_dir = os.path.join(root, "apps", "ai-toolkit")
+            runtime = resolve_python_runtime({
+                "shared_runtime": "py312-cu130",
+                "python_layer": "overlay",
+                "python_hide_packages": ["mediapipe"],
+            }, app_dir, root)
+            env = apply_python_runtime_env({"PATH": "old"}, runtime)
+
+            self.assertEqual(
+                env["PYTHONPATH"],
+                runtime.hidden_dir + os.pathsep + runtime.overlay_dir
+            )
+            stub = os.path.join(runtime.hidden_dir, "mediapipe", "__init__.py")
+            self.assertTrue(os.path.isfile(stub))
+            with open(stub, encoding="utf-8") as handle:
+                self.assertIn("hidden by AI Hub runtime isolation", handle.read())
+
+    def test_hidden_package_name_cannot_escape_app(self):
+        with tempfile.TemporaryDirectory() as root:
+            with self.assertRaises(ValueError):
+                resolve_python_runtime({
+                    "shared_runtime": "py312-cu130",
+                    "python_layer": "overlay",
+                    "python_hide_packages": ["../mediapipe"],
+                }, os.path.join(root, "apps", "ai-toolkit"), root)
 
     def test_overlay_install_excludes_shared_cuda_packages(self):
         with tempfile.TemporaryDirectory() as root:
