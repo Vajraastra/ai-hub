@@ -162,26 +162,17 @@ def update_app(app_dir: str, branch: str, backups_dir: str,
         if cuda_config and cuda_config.get("index_url"):
             cmd += ["--extra-index-url", cuda_config["index_url"]]
 
-        commands = [cmd] + app_installer._extra_package_install_commands(
-            app_config, uv, runtime, shared_excludes
-        )
-        deps_ok = True
-        for install_cmd in commands:
-            try:
-                returncode = app_installer._run_streamed(
-                    install_cmd, cwd=app_dir, env=env, logger=logger,
-                    tag="update", timeout=900
-                )
-                if returncode != 0:
-                    deps_ok = False
-                    if logger:
-                        logger.warn("update", f"Dependency update warning (exit {returncode})")
-            except (OSError, FileNotFoundError) as e:
-                deps_ok = False
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, cwd=app_dir, env=env)
+            if proc.returncode == 0:
                 if logger:
-                    logger.warn("update", f"Could not update dependencies: {e}")
-        if deps_ok and logger:
-            logger.success("update", "Dependencies updated.")
+                    logger.success("update", "Dependencies updated.")
+            else:
+                if logger:
+                    logger.warn("update", f"Dependency update warning: {proc.stderr[-300:]}")
+        except (OSError, FileNotFoundError) as e:
+            if logger:
+                logger.warn("update", f"Could not update dependencies: {e}")
 
     # Step 5: Verify CUDA (if venv exists and torch is installed)
     python_path = app_installer.get_app_python(app_dir, app_config)

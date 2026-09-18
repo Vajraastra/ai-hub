@@ -6,45 +6,12 @@
             "description": "The good ol' Forge WebUI, now updated with new features",
             "repo": "https://github.com/Haoming02/sd-webui-forge-classic",
             "branch": "neo",
-            "python_version": "3.12",
-            "shared_runtime": "py312-torch",
-            "python_layer": "overlay",
+            "python_version": "3.13",
             "use_uv": true,
-            "install_deps": true,
+            "install_deps": false,
             "launch_type": "python",
             "launch_script": "launch.py",
             "launch_script_win": "webui-user.bat",
-            "launch_args": [
-                "--skip-prepare-environment",
-                "--skip-install",
-                "--skip-python-version-check",
-                "--skip-version-check"
-            ],
-            "pre_install_commands": [
-                "{uv} pip install torch=={torch_version} torchvision=={torchvision_version} torchaudio=={torchaudio_version} --index-url https://download.pytorch.org/whl/{cuda_tag}"
-            ],
-            "pip_extra_packages": [
-                "aiofiles==23.2.1",
-                "ffmpy==1.0.0",
-                "gradio-client==1.2.0",
-                "importlib-resources==6.5.2",
-                "jinja2==3.1.6",
-                "markupsafe==2.1.5",
-                "orjson==3.12.0",
-                "pandas==2.3.3",
-                "pydub==0.25.1",
-                "python-multipart==0.0.32",
-                "ruff==0.16.8",
-                "semantic-version==2.10.0",
-                "tomlkit==0.12.0",
-                "typer==0.21.0",
-                "uvicorn==0.53.0",
-                "websockets==12.0"
-            ],
-            "pip_no_deps_packages": [
-                "gradio==4.40.0",
-                "gradio_rangeslider==0.0.8"
-            ],
             "model_map": {
                 "checkpoints": { "flag": "--ckpt-dirs", "type": "append" },
                 "loras": { "flag": "--lora-dirs", "type": "append" },
@@ -69,7 +36,7 @@
             "cuda_env_vars": { "torch_index": "TORCH_INDEX_URL", "torch_command": "TORCH_COMMAND" },
             "default_port": 7860,
             "auto_open_browser": true,
-            "extra_args": []
+            "extra_args": ["--uv"]
         },
         "ai-toolkit": {
             "id": "ai-toolkit",

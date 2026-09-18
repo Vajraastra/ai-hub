@@ -8,11 +8,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from modules.python_runtime import apply_python_runtime_env, resolve_python_runtime
-from modules.app_installer import (
-    _extra_package_install_commands,
-    _requirements_install_command,
-    _run_streamed,
-)
+from modules.app_installer import _requirements_install_command, _run_streamed
 from modules.comfy_nodes import pip_cmd
 
 
@@ -76,7 +72,6 @@ class PythonRuntimeTests(unittest.TestCase):
         forge = apps["sd-webui-forge-neo"]
         self.assertEqual(comfy["shared_runtime"], anima["shared_runtime"])
         self.assertEqual(comfy["shared_runtime"], ai_toolkit["shared_runtime"])
-        self.assertEqual(comfy["shared_runtime"], forge["shared_runtime"])
         self.assertEqual(comfy["python_layer"], "base")
         self.assertEqual(anima["python_layer"], "overlay")
         self.assertEqual(ai_toolkit["python_layer"], "overlay")
@@ -86,11 +81,8 @@ class PythonRuntimeTests(unittest.TestCase):
         self.assertTrue(anima["pre_install_commands"])
         self.assertTrue(ai_toolkit["install_deps"])
         self.assertTrue(ai_toolkit["pre_install_commands"])
-        self.assertEqual(forge["python_version"], "3.12")
-        self.assertEqual(forge["python_layer"], "overlay")
-        self.assertTrue(forge["install_deps"])
-        self.assertIn("--skip-prepare-environment", forge["launch_args"])
-        self.assertIn("gradio==4.40.0", forge["pip_no_deps_packages"])
+        self.assertEqual(forge["python_version"], "3.13")
+        self.assertNotIn("shared_runtime", forge)
 
     def test_legacy_app_keeps_its_own_venv(self):
         with tempfile.TemporaryDirectory() as root:
@@ -189,29 +181,6 @@ class PythonRuntimeTests(unittest.TestCase):
 
             self.assertNotIn("--target", cmd)
             self.assertNotIn("--excludes", cmd)
-
-    def test_registry_extra_packages_keep_gradio_conflict_isolated(self):
-        with tempfile.TemporaryDirectory() as root:
-            runtime = resolve_python_runtime(
-                {"shared_runtime": "py312-cu130", "python_layer": "overlay"},
-                os.path.join(root, "apps", "forge"), root
-            )
-            config = {
-                "pip_extra_packages": ["aiofiles==23.2.1"],
-                "pip_no_deps_packages": ["gradio==4.40.0"],
-            }
-            commands = _extra_package_install_commands(
-                config, "uv", runtime, "shared.txt"
-            )
-
-            self.assertEqual(len(commands), 2)
-            self.assertNotIn("--no-deps", commands[0])
-            self.assertIn("--no-deps", commands[1])
-            self.assertEqual(commands[1][-1], "gradio==4.40.0")
-            self.assertEqual(
-                commands[1][commands[1].index("--target") + 1],
-                runtime.overlay_dir,
-            )
 
     @unittest.skipUnless(os.name == "nt", "Windows-first path layout")
     def test_comfy_nodes_resolve_registered_shared_runtime(self):
