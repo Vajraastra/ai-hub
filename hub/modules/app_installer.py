@@ -12,6 +12,8 @@ import json
 import shutil
 import stat
 
+from modules.runtime_env import build_runtime_env
+
 
 def robust_rmtree(path: str, retries: int = 5, retry_delay: float = 0.5) -> None:
     """
@@ -163,22 +165,8 @@ def _get_uv_path() -> str:
 
 
 def _get_install_env() -> dict:
-    """Build environment for install commands with UV cache on same drive."""
-    env = os.environ.copy()
-    hub_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    root_dir = os.path.dirname(hub_dir)
-    # Always force cache to the hub drive — overrides any env var from the host
-    # shell that might point to a different filesystem, which would prevent uv
-    # from hardlinking and waste disk space duplicating packages.
-    # Ruta ÚNICA compartida con run.bat (raíz): <root>\.cache\uv — si divergen,
-    # la deduplicación se fragmenta en caches paralelos.
-    env["UV_CACHE_DIR"] = os.path.join(root_dir, ".cache", "uv")
-    env["UV_LINK_MODE"] = "hardlink"
-    env["UV_PYTHON_INSTALL_DIR"] = os.path.join(hub_dir, "tools", "python")
-    # No engancharse a Pythons PEP 514 de otros proyectos: usar solo los
-    # managed por uv (descargados a UV_PYTHON_INSTALL_DIR).
-    env["UV_PYTHON_PREFERENCE"] = "only-managed"
-    return env
+    """Build the shared portable environment for install commands."""
+    return build_runtime_env()
 
 
 def install_uv(logger=None) -> bool:

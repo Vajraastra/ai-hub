@@ -13,6 +13,8 @@ import re
 import signal
 import sys
 
+from modules.runtime_env import build_runtime_env
+
 
 def _inject_output_config(app_config: dict, app_dir: str,
                           outputs_dir: str, logger=None):
@@ -274,7 +276,7 @@ def launch_app(app_config: dict, app_dir: str, cuda_env: dict,
         return -1
 
     # Build environment with CUDA overrides
-    env = os.environ.copy()
+    env = build_runtime_env()
     env.update(cuda_env)
 
     # Inject output directory config before launch

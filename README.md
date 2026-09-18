@@ -46,6 +46,8 @@ TagGUI, LoRA Merger, Forge Lab — the last two were superseded by Forge Fusion.
   `uv`, Python, Node.js, and ffmpeg portably if not present on the system
 - **Isolation**: each managed app runs in its own virtual environment (`uv`), managed
   independently; no reliance on system-level Python
+- **Shared caches**: downloads and runtime caches for `uv`, pip, Hugging Face, PyTorch,
+  and Ultralytics live under `.cache/` instead of being duplicated in each app or `AppData`
 - **i18n**: ES/EN locale system (`locale.js`) — all UI strings switch at runtime without reload
 
 ---
@@ -56,6 +58,7 @@ TagGUI, LoRA Merger, Forge Lab — the last two were superseded by Forge Fusion.
 - Linux is best-effort only via `run.sh`, not actively tested
 
 Everything else (Python, Node.js, uv, ffmpeg) is provisioned automatically.
+No prior `uv` or Python installation is required: `run.bat` keeps both inside the project.
 
 ---
 

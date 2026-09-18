@@ -238,8 +238,20 @@ fi
 # ── Variables de entorno ──────────────────────────────────────
 export AI_HUB_UV_PATH="${UV_BIN}"
 export AI_HUB_TOOLS_DIR="${TOOLS_DIR}"
+export AI_HUB_CACHE_DIR="${SCRIPT_DIR}/.cache"
 export UV_CACHE_DIR="${SCRIPT_DIR}/.cache/uv"
 export UV_LINK_MODE="hardlink"
+export UV_PYTHON_INSTALL_DIR="${PYTHON_DIR}"
+export UV_PYTHON_PREFERENCE="only-managed"
+export PIP_CACHE_DIR="${AI_HUB_CACHE_DIR}/pip"
+export HF_HOME="${AI_HUB_CACHE_DIR}/huggingface"
+export HF_HUB_CACHE="${HF_HOME}/hub"
+export HUGGINGFACE_HUB_CACHE="${HF_HUB_CACHE}"
+export HF_DATASETS_CACHE="${HF_HOME}/datasets"
+export HF_ASSETS_CACHE="${HF_HOME}/assets"
+export TORCH_HOME="${AI_HUB_CACHE_DIR}/torch"
+export YOLO_CONFIG_DIR="${AI_HUB_CACHE_DIR}/ultralytics"
+export XDG_CACHE_HOME="${AI_HUB_CACHE_DIR}"
 export PYTHONUNBUFFERED="1"
 
 if [ -n "$NODE_BIN" ]; then

@@ -30,6 +30,11 @@ for path in [HUB_DIR, PROJECT_ROOT]:
     if path not in sys.path:
         sys.path.insert(0, path)
 
+from modules.runtime_env import build_runtime_env
+
+# Also cover development starts that bypass run.bat.
+os.environ.update(build_runtime_env(root_dir=PROJECT_ROOT))
+
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse

@@ -14,6 +14,11 @@ import shutil
 HUB_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HUB_DIR)
 
+from modules.runtime_env import build_runtime_env
+
+# Direct CLI launches receive the same portable caches as run.bat/WebUI.
+os.environ.update(build_runtime_env())
+
 from modules.gpu_detector import detect_gpu, check_prerequisites
 from modules.cuda_guardian import get_optimal_cuda, build_env_overrides, get_cpu_fallback
 from modules.logger import HubLogger
