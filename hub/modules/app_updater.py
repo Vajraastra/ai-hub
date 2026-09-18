@@ -8,6 +8,30 @@ import subprocess
 import os
 
 
+def _add_pip_overrides(cmd: list[str], app_dir: str,
+                       app_config: dict | None,
+                       cuda_config: dict | None) -> str | None:
+    """Apply the same registry overrides used by a clean install."""
+    overrides = list((app_config or {}).get("pip_overrides", []))
+    if cuda_config:
+        overrides = [
+            value.replace("{torch_version}", cuda_config.get("torch_version", ""))
+                 .replace("{torchvision_version}", cuda_config.get("torchvision_version", ""))
+                 .replace("{torchaudio_version}", cuda_config.get(
+                     "torchaudio_version", cuda_config.get("torch_version", "")
+                 ))
+            for value in overrides
+        ]
+    if not overrides:
+        return None
+
+    override_file = os.path.join(app_dir, ".pip_overrides.update.txt")
+    with open(override_file, "w", encoding="utf-8") as handle:
+        handle.write("\n".join(overrides) + "\n")
+    cmd.extend(["--override", override_file])
+    return override_file
+
+
 def get_current_commit(app_dir: str) -> str | None:
     """Get the current git commit hash."""
     try:
@@ -159,6 +183,9 @@ def update_app(app_dir: str, branch: str, backups_dir: str,
         cmd = app_installer._requirements_install_command(
             uv, runtime, reqs_file, shared_excludes
         )
+        override_file = _add_pip_overrides(
+            cmd, app_dir, app_config, cuda_config
+        )
         if cuda_config and cuda_config.get("index_url"):
             cmd += ["--extra-index-url", cuda_config["index_url"]]
 
@@ -180,6 +207,8 @@ def update_app(app_dir: str, branch: str, backups_dir: str,
                 deps_ok = False
                 if logger:
                     logger.warn("update", f"Could not update dependencies: {e}")
+        if override_file and os.path.isfile(override_file):
+            os.remove(override_file)
         if deps_ok and logger:
             logger.success("update", "Dependencies updated.")
 

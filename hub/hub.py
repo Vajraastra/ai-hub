@@ -519,7 +519,12 @@ def _do_update(app_id: str, app_cfg: dict, config: dict, logger: HubLogger):
     if confirm.lower() != "s":
         return
 
-    result = update_app(app_dir, branch, BACKUPS_DIR, cuda_env, cuda_tag, logger)
+    result = update_app(
+        app_dir, branch, BACKUPS_DIR, cuda_env, cuda_tag,
+        app_config=app_cfg,
+        cuda_config=config.get("cuda", {}),
+        logger=logger,
+    )
 
     if result["success"]:
         if result["updated"]:

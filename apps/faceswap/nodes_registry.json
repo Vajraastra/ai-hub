@@ -16,7 +16,7 @@
     {
       "id": "ComfyUI-ReActor",
       "repo": "https://github.com/Gourieff/ComfyUI-ReActor",
-      "commit": "6ad6b35a4df250d14cb2abf0808c9ffedf59f747",
+      "commit": "b3a0ac8cf55c83af8fe85fe8b074ea94b8d5169e",
       "probe_node": "ReActorFaceSwap",
       "reason": "Compone el rostro sobre la escena (HyperSwap, MIT) y su máscara"
     }
