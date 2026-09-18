@@ -103,7 +103,8 @@
                     "classifiers": "classifiers"
                 },
                 "symlinks": {
-                    "ultralytics": "ultralytics"
+                    "ultralytics": "ultralytics",
+                    "style_models": "style_models"
                 }
             },
             "output_map": { "method": "cli", "args": ["--output-directory"] },

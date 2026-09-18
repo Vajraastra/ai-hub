@@ -6,10 +6,12 @@ category-alias mapping system.
 Zero external dependencies - stdlib only.
 """
 
-import os
+import hashlib
 import json
+import os
 import stat
 import shutil
+import uuid
 
 
 # ============================================================
@@ -75,6 +77,106 @@ def _create_dir_link(src, dst):
             raise OSError(result.stderr.strip() or "mklink /J falló")
     else:
         os.symlink(src, dst)
+
+
+def _sha256(path, chunk_size=1024 * 1024):
+    """Calcula SHA-256 sin cargar modelos completos en memoria."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as model_file:
+        for chunk in iter(lambda: model_file.read(chunk_size), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def migrate_model_directory(app_path: str, central_path: str) -> dict:
+    """Migra una carpeta local al almacén central y deja un link en su lugar.
+
+    La carpeta local no se retira hasta que cada archivo nuevo esté copiado y
+    verificado. Los conflictos abortan antes de modificar el origen. Si falla
+    la creación del link, se restaura la carpeta local; las copias centrales se
+    conservan porque son verificadas y permiten reintentar sin riesgo.
+    """
+    app_path = os.path.abspath(app_path)
+    central_path = os.path.abspath(central_path)
+
+    if _is_dir_link(app_path):
+        if _link_points_to(app_path, central_path):
+            return {"status": "linked", "files": 0, "bytes": 0}
+        _remove_dir_link(app_path)
+
+    if os.path.lexists(app_path) and not os.path.isdir(app_path):
+        raise OSError(f"La ruta local no es un directorio: {app_path}")
+    if os.path.lexists(central_path):
+        if _is_dir_link(central_path) or not os.path.isdir(central_path):
+            raise OSError(f"El destino central debe ser un directorio real: {central_path}")
+    else:
+        os.makedirs(central_path, exist_ok=True)
+
+    if not os.path.exists(app_path):
+        os.makedirs(os.path.dirname(app_path), exist_ok=True)
+        _create_dir_link(central_path, app_path)
+        if not _link_points_to(app_path, central_path):
+            raise OSError(f"No se pudo verificar el link: {app_path}")
+        return {"status": "linked", "files": 0, "bytes": 0}
+
+    planned = []
+    for root, dirnames, filenames in os.walk(app_path):
+        for name in dirnames + filenames:
+            candidate = os.path.join(root, name)
+            if _is_dir_link(candidate):
+                raise OSError(f"La carpeta local contiene un link no migrable: {candidate}")
+
+        relative_root = os.path.relpath(root, app_path)
+        target_root = central_path if relative_root == "." else os.path.join(central_path, relative_root)
+        if os.path.exists(target_root) and not os.path.isdir(target_root):
+            raise OSError(f"Conflicto de tipo en el destino central: {target_root}")
+
+        for filename in filenames:
+            source_file = os.path.join(root, filename)
+            target_file = os.path.join(target_root, filename)
+            if os.path.exists(target_file):
+                if not os.path.isfile(target_file):
+                    raise OSError(f"Conflicto de tipo en el destino central: {target_file}")
+                same_size = os.path.getsize(source_file) == os.path.getsize(target_file)
+                if not same_size or _sha256(source_file) != _sha256(target_file):
+                    raise OSError(f"Conflicto de contenido en el destino central: {target_file}")
+            else:
+                planned.append((source_file, target_file))
+
+    copied_files = 0
+    copied_bytes = 0
+    for source_file, target_file in planned:
+        os.makedirs(os.path.dirname(target_file), exist_ok=True)
+        temp_file = os.path.join(
+            os.path.dirname(target_file),
+            f".{os.path.basename(target_file)}.aihub-{uuid.uuid4().hex}.tmp",
+        )
+        try:
+            shutil.copy2(source_file, temp_file)
+            if _sha256(source_file) != _sha256(temp_file):
+                raise OSError(f"Falló la verificación de copia: {source_file}")
+            os.replace(temp_file, target_file)
+        finally:
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+        copied_files += 1
+        copied_bytes += os.path.getsize(source_file)
+
+    backup_path = f"{app_path}.aihub-backup-{uuid.uuid4().hex}"
+    os.replace(app_path, backup_path)
+    try:
+        _create_dir_link(central_path, app_path)
+        if not _link_points_to(app_path, central_path):
+            raise OSError(f"No se pudo verificar el link: {app_path}")
+        shutil.rmtree(backup_path)
+    except Exception:
+        if _is_dir_link(app_path):
+            _remove_dir_link(app_path)
+        if not os.path.lexists(app_path) and os.path.exists(backup_path):
+            os.replace(backup_path, app_path)
+        raise
+
+    return {"status": "migrated", "files": copied_files, "bytes": copied_bytes}
 
 
 # Hub's recommended structure — canonical ComfyUI names
@@ -272,15 +374,9 @@ def build_app_model_args(app_config: dict, models_dir: str, app_dir: str = "") -
             dst = os.path.join(app_models_dir, link_name)
             if not os.path.exists(src):
                 continue
-            if _is_dir_link(dst):
-                if _link_points_to(dst, src):
-                    continue
-                _remove_dir_link(dst)  # link apunta a otro lado — reemplazar
-            elif os.path.exists(dst):
-                continue  # directorio real — no tocar
             try:
                 os.makedirs(app_models_dir, exist_ok=True)
-                _create_dir_link(src, dst)
+                migrate_model_directory(dst, src)
             except OSError as e:
                 print(f"Error creando link {dst} -> {src}: {e}")
 
