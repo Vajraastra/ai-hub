@@ -47,6 +47,8 @@ import subprocess
 from pathlib import Path
 from typing import Iterator
 
+from modules.python_runtime import resolve_python_runtime
+
 _REGISTRY_NAME = "nodes_registry.json"
 
 # Los clones son de decenas de MB, pero un `pip install` de un nodo puede
@@ -172,6 +174,26 @@ def clone_node(repo: str, dest: Path, commit: str = "") -> tuple[bool, str]:
 
 def pip_cmd(comfyui_dir: Path) -> list[str]:
     """Comando base de pip contra el venv de ComfyUI (uv si está disponible)."""
+    comfyui_dir = Path(comfyui_dir)
+    repo_root = comfyui_dir.parent.parent
+    registry = repo_root / "hub" / "config" / "app_registry.json"
+    if registry.is_file():
+        try:
+            config = json.loads(registry.read_text(encoding="utf-8"))["apps"]["comfyui"]
+            runtime = resolve_python_runtime(config, str(comfyui_dir), str(repo_root))
+            if Path(runtime.python).is_file() and config.get("shared_runtime"):
+                uv_env = os.environ.get("AI_HUB_UV_PATH", "")
+                candidates = [Path(uv_env)] if uv_env else []
+                candidates.extend([
+                    repo_root / "hub" / "tools" / "win" / "uv.exe",
+                    repo_root / "hub" / "tools" / "uv.exe",
+                ])
+                uv = next((path for path in candidates if path.is_file()), None)
+                if uv:
+                    return [str(uv), "pip", "install", "--python", runtime.python]
+        except (KeyError, OSError, ValueError, json.JSONDecodeError):
+            pass
+
     bin_dir = Path(comfyui_dir) / "venv" / ("Scripts" if os.name == "nt" else "bin")
     exe     = ".exe" if os.name == "nt" else ""
     uv      = bin_dir / f"uv{exe}"

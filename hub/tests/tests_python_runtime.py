@@ -1,4 +1,5 @@
 import os
+import json
 import sys
 import tempfile
 import unittest
@@ -7,6 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from modules.python_runtime import apply_python_runtime_env, resolve_python_runtime
 from modules.app_installer import _requirements_install_command
+from modules.comfy_nodes import pip_cmd
 
 
 class PythonRuntimeTests(unittest.TestCase):
@@ -79,6 +81,30 @@ class PythonRuntimeTests(unittest.TestCase):
 
             self.assertNotIn("--target", cmd)
             self.assertNotIn("--excludes", cmd)
+
+    @unittest.skipUnless(os.name == "nt", "Windows-first path layout")
+    def test_comfy_nodes_resolve_registered_shared_runtime(self):
+        with tempfile.TemporaryDirectory() as root:
+            app_dir = os.path.join(root, "apps", "comfyui")
+            config_dir = os.path.join(root, "hub", "config")
+            runtime_python = os.path.join(
+                root, "runtimes", "py312-cu130", "Scripts", "python.exe"
+            )
+            uv = os.path.join(root, "hub", "tools", "win", "uv.exe")
+            os.makedirs(config_dir)
+            os.makedirs(os.path.dirname(runtime_python))
+            os.makedirs(os.path.dirname(uv))
+            os.makedirs(app_dir)
+            open(runtime_python, "wb").close()
+            open(uv, "wb").close()
+            with open(os.path.join(config_dir, "app_registry.json"), "w") as handle:
+                json.dump({"apps": {"comfyui": {
+                    "shared_runtime": "py312-cu130", "python_layer": "base"
+                }}}, handle)
+
+            self.assertEqual(pip_cmd(app_dir), [
+                uv, "pip", "install", "--python", runtime_python
+            ])
 
 
 if __name__ == "__main__":
