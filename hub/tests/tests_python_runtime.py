@@ -12,6 +12,22 @@ from modules.comfy_nodes import pip_cmd
 
 
 class PythonRuntimeTests(unittest.TestCase):
+    def test_pilot_apps_share_runtime_with_distinct_layers(self):
+        registry_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "config", "app_registry.json"
+        )
+        with open(registry_path, encoding="utf-8") as handle:
+            apps = json.load(handle)["apps"]
+
+        comfy = apps["comfyui"]
+        anima = apps["anima-standalone-trainer"]
+        self.assertEqual(comfy["shared_runtime"], anima["shared_runtime"])
+        self.assertEqual(comfy["python_layer"], "base")
+        self.assertEqual(anima["python_layer"], "overlay")
+        self.assertTrue(anima["install_deps"])
+        self.assertTrue(anima["pre_install_commands"])
+
     def test_legacy_app_keeps_its_own_venv(self):
         with tempfile.TemporaryDirectory() as root:
             app_dir = os.path.join(root, "apps", "legacy")
