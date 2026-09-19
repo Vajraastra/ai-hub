@@ -2,9 +2,8 @@
   "_comment": [
     "Custom nodes de ComfyUI que necesita MiniMax H3. Lo instala",
     "hub/modules/comfy_nodes.py (compartido); el formato está documentado ahí.",
-    "KJNodes y PlagueKind son parte de una receta de aceleración medida en s105,",
-    "pero los workflows actuales todavía no los invocan. Permanecen en 'planned'",
-    "para no instalarlos ni cargarlos hasta que esa optimización quede cableada.",
+    "KJNodes y PlagueKind forman la receta de aceleración medida en s105 y",
+    "cableada en los cinco workflows de H3 desde s119; por eso son requeridos.",
     "El cuarto nodo de la receta, ModelAttentionBackend, es core de ComfyUI 0.33 y",
     "no necesita pack. Detalle en BITACORA.md › MiniMax H3 › Velocidad."
   ],
@@ -21,9 +20,7 @@
       "commit": "b51c99a525e9607e43545ee2a8b7694c74a4775a",
       "probe_node": "CLIPLoaderMultiGPU",
       "reason": "Coloca el text encoder Qwen3-VL de forma explícita; los workflows lo usan en vez de CLIPLoader"
-    }
-  ],
-  "planned": [
+    },
     {
       "id": "ComfyUI-KJNodes",
       "repo": "https://github.com/kijai/ComfyUI-KJNodes",
@@ -36,8 +33,10 @@
       "repo": "https://github.com/PlagueKind/ComfyUI-PlagueKind-Nodes",
       "commit": "066ada9eb2378f392cc815663f63c4eef1060b4a",
       "probe_node": "H3SLAAttention",
+      "pip_packages": ["triton-windows==3.7.1.post27"],
       "reason": "Atención dispersa: baja el exponente de escalado con la duración de 2,39 a 1,34"
     }
   ],
+  "planned": [],
   "enhanced": []
 }

@@ -19,7 +19,7 @@
   "5": {
     "class_type": "LoraLoaderModelOnly",
     "inputs": {
-      "model": ["3", 0],
+      "model": ["901", 0],
       "lora_name": "{{turbo_lora_name}}",
       "strength_model": 1.0
     }
@@ -30,6 +30,27 @@
       "model": ["5", 0],
       "lora_name": "{{hm_lora_name}}",
       "strength_model": "{{hm_strength}}"
+    }
+  },
+  "900": {
+    "class_type": "ModelAttentionBackend",
+    "inputs": { "model": ["3", 0], "attention": "pytorch attention" }
+  },
+  "902": {
+    "class_type": "MiniMaxLowVRAMAttention",
+    "inputs": { "model": ["900", 0], "head_chunks": 2 }
+  },
+  "903": {
+    "class_type": "MiniMaxChunkFeedForward",
+    "inputs": { "model": ["902", 0], "chunks": 2, "seq_threshold": 4096 }
+  },
+  "901": {
+    "class_type": "H3SLAAttention",
+    "inputs": {
+      "model": ["903", 0], "enabled": true, "sparsity_ratio": 0.9,
+      "block_size": "64", "min_seq_len": 8192, "dense_last_steps": 1,
+      "protect_audio": true, "dense_backend": "comfy_kitchen",
+      "disable_fp16_accum": true, "stabilize_motion": false
     }
   },
   "6": {

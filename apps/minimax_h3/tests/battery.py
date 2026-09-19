@@ -48,7 +48,8 @@ _REQUIRED_NODES = [
     "MiniMaxH3ImageToVideo", "UNETLoader", "CLIPLoader", "VAELoader",
     "VAEDecodeAudio", "CreateVideo", "SaveVideo", "RandomNoise",
     "KSamplerSelect", "BasicScheduler", "BasicGuider", "SamplerCustomAdvanced",
-    "LoraLoaderModelOnly",
+    "LoraLoaderModelOnly", "ModelAttentionBackend", "MiniMaxLowVRAMAttention",
+    "MiniMaxChunkFeedForward", "H3SLAAttention",
 ]
 
 _LOG_FILE = None

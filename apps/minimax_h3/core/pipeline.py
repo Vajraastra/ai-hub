@@ -122,16 +122,15 @@ def _frame_length(seconds: float) -> int:
 
 def _apply_turbo(wf: dict, params: GenParams, available_loras: list[str]) -> list:
     """Inyecta el LoRA turbo (LoraLoaderModelOnly nativo) sobre el UNET y
-    devuelve la ref de modelo final para BasicScheduler/BasicGuider (nodos
-    "9"/"10"). Sin turbo, esos nodos ya apuntan a ["3", 0] (UNETLoader) en el
-    template — no-op."""
+    devuelve la ref de modelo final. Los parches de atención ya están aplicados
+    en el nodo 901; cargar el LoRA después conserva su wrapper al clonar el modelo."""
     if not params.turbo:
-        return ["3", 0]
+        return ["901", 0]
     if not params.turbo_lora_name:
         raise PipelineError("modo turbo activado sin turbo_lora_name")
     lora_name = _resolve_lora(params.turbo_lora_name, available_loras)
     wf["5"] = {"class_type": "LoraLoaderModelOnly",
-               "inputs": {"model": ["3", 0], "lora_name": lora_name,
+               "inputs": {"model": ["901", 0], "lora_name": lora_name,
                           "strength_model": float(params.turbo_strength)}}
     model_ref = ["5", 0]
     wf["9"]["inputs"]["model"] = model_ref
