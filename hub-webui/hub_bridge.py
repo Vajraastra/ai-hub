@@ -350,6 +350,13 @@ class HubBridge:
         port = self._state.get_port_override(app_id)
         user_args = self._state.get_user_extra_args(app_id)
         default_port = self._state.registry_apps.get(app_id, {}).get("default_port")
+        app_cfg = self._state.registry_apps.get(app_id, {})
+        gpus = []
+        preferred_gpu_uuid = ""
+        if app_cfg.get("single_gpu_preference"):
+            from modules.gpu_detector import list_nvidia_gpus
+            gpus = list_nvidia_gpus()
+            preferred_gpu_uuid = self._state.get_preferred_gpu_uuid(app_id)
 
         all_flags = self._state.load_app_flags()
         app_flags_def = all_flags.get(app_id, {}).get("flags", [])
@@ -389,10 +396,13 @@ class HubBridge:
             "default_port":  default_port,
             "free_args":    " ".join(free_args),
             "flags":        flags,
+            "gpus":         gpus,
+            "preferred_gpu_uuid": preferred_gpu_uuid,
         }
 
     def save_app_config(self, app_id: str, port_override,
-                        active_flags: list[dict], free_args: str) -> dict:
+                        active_flags: list[dict], free_args: str,
+                        preferred_gpu_uuid: str = "") -> dict:
         """
         Guarda la configuración de una app:
           - port_override (int o None)
@@ -400,6 +410,13 @@ class HubBridge:
           - free_args: string con args adicionales
         """
         try:
+            app_cfg = self._state.registry_apps.get(app_id, {})
+            if app_cfg.get("single_gpu_preference"):
+                from modules.gpu_detector import list_nvidia_gpus
+                available = {gpu["uuid"] for gpu in list_nvidia_gpus()}
+                if preferred_gpu_uuid and preferred_gpu_uuid not in available:
+                    return {"ok": False, "error": "La GPU seleccionada ya no está disponible."}
+
             # Construir user_extra_args desde flags activos + free_args
             new_args = []
             for f in active_flags:
@@ -422,6 +439,8 @@ class HubBridge:
 
             self._state.set_user_extra_args(app_id, new_args)
             self._state.set_port_override(app_id, port)
+            if app_cfg.get("single_gpu_preference"):
+                self._state.set_preferred_gpu_uuid(app_id, preferred_gpu_uuid)
             return {"ok": True}
         except Exception as e:
             return {"ok": False, "error": str(e)}
@@ -680,6 +699,28 @@ class HubBridge:
             # site-packages del hub-webui (Python 3.13) y contaminen sus
             # propios venvs (e.g. ComfyUI en Python 3.12 → numpy roto).
             cuda_env["PYTHONPATH"] = ""
+
+            if app_cfg.get("single_gpu_preference"):
+                from modules.gpu_detector import list_nvidia_gpus
+                preferred = self._state.get_preferred_gpu_uuid(app_id)
+                if preferred:
+                    gpu = next((item for item in list_nvidia_gpus()
+                                if item["uuid"] == preferred), None)
+                    if gpu is None:
+                        self._emit_log(app_id, "❌ La GPU preferida no está disponible; no se usará otra automáticamente.")
+                        self._state.clear_busy(app_id)
+                        self._emit_state(app_id)
+                        return
+                    cuda_env["CUDA_VISIBLE_DEVICES"] = preferred
+                    self._emit_log(app_id, f"GPU exclusiva: {gpu['name']} ({gpu['pci_bus_id']})")
+
+            from modules.app_installer import apply_post_install_patches
+            patch_result = apply_post_install_patches(app_dir, app_cfg)
+            if patch_result["failed"]:
+                self._emit_log(app_id, f"❌ No se pudo preparar la app: {patch_result['failed'][0]}")
+                self._state.clear_busy(app_id)
+                self._emit_state(app_id)
+                return
 
             model_args = []
             models_dir = hub_config.get("paths", {}).get("models")

@@ -48,29 +48,46 @@ def detect_platform() -> dict:
     return info
 
 
-def _parse_nvidia_smi() -> dict | None:
-    """Parse nvidia-smi output for GPU information."""
+def list_nvidia_gpus() -> list[dict]:
+    """Return every NVIDIA GPU with stable identifiers and CUDA index."""
     try:
         result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=name,memory.total,driver_version",
+            ["nvidia-smi", "--query-gpu=index,name,uuid,pci.bus_id,memory.total,driver_version",
              "--format=csv,noheader,nounits"],
             capture_output=True, text=True, timeout=10
         )
         if result.returncode != 0:
-            return None
+            return []
 
-        line = result.stdout.strip().split("\n")[0]  # First GPU
-        parts = [p.strip() for p in line.split(",")]
-        if len(parts) < 3:
-            return None
-
-        return {
-            "gpu_name": parts[0],
-            "vram_mb": int(float(parts[1])),
-            "driver_version": parts[2],
-        }
+        gpus = []
+        for line in result.stdout.strip().splitlines():
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) < 6:
+                continue
+            gpus.append({
+                "index": int(parts[0]),
+                "name": parts[1],
+                "uuid": parts[2],
+                "pci_bus_id": parts[3],
+                "vram_mb": int(float(parts[4])),
+                "driver_version": parts[5],
+            })
+        return gpus
     except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
+        return []
+
+
+def _parse_nvidia_smi() -> dict | None:
+    """Select the strongest installed GPU for the Hub's general profile."""
+    gpus = list_nvidia_gpus()
+    if not gpus:
         return None
+    selected = max(gpus, key=lambda gpu: (gpu["vram_mb"], -gpu["index"]))
+    return {
+        "gpu_name": selected["name"],
+        "vram_mb": selected["vram_mb"],
+        "driver_version": selected["driver_version"],
+    }
 
 
 def _get_cuda_version_from_smi() -> str | None:

@@ -129,6 +129,10 @@ def update_app(app_dir: str, branch: str, backups_dir: str,
         app_dir, backups_dir, logger, app_config
     )
 
+    # Hub patches intentionally modify third-party source. Restore the exact
+    # upstream text before pulling, then reapply the patch below.
+    app_installer.revert_post_install_patches(app_dir, app_config or {})
+
     # Step 3: Git pull
     if logger:
         logger.info("update", "Pulling latest changes...")
@@ -141,11 +145,13 @@ def update_app(app_dir: str, branch: str, backups_dir: str,
         )
         if proc.returncode != 0:
             result["error"] = f"git pull failed: {proc.stderr}"
+            app_installer.apply_post_install_patches(app_dir, app_config or {})
             if logger:
                 logger.error("update", result["error"])
             return result
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
         result["error"] = f"git pull error: {e}"
+        app_installer.apply_post_install_patches(app_dir, app_config or {})
         if logger:
             logger.error("update", result["error"])
         return result
@@ -154,6 +160,12 @@ def update_app(app_dir: str, branch: str, backups_dir: str,
     result["updated"] = result["old_commit"] != result["new_commit"]
 
     if not result["updated"]:
+        patch_result = app_installer.apply_post_install_patches(
+            app_dir, app_config or {}, logger=logger, tag="update"
+        )
+        if patch_result["failed"]:
+            result["error"] = patch_result["failed"][0]
+            return result
         if logger:
             logger.info("update", "Already up to date.")
         result["success"] = True
@@ -212,7 +224,15 @@ def update_app(app_dir: str, branch: str, backups_dir: str,
         if deps_ok and logger:
             logger.success("update", "Dependencies updated.")
 
-    # Step 5: Verify CUDA (if venv exists and torch is installed)
+    # Step 5: Reapply Hub compatibility patches after upstream changes.
+    patch_result = app_installer.apply_post_install_patches(
+        app_dir, app_config or {}, logger=logger, tag="update"
+    )
+    if patch_result["failed"]:
+        result["error"] = patch_result["failed"][0]
+        return result
+
+    # Step 6: Verify CUDA (if venv exists and torch is installed)
     python_path = app_installer.get_app_python(app_dir, app_config)
     if os.path.exists(python_path):
         if logger:

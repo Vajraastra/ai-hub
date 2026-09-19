@@ -165,6 +165,7 @@ class AppConfigPayload(BaseModel):
     port_override: Optional[int] = None
     active_flags: list[dict] = []
     free_args: str = ""
+    preferred_gpu_uuid: str = ""
 
 
 class ValidatePathPayload(BaseModel):
@@ -283,6 +284,7 @@ async def save_app_config(app_id: str, payload: AppConfigPayload):
         payload.port_override,
         payload.active_flags,
         payload.free_args,
+        payload.preferred_gpu_uuid,
     )
 
 

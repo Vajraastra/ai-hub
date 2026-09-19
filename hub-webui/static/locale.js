@@ -55,6 +55,7 @@
         },
         modal_title:"Ajustes — {name}", port_label:"Puerto (override)", port_hint:"Puerto predeterminado: {port}",
         flags_label:"Flags de lanzamiento", args_label:"Args adicionales",
+        gpu_label:"GPU para esta app", gpu_auto:"Automática", gpu_hint:"El Hub guarda la identidad estable de la GPU; no depende del índice CUDA.",
         args_placeholder:"--argumento=valor  (uno por línea o separados por espacio)",
         args_hint:"Argumentos que no están listados como flags arriba.",
         modal_saved:"Ajustes guardados.", modal_error:"Error guardando ajustes.", modal_load_error:"Error cargando ajustes de la app."
@@ -240,6 +241,7 @@
         },
         modal_title:"Settings — {name}", port_label:"Port (override)", port_hint:"Default port: {port}",
         flags_label:"Launch flags", args_label:"Additional args",
+        gpu_label:"GPU for this app", gpu_auto:"Automatic", gpu_hint:"The Hub stores the GPU's stable identity instead of relying on its CUDA index.",
         args_placeholder:"--argument=value  (one per line or space-separated)",
         args_hint:"Arguments not listed as flags above.",
         modal_saved:"Settings saved.", modal_error:"Error saving settings.", modal_load_error:"Error loading app settings."

@@ -279,6 +279,21 @@ class HubState:
                 self.installed_apps[app_id]["port_override"] = port
             self.save_state()
 
+    def get_preferred_gpu_uuid(self, app_id: str) -> str:
+        """Returns the stable NVIDIA GPU UUID selected for one app."""
+        return self.installed_apps.get(app_id, {}).get("preferred_gpu_uuid", "")
+
+    def set_preferred_gpu_uuid(self, app_id: str, gpu_uuid: str):
+        """Persists an app GPU preference without relying on CUDA indices."""
+        if app_id not in self.installed_apps:
+            return
+        gpu_uuid = (gpu_uuid or "").strip()
+        if gpu_uuid:
+            self.installed_apps[app_id]["preferred_gpu_uuid"] = gpu_uuid
+        else:
+            self.installed_apps[app_id].pop("preferred_gpu_uuid", None)
+        self.save_state()
+
     # ------------------------------------------------------------------ #
     # GPU profile + app flags                                             #
     # ------------------------------------------------------------------ #
@@ -323,7 +338,7 @@ class HubState:
         if self._app_flags is not None:
             return self._app_flags
         try:
-            with open(self.flags_file, "r") as f:
+            with open(self.flags_file, "r", encoding="utf-8") as f:
                 self._app_flags = json.load(f)
         except Exception as e:
             print(f"[state] Error loading app_flags.json: {e}")

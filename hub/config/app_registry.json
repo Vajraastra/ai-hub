@@ -66,6 +66,18 @@
                     "outdir_videos": "videos"
                 }
             },
+            "config_path_lists": [
+                "forge_additional_modules",
+                "forge_additional_modules_sd"
+            ],
+            "post_install_patches": [
+                {
+                    "file": "modules/sd_models.py",
+                    "find": "        name = name.strip(\"/\").strip(\"\\\\\")",
+                    "replace": "        name = name.strip(\"/\").strip(\"\\\\\")\n        if not name:\n            name = os.path.basename(filename)",
+                    "critical": true
+                }
+            ],
             "cuda_env_vars": { "torch_index": "TORCH_INDEX_URL", "torch_command": "TORCH_COMMAND" },
             "default_port": 7860,
             "auto_open_browser": true,
@@ -168,6 +180,21 @@
             "shared_runtime": "py312-torch",
             "python_layer": "overlay",
             "install_deps": true,
+            "single_gpu_preference": true,
+            "post_install_patches": [
+                {
+                    "file": "training-ui/server.js",
+                    "find": "    let accelerateFlags = '';",
+                    "replace": "    let accelerateFlags = `--num_processes 1 --mixed_precision ${mixedPrec}`;",
+                    "critical": true
+                },
+                {
+                    "file": "training-ui/server.js",
+                    "find": "            accelerateFlags = `--mixed_precision ${mixedPrec}`;",
+                    "replace": "            accelerateFlags = `--num_processes 1 --mixed_precision ${mixedPrec}`;",
+                    "critical": true
+                }
+            ],
             "launch_type": "npm",
             "launch_script": "start",
             "launch_subdir": "training-ui",

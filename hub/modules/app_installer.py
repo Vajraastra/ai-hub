@@ -527,6 +527,90 @@ def backup_requirements(app_dir: str, backups_dir: str, logger=None,
     return None
 
 
+def apply_post_install_patches(app_dir: str, app_config: dict,
+                               logger=None, tag: str = "patch") -> dict:
+    """Apply registry text patches idempotently.
+
+    This is shared by install, update and launch so an upstream refresh cannot
+    silently remove a Hub-required compatibility patch.
+    """
+    result = {"applied": [], "already_applied": [], "failed": [], "warnings": []}
+    patches = (app_config or {}).get("post_install_patches", [])
+    if patches and logger:
+        logger.info(tag, f"Applying {len(patches)} Hub patch(es)...")
+
+    for patch in patches:
+        patch_file = patch.get("file", "")
+        find_text = patch.get("find", "")
+        replace_text = patch.get("replace", "")
+        critical = bool(patch.get("critical"))
+
+        def problem(message: str):
+            (result["failed"] if critical else result["warnings"]).append(message)
+            if logger:
+                (logger.error if critical else logger.warn)(tag, message)
+
+        if not patch_file or not find_text or not replace_text:
+            problem(f"Invalid patch declaration: {patch_file or '<no file>'}")
+            continue
+
+        target_path = os.path.join(app_dir, patch_file)
+        if not os.path.isfile(target_path):
+            problem(f"Patch target not found: {patch_file}")
+            continue
+
+        try:
+            with open(target_path, "r", encoding="utf-8") as handle:
+                content = handle.read()
+            if replace_text in content:
+                result["already_applied"].append(patch_file)
+                continue
+            if find_text not in content:
+                problem(f"Patch context changed upstream: {patch_file}")
+                continue
+
+            with open(target_path, "w", encoding="utf-8") as handle:
+                handle.write(content.replace(find_text, replace_text, 1))
+            result["applied"].append(patch_file)
+            if logger:
+                logger.success(tag, f"Patched: {patch_file}")
+
+            pycache_dir = os.path.join(os.path.dirname(target_path), "__pycache__")
+            if os.path.isdir(pycache_dir):
+                shutil.rmtree(pycache_dir, ignore_errors=True)
+        except (OSError, IOError) as exc:
+            problem(f"Could not patch {patch_file}: {exc}")
+
+    return result
+
+
+def revert_post_install_patches(app_dir: str, app_config: dict) -> list[str]:
+    """Temporarily restore upstream text before ``git pull``.
+
+    Only exact Hub replacements are reverted; unrelated local changes remain
+    untouched and Git can still protect them normally.
+    """
+    reverted = []
+    for patch in (app_config or {}).get("post_install_patches", []):
+        patch_file = patch.get("file", "")
+        find_text = patch.get("find", "")
+        replace_text = patch.get("replace", "")
+        target_path = os.path.join(app_dir, patch_file)
+        if not patch_file or not find_text or not replace_text or not os.path.isfile(target_path):
+            continue
+        try:
+            with open(target_path, "r", encoding="utf-8") as handle:
+                content = handle.read()
+            if replace_text not in content:
+                continue
+            with open(target_path, "w", encoding="utf-8") as handle:
+                handle.write(content.replace(replace_text, find_text, 1))
+            reverted.append(patch_file)
+        except OSError:
+            continue
+    return reverted
+
+
 def install_app(app_config: dict, apps_dir: str, cuda_env: dict,
                 backups_dir: str, cuda_config: dict = None,
                 gpu_info: dict = None, hub_dir: str = None,
@@ -741,48 +825,15 @@ def install_app(app_config: dict, apps_dir: str, cuda_env: dict,
         if logger:
             logger.info("install", "App manages its own deps on first launch.")
 
-    # Step 6: Apply post-install patches (text substitution in source files)
-    # Useful for disabling content filters, hash checks, or other modifications
-    patches = app_config.get("post_install_patches", [])
-    if patches:
-        if logger:
-            logger.info("install", f"Applying {len(patches)} post-install patch(es)...")
-        for patch in patches:
-            patch_file = patch.get("file", "")
-            find_text = patch.get("find", "")
-            replace_text = patch.get("replace", "")
-            if not patch_file or not find_text:
-                if logger:
-                    logger.warn("install", f"  Skipping invalid patch (missing file or find): {patch}")
-                continue
-            target_path = os.path.join(app_dir, patch_file)
-            if not os.path.isfile(target_path):
-                if logger:
-                    logger.warn("install", f"  Patch target not found: {patch_file}")
-                continue
-            try:
-                with open(target_path, "r", encoding="utf-8") as f:
-                    content = f.read()
-                if find_text not in content:
-                    if logger:
-                        logger.warn("install", f"  Patch text not found in {patch_file} — already patched?")
-                    continue
-                patched = content.replace(find_text, replace_text, 1)
-                with open(target_path, "w", encoding="utf-8") as f:
-                    f.write(patched)
-                if logger:
-                    logger.success("install", f"  Patched: {patch_file}")
-                # Clear pycache for the patched module so Python recompiles it
-                module_dir = os.path.dirname(target_path)
-                pycache_dir = os.path.join(module_dir, "__pycache__")
-                if os.path.isdir(pycache_dir):
-                    import shutil as _shutil
-                    _shutil.rmtree(pycache_dir, ignore_errors=True)
-                    if logger:
-                        logger.info("install", f"  Cleared __pycache__ for {os.path.basename(module_dir)}")
-            except (OSError, IOError) as e:
-                if logger:
-                    logger.warn("install", f"  Could not apply patch to {patch_file}: {e}")
+    # Step 6: Apply Hub-owned source patches.
+    patch_result = apply_post_install_patches(
+        app_dir, app_config, logger=logger, tag="install"
+    )
+    if patch_result["failed"]:
+        result["error"] = patch_result["failed"][0]
+        return result
+    if patch_result["applied"] or patch_result["already_applied"]:
+        result["steps_completed"].append("post_install_patches")
 
     if logger:
         for key, value in cuda_env.items():

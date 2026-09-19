@@ -552,6 +552,22 @@ async function openAppSettings(appId) {
       <span class="field-hint">${t("settings.port_hint", { port: data.default_port || 'N/A' })}</span>
     </div>`;
 
+    if (data.gpus && data.gpus.length) {
+      const options = data.gpus.map(g => {
+        const selected = g.uuid === data.preferred_gpu_uuid ? " selected" : "";
+        const memory = (g.vram_mb / 1024).toFixed(1);
+        return `<option value="${g.uuid}"${selected}>${g.name} · ${memory} GB · CUDA ${g.index}</option>`;
+      }).join("");
+      html += `<div class="field">
+        <label>${t("settings.gpu_label")}</label>
+        <select id="ms-preferred-gpu">
+          <option value="">${t("settings.gpu_auto")}</option>
+          ${options}
+        </select>
+        <span class="field-hint">${t("settings.gpu_hint")}</span>
+      </div>`;
+    }
+
     // Flags disponibles
     if (data.flags && data.flags.length) {
       html += `<div>
@@ -626,6 +642,7 @@ async function saveAppSettings() {
 
   const portVal = $("ms-port")?.value.trim();
   const freeArgs = $("ms-free-args")?.value.trim() || "";
+  const preferredGpuUuid = $("ms-preferred-gpu")?.value || "";
 
   try {
     const res = await fetch(`/api/apps/${appId}/config`, {
@@ -635,6 +652,7 @@ async function saveAppSettings() {
         port_override: portVal ? parseInt(portVal) : null,
         active_flags:  activeFlags,
         free_args:     freeArgs,
+        preferred_gpu_uuid: preferredGpuUuid,
       }),
     });
     const data = await res.json();

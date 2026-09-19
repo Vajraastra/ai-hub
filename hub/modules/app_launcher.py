@@ -12,6 +12,7 @@ import json
 import re
 import signal
 import shlex
+import shutil
 import sys
 
 from modules.runtime_env import build_runtime_env
@@ -81,6 +82,54 @@ def _inject_output_config(app_config: dict, app_dir: str,
         except OSError as e:
             if logger:
                 logger.error("output", f"Failed to write config.json: {e}")
+
+
+def _sanitize_config_path_lists(app_config: dict, app_dir: str, logger=None):
+    """Remove stale local paths from configured list-valued config.json keys."""
+    keys = app_config.get("config_path_lists", [])
+    config_path = os.path.join(app_dir, "config.json")
+    if not keys or not os.path.isfile(config_path):
+        return
+
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+    except (json.JSONDecodeError, OSError) as exc:
+        if logger:
+            logger.error("config", f"Could not inspect config.json paths: {exc}")
+        return
+
+    removed = []
+    for key in keys:
+        values = config.get(key)
+        if not isinstance(values, list):
+            continue
+        kept = []
+        for value in values:
+            if not isinstance(value, str):
+                kept.append(value)
+                continue
+            expanded = os.path.expandvars(os.path.expanduser(value))
+            candidate = expanded if os.path.isabs(expanded) else os.path.join(app_dir, expanded)
+            if os.path.exists(candidate):
+                kept.append(value)
+            else:
+                removed.append((key, value))
+        config[key] = kept
+
+    if not removed:
+        return
+
+    backup_path = config_path + ".aihub.bak"
+    try:
+        shutil.copy2(config_path, backup_path)
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=4)
+        if logger:
+            logger.info("config", f"Removed {len(removed)} stale model path(s) from config.json")
+    except OSError as exc:
+        if logger:
+            logger.error("config", f"Failed to sanitize config.json paths: {exc}")
 
 
 def _select_config_file(app_config: dict, app_dir: str) -> str:
@@ -285,6 +334,8 @@ def launch_app(app_config: dict, app_dir: str, cuda_env: dict,
     # Inject output directory config before launch
     if outputs_dir and os.path.isdir(outputs_dir):
         _inject_output_config(app_config, app_dir, outputs_dir, logger)
+
+    _sanitize_config_path_lists(app_config, app_dir, logger)
 
     # Add hub/tools/ to PATH so the app can find our portable uv
     tools_dir = os.environ.get("AI_HUB_TOOLS_DIR", "")
