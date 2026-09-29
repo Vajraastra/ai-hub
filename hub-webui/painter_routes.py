@@ -7,6 +7,7 @@ import uuid
 import base64
 import io
 import asyncio
+import comfy_jobs
 import datetime
 from pathlib import Path
 from typing import AsyncGenerator
@@ -54,7 +55,7 @@ _bg_tasks: set[asyncio.Task] = set()
 
 
 def _spawn(coro) -> asyncio.Task:
-    task = asyncio.create_task(coro)
+    task = comfy_jobs.spawn(coro)
     _bg_tasks.add(task)
     task.add_done_callback(_bg_tasks.discard)
     return task
@@ -136,6 +137,7 @@ async def _run_job(job_id: str, workflow: dict, params: dict):
         _active_job = None
 
 
+@comfy_jobs.exclusive("Painter")
 async def _launch(workflow: dict, params: dict, job_type: str = "image") -> str:
     global _active_job
     if _active_job:
@@ -669,6 +671,7 @@ async def _run_adetailer_job(job_id: str, req: ADetailerRequest):
 
 
 @painter_router.post("/adetailer", response_model=JobResponse)
+@comfy_jobs.exclusive("Painter")
 async def adetailer(req: ADetailerRequest):
     global _active_job
     if not (await _comfy.probe_node("FaceDetailer") and
@@ -713,6 +716,7 @@ async def job_result(job_id: str):
 
 
 @painter_router.post("/interrupt")
+@comfy_jobs.exclusive("Painter", control=True)
 async def interrupt_job():
     await _comfy.interrupt()
     return {"ok": True}

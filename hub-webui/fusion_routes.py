@@ -12,6 +12,7 @@ import os
 import json
 import uuid
 import asyncio
+import comfy_jobs
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -241,7 +242,7 @@ _job_tasks: dict[str, asyncio.Task] = {}
 
 
 def _spawn(coro, job: dict | None = None) -> asyncio.Task:
-    task = asyncio.create_task(coro)
+    task = comfy_jobs.spawn(coro)
     _bg_tasks.add(task)
     task.add_done_callback(_bg_tasks.discard)
     if job is not None:
@@ -277,6 +278,7 @@ async def _run_set_job(job: dict, vs: ValidationSet, model: str | None,
 
 
 @fusion_router.post("/sets/{name}/run")
+@comfy_jobs.exclusive("Forge Fusion")
 async def sets_run(name: str, body: SetRunBody):
     vs = _vs_or_404(name)
     if any(j["status"] == "running" for j in _jobs.values()):
@@ -307,6 +309,7 @@ async def job_get(job_id: str):
 
 
 @fusion_router.post("/jobs/{job_id}/cancel")
+@comfy_jobs.exclusive("Forge Fusion", control=True)
 async def job_cancel(job_id: str):
     """Failsafe: cancela el job en curso (interrumpe ComfyUI si el prompt
     llegó; mata el task si nunca llegó a enviarse) y libera el candado de
@@ -713,6 +716,7 @@ async def _explore_gen_job(job: dict, config: dict, config2: dict | None):
 
 
 @fusion_router.post("/explore/generate")
+@comfy_jobs.exclusive("Forge Fusion")
 async def explore_generate(body: ExploreGenerateBody):
     session = explore.get_session()
     if not session:
@@ -754,6 +758,7 @@ async def _explore_draft_job(job: dict, body: ExploreSessionBody, ckpt: dict):
 
 
 @fusion_router.post("/explore/draft")
+@comfy_jobs.exclusive("Forge Fusion")
 async def explore_draft(body: ExploreSessionBody):
     """Calibración pre-lock: genera con las entradas dadas (LoRA a dosis 1.0
     en todos los bloques) SIN sesión y SIN guardar en el historial — la
@@ -816,6 +821,7 @@ async def _explore_confirm_job(job: dict, vs: ValidationSet, session: dict,
 
 
 @fusion_router.post("/explore/confirm")
+@comfy_jobs.exclusive("Forge Fusion")
 async def explore_confirm(body: ExploreConfirmBody):
     """Doble confirmación: regenera el set completo en runtime con la config
     de bloques de una generación de la sesión. El run SÍ se guarda (es
@@ -1072,6 +1078,7 @@ async def _battery_run_job(job: dict, battery_id: str, config: dict,
 
 
 @fusion_router.post("/explore/battery")
+@comfy_jobs.exclusive("Forge Fusion")
 async def explore_battery(body: BatteryRunBody):
     """Corre la batería (config fija × N prompts) contra la sesión activa. Cada
     prompt cae al historial como trabajo de batería. Job en background con

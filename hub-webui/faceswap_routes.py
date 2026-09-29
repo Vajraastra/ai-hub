@@ -9,6 +9,7 @@ import sys
 import uuid
 import base64
 import asyncio
+import comfy_jobs
 import subprocess
 from pathlib import Path
 
@@ -197,7 +198,7 @@ _bg_tasks: set[asyncio.Task] = set()
 
 
 def _spawn(coro) -> asyncio.Task:
-    task = asyncio.create_task(coro)
+    task = comfy_jobs.spawn(coro)
     _bg_tasks.add(task)
     task.add_done_callback(_bg_tasks.discard)
     return task
@@ -227,6 +228,7 @@ async def _run_job(job: dict, params: SwapParams, scene: bytes, donors: list[byt
 
 
 @faceswap_router.post("/run")
+@comfy_jobs.exclusive("Face Swap")
 async def run(body: RunBody):
     if any(j["status"] == "running" for j in _jobs.values()):
         raise HTTPException(409, "ya hay un swap en curso")
@@ -281,6 +283,7 @@ async def job_get(job_id: str):
 
 
 @faceswap_router.post("/interrupt")
+@comfy_jobs.exclusive("Face Swap", control=True)
 async def interrupt():
     await _comfy.interrupt()
     return {"ok": True}

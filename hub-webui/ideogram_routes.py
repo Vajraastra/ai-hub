@@ -10,6 +10,7 @@ import sys
 import json
 import uuid
 import asyncio
+import comfy_jobs
 import subprocess
 from pathlib import Path
 
@@ -164,6 +165,7 @@ async def lora_preview(file: str):
 
 
 @ideogram_router.post("/unload")
+@comfy_jobs.exclusive("Ideogram")
 async def unload_llm():
     """Descarga manual del LLM de la VRAM (botón de la UI)."""
     try:
@@ -185,6 +187,7 @@ class CaptionBody(BaseModel):
 
 
 @ideogram_router.post("/caption")
+@comfy_jobs.exclusive("Ideogram")
 async def make_caption(body: CaptionBody):
     if not body.description.strip():
         raise HTTPException(400, "descripción vacía")
@@ -231,6 +234,7 @@ class RefineBody(BaseModel):
 
 
 @ideogram_router.post("/refine")
+@comfy_jobs.exclusive("Ideogram")
 async def refine_caption(body: RefineBody):
     """MODO MANUAL: el usuario arma las cajas a mano y el LLM completa el resto
     (estilo/fondo/paletas/resumen) SIN tocar su composición."""
@@ -263,6 +267,7 @@ class TranslateBody(BaseModel):
 
 
 @ideogram_router.post("/translate")
+@comfy_jobs.exclusive("Ideogram")
 async def translate_caption(body: TranslateBody):
     """MODO MANUAL: traduce a inglés y corrige el texto del borrador (desc de cada
     caja, estilo, fondo, resumen y rótulos) SIN tocar la composición ni inflar. El
@@ -296,6 +301,7 @@ class AutopromptBody(BaseModel):
 
 
 @ideogram_router.post("/autoprompt")
+@comfy_jobs.exclusive("Ideogram")
 async def autoprompt(body: AutopromptBody):
     """Imagen de referencia → caption JSON+bboxes con un VLM. El modelo VE la
     imagen y descompone la escena; el usuario retoca las cajas sobre el canvas
@@ -391,7 +397,7 @@ _bg_tasks: set[asyncio.Task] = set()
 
 
 def _spawn(coro) -> asyncio.Task:
-    task = asyncio.create_task(coro)
+    task = comfy_jobs.spawn(coro)
     _bg_tasks.add(task)
     task.add_done_callback(_bg_tasks.discard)
     return task
@@ -418,6 +424,7 @@ async def _run_job(job: dict, params: GenParams):
 
 
 @ideogram_router.post("/generate")
+@comfy_jobs.exclusive("Ideogram")
 async def generate(body: GenerateBody):
     if any(j["status"] == "running" for j in _jobs.values()):
         raise HTTPException(409, "ya hay una generación en curso")

@@ -12,6 +12,7 @@ import sys
 import json
 import uuid
 import asyncio
+import comfy_jobs
 import threading
 import subprocess
 from pathlib import Path
@@ -245,7 +246,7 @@ _bg_tasks: set[asyncio.Task] = set()
 
 
 def _spawn(coro) -> asyncio.Task:
-    task = asyncio.create_task(coro)
+    task = comfy_jobs.spawn(coro)
     _bg_tasks.add(task)
     task.add_done_callback(_bg_tasks.discard)
     return task
@@ -315,6 +316,7 @@ async def _run_job(job: dict, params: GenParams):
 
 
 @minimax_h3_router.post("/generate")
+@comfy_jobs.exclusive("MiniMax H3")
 async def generate(body: GenerateBody):
     global _active_job
     if _active_job:
@@ -463,6 +465,7 @@ async def _run_chain_job(job: dict, chain_id: str, segment_id: str):
 
 
 @minimax_h3_router.post("/chains/{chain_id}/segments/{segment_id}/generate")
+@comfy_jobs.exclusive("MiniMax H3")
 async def segment_generate(chain_id: str, segment_id: str, body: SegmentGenerateBody):
     global _active_job
     if _active_job:
@@ -677,6 +680,7 @@ async def prompt_models():
 
 
 @minimax_h3_router.post("/prompt/unload-llm")
+@comfy_jobs.exclusive("MiniMax H3")
 async def prompt_unload_llm():
     """Descarga manual del LLM de la VRAM (botón de la UI)."""
     try:
@@ -686,6 +690,7 @@ async def prompt_unload_llm():
 
 
 @minimax_h3_router.post("/prompt/enrich")
+@comfy_jobs.exclusive("MiniMax H3")
 async def prompt_enrich(body: PromptBody):
     """Idea suelta -> prompt H3 completo y validado."""
     _prompt_guard()
@@ -721,6 +726,7 @@ async def prompt_enrich(body: PromptBody):
 
 
 @minimax_h3_router.post("/prompt/rewrite")
+@comfy_jobs.exclusive("MiniMax H3")
 async def prompt_rewrite(body: PromptRewriteBody):
     """Reescribe UNA caja con la indicación del usuario, sin tocar las demás."""
     _prompt_guard()

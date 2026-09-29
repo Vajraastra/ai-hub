@@ -42,6 +42,15 @@ lock de job activo. Las trampas conocidas de su cliente (cache hit, nombres de L
 dinámicos, timeouts) están en `BITACORA.md` sección ComfyUI — leerla antes de escribir un cliente
 nuevo, no después.
 
+- Reservar con `comfy_jobs.exclusive(nombre)` antes del primer await que inicia trabajo y crear
+  sus tareas con `comfy_jobs.spawn`; devolver el job HTTP no libera el turno del worker.
+- Interrupciones usan `exclusive(nombre, control=True)`; solo el dueño puede interrumpir.
+  Las llamadas al LLM que comparten VRAM también reservan. Lecturas y merges CPU no reservan.
+- El coordinador es local al proceso/event loop único del Hub: no coordina otros clientes de
+  ComfyUI ni múltiples workers. Terminar una tarea Python no acredita que un backend desconectado
+  haya dejado de ejecutar su prompt. No presentar este lock como garantía contra OOM.
+- Regresión sin GPU: `hub-webui/.venv/Scripts/python.exe hub-webui/tests/test_comfy_jobs.py -v`.
+
 ## Qué se versiona
 
 - `apps/*` está gitignored salvo los módulos propios (lista explícita en `.gitignore`).
