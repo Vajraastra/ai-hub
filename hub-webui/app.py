@@ -50,6 +50,7 @@ from ideogram_routes import ideogram_router
 from faceswap_routes import faceswap_router
 from minimax_h3_routes import minimax_h3_router
 from anima_studio_routes import anima_studio_router
+from anima_studio_routes import _sessions as _anima_sessions, _tasks as _anima_tasks
 
 # ── WebSocket clients ───────────────────────────────────────────────────────
 _ws_clients: list[WebSocket] = []
@@ -154,6 +155,16 @@ api.include_router(ideogram_router)
 api.include_router(faceswap_router)
 api.include_router(minimax_h3_router)
 api.include_router(anima_studio_router)
+
+
+@api.on_event("shutdown")
+async def close_managed_backends():
+    for task in list(_anima_tasks):
+        task.cancel()
+    if _anima_tasks:
+        await asyncio.gather(*_anima_tasks, return_exceptions=True)
+    await _anima_sessions.shutdown()
+    await asyncio.to_thread(bridge.stop_all_running)
 
 
 # ── Models Pydantic ──────────────────────────────────────────────────────────
@@ -361,7 +372,7 @@ async def stop_all():
             global _pending_stop
             with _pending_stop_lock:
                 _pending_stop = None
-            bridge.stop_all_running()
+            bridge.stop_all_running(preserve_backends=True)
 
         _pending_stop = threading.Timer(_STOP_GRACE_SECS, _fire)
         _pending_stop.daemon = True

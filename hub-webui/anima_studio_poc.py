@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 import uvicorn
 
-from anima_studio_routes import anima_studio_router, _tasks
+from anima_studio_routes import anima_studio_router, _tasks, _sessions
 
 ROOT = Path(__file__).resolve().parent
 
@@ -33,6 +33,9 @@ async def lifespan(app):
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        await _sessions.shutdown()
+        if _sessions._bridge is not None:
+            await asyncio.to_thread(_sessions._bridge.stop_all_running)
 
 
 api = FastAPI(title="Anima Studio · PoC", lifespan=lifespan)

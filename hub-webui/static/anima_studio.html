@@ -12,7 +12,7 @@
     <a class="hub-link" href="/">← AI Hub</a>
     <div class="brand"><span class="brand-mark">A</span><div><h1>Taller Anima <span class="badge">PoC</span></h1><p>Del estilo a los recursos de tu juego</p></div></div>
     <div class="project-bar"><label class="sr-only" for="project-select">Proyecto activo</label><select id="project-select"></select><button id="edit-project" class="subtle" title="Configurar proyecto">Configurar</button><button id="new-project" class="secondary">+ Proyecto</button></div>
-    <span id="backend-status" class="status-pill">Conectando…</span>
+    <span id="backend-status" class="status-pill">Iniciando ComfyUI…</span>
   </header>
   <nav class="tabs" aria-label="Etapas del taller">
     <button class="tab active" data-tab="styles" aria-selected="true"><span>01</span> Estilos</button>
@@ -20,6 +20,7 @@
     <button class="tab" data-tab="library" aria-selected="false"><span>03</span> Biblioteca y revisión</button>
     <button id="refresh" class="subtle nav-refresh">Actualizar</button>
   </nav>
+  <section id="backend-session" class="session-panel" role="status" aria-live="polite"><div><strong id="backend-session-title">Iniciando ComfyUI…</strong><p id="backend-session-message">El taller prepara el backend automáticamente. Puedes organizar tus estilos y piezas mientras inicia.</p></div><button id="retry-backend" class="secondary hidden">Reintentar</button></section>
   <div id="notice" class="notice hidden" role="status" aria-live="polite"></div>
   <div id="job-status" class="job hidden" role="status" aria-live="polite"><div><strong id="job-title">Generando</strong><span id="job-phase"></span><button id="interrupt-job" class="subtle">Cancelar generación</button></div><progress id="job-progress" max="100" value="0"></progress></div>
   <main>
@@ -38,7 +39,7 @@
           <label>Prompt de estilo<textarea id="style-prompt" rows="3" placeholder="Acabado, líneas, luz, materiales y tratamiento del color…"></textarea></label>
           <label>Negativo del estilo<textarea id="style-negative" rows="2" placeholder="Rasgos visuales que quieres evitar…"></textarea></label>
           <label>Escena de prueba<textarea id="test-prompt" rows="3" placeholder="Describe un sujeto o escenario para comparar. Esta descripción no se guardará dentro del estilo."></textarea></label>
-          <button id="generate-test" class="primary wide generate-action">Generar prueba</button>
+          <button id="generate-test" class="primary wide generate-action" disabled>Generar prueba</button>
           <div class="save-box"><label>Nombre del estilo<input id="style-name" type="text" placeholder="Ej. Personajes pintados"></label><label class="check"><input id="style-shared" type="checkbox"> Disponible en otros proyectos</label><div class="button-row"><button id="save-style" class="secondary grow">Guardar estilo</button><button id="duplicate-style" class="subtle" title="Crear una copia con otro nombre">Guardar copia</button></div><p class="hint">Se guardan los ajustes y las muestras seleccionadas. Cada revisión conserva su configuración.</p></div>
         </div>
         <div class="panel comparison-panel"><div class="section-title"><div><h3>Estilos del proyecto</h3><p class="hint">Cada estilo conserva su modelo, LoRAs y ajustes. Selecciona uno para continuar calibrándolo.</p></div></div><div id="style-shelf" class="style-shelf"></div><div class="section-title"><div><h3>Muestras de calibración</h3><p class="hint">Marca las imágenes que representen el estilo. Puedes abrirlas para comparar a tamaño completo.</p></div></div><div id="cal-gallery" class="gallery comparison"></div></div>
@@ -63,7 +64,7 @@
             <div class="mask-toolbar"><label>Pincel <input id="brush-size" type="range" min="5" max="180" value="45"></label><label class="check"><input id="mask-erase" type="checkbox"> Borrar</label><button id="clear-mask" class="subtle">Limpiar</button></div>
             <div id="mask-stage" class="mask-stage"><canvas id="master-canvas" width="512" height="512"></canvas><canvas id="mask-canvas" width="512" height="512" aria-label="Máscara facial. Arrastra para pintar la región editable."></canvas><span id="mask-placeholder">Carga un maestro para pintar la máscara</span></div><p id="mask-info" class="hint">La máscara se guarda con la generación.</p>
           </div>
-          <div class="button-row"><button id="preview-prompt" class="subtle grow">Ver prompt ensamblado</button><button id="generate-production" class="primary grow generate-action">Generar recurso</button></div><p id="capability-note" class="hint"></p>
+          <div class="button-row"><button id="preview-prompt" class="subtle grow">Ver prompt ensamblado</button><button id="generate-production" class="primary grow generate-action" disabled>Generar recurso</button></div><p id="capability-note" class="hint"></p>
           <details id="assembled-preview" class="advanced"><summary>Prompt final y configuración</summary><pre id="composed-output">Aquí aparecerá la combinación resuelta.</pre></details>
         </div>
         <div class="panel"><div class="section-title"><div><h3>Resultados de producción</h3><p class="hint">Acepta una imagen para organizarla. Usa «Como maestro» para derivar expresiones.</p></div></div><div id="production-gallery" class="gallery"></div></div>

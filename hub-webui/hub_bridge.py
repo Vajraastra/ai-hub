@@ -106,10 +106,13 @@ class HubBridge:
         # sin UI y adueñarse de su ciclo de vida: al soltar la página, el
         # backend se cierra — pero solo si NOSOTROS lo arrancamos, nunca una
         # instancia que el usuario tenía abierta a mano desde el dashboard.
-        self._backend_owners: dict[str, str] = {}      # app_id -> owner
+        self._backend_owners: dict[str, set[str]] = {}  # app_id -> active pages
         self._backend_autostarted: set[str] = set()    # apps que arrancamos
+        self._backend_launching: set[str] = set()
+        self._backend_manual_open: set[str] = set()
+        self._backend_idle_guards: dict[str, object] = {}
         self._backend_release_timers: dict[str, threading.Timer] = {}
-        self._backend_lock = threading.Lock()
+        self._backend_lock = threading.RLock()
         self._run_startup_sync()
 
     # ── Startup sync ────────────────────────────────────────────────────
@@ -562,18 +565,42 @@ class HubBridge:
     # ── Acciones de apps ────────────────────────────────────────────────
 
     def launch(self, app_id: str, open_browser: bool = True) -> bool:
-        if app_id in self._state.busy_apps:
-            return False
-        app_cfg = self._state.registry_apps.get(app_id)
-        if not app_cfg:
-            return False
-        app_dir = self._state.installed_apps.get(app_id, {}).get("dir")
-        if not app_dir or not os.path.isdir(app_dir):
-            self._emit_log(app_id, f"❌ Directorio no encontrado: {app_dir}")
-            return False
-        self._state.set_busy(app_id, "launching")
+        with self._backend_lock:
+            # A dashboard launch adopts a backend already started by a page.
+            # Its later page release must not stop the user's manual instance.
+            if open_browser and app_id in self._backend_autostarted:
+                self._backend_autostarted.discard(app_id)
+                self._cancel_backend_release(app_id)
+                self._backend_manual_open.add(app_id)
+                proc = self._state.running_apps.get(app_id)
+                if proc is not None and proc.poll() is None:
+                    self._backend_manual_open.discard(app_id)
+                    port = self._effective_port(app_id)
+                    if port:
+                        threading.Thread(target=self._open_browser_when_ready,
+                                         args=(app_id, int(port), proc), daemon=True).start()
+                    return True
+                if app_id in self._backend_launching:
+                    return True
+            if app_id in self._state.busy_apps:
+                return False
+            app_cfg = self._state.registry_apps.get(app_id)
+            if not app_cfg:
+                return False
+            app_dir = self._state.installed_apps.get(app_id, {}).get("dir")
+            if not app_dir or not os.path.isdir(app_dir):
+                self._emit_log(app_id, f"❌ Directorio no encontrado: {app_dir}")
+                return False
+            self._state.set_busy(app_id, "launching")
         self._emit_state(app_id)
-        threading.Thread(target=self._launch_thread, args=(app_id, open_browser), daemon=True).start()
+        try:
+            threading.Thread(target=self._launch_thread, args=(app_id, open_browser), daemon=True).start()
+        except Exception as exc:
+            self._state.clear_busy(app_id)
+            self._backend_launch_failed(app_id)
+            self._emit_log(app_id, f"No se pudo iniciar {app_id}: {exc}")
+            self._emit_state(app_id)
+            return False
         return True
 
     def stop(self, app_id: str) -> bool:
@@ -602,14 +629,23 @@ class HubBridge:
         módulo — no la re-arranca ni la marca como auto-arrancada; solo registra
         al propietario. Cancela cualquier cierre pendiente (p. ej. tras un F5)."""
         with self._backend_lock:
+            if self._state.busy_apps.get(app_id) == "stopping":
+                return False
             self._cancel_backend_release(app_id)
-            self._backend_owners[app_id] = owner
-            already = (app_id in self._state.running_apps
+            self._backend_owners.setdefault(app_id, set()).add(owner)
+            proc = self._state.running_apps.get(app_id)
+            already = ((proc is not None and proc.poll() is None)
+                       or app_id in self._backend_launching
+                       or self._state.busy_apps.get(app_id) == "launching"
                        or self.is_backend_up(app_id))
             if already:
                 return True
             self._backend_autostarted.add(app_id)
-        return self.launch(app_id, open_browser=False)
+            self._backend_launching.add(app_id)
+            if self.launch(app_id, open_browser=False):
+                return True
+            self._backend_launch_failed(app_id)
+            return False
 
     def stop_backend(self, app_id: str, owner: str = None) -> bool:
         """Cierre explícito del backend (botón del usuario). Olvida el lease.
@@ -630,30 +666,83 @@ class HubBridge:
     def release_backend(self, app_id: str, owner: str,
                         grace: float = 8.0) -> bool:
         """La página 'owner' se soltó (cierre o recarga). Programa el cierre
-        del backend con periodo de gracia: SOLO si nosotros lo auto-arrancamos
-        para ese owner. La gracia evita matar+reiniciar en cada F5 — si la
+        del backend con periodo de gracia cuando sale el último propietario,
+        SOLO si nosotros lo auto-arrancamos. La gracia evita matar+reiniciar en cada F5 — si la
         página recarga, su launch_backend cancela el cierre pendiente."""
         with self._backend_lock:
-            if self._backend_owners.get(app_id) != owner:
+            owners = self._backend_owners.get(app_id)
+            if not owners or owner not in owners:
                 return False
+            owners.remove(owner)
+            if owners:
+                return True
+            self._backend_owners.pop(app_id, None)
             if app_id not in self._backend_autostarted:
-                return False
-            self._cancel_backend_release(app_id)
+                return True
+            self._schedule_backend_release(app_id, grace)
+        return True
 
-            def _fire():
-                with self._backend_lock:
-                    self._backend_release_timers.pop(app_id, None)
-                    if app_id not in self._backend_autostarted:
-                        return
-                    self._backend_autostarted.discard(app_id)
-                    self._backend_owners.pop(app_id, None)
+    def set_backend_idle_guard(self, app_id: str, callback):
+        """Only release when the backend's queue/job state is known to be idle."""
+        with self._backend_lock:
+            if callback is None:
+                self._backend_idle_guards.pop(app_id, None)
+            else:
+                self._backend_idle_guards[app_id] = callback
+
+    def _schedule_backend_release(self, app_id: str, grace: float):
+        self._cancel_backend_release(app_id)
+
+        def _fire():
+            with self._backend_lock:
+                if self._backend_release_timers.get(app_id) is not timer:
+                    return
+                self._backend_release_timers.pop(app_id, None)
+                if (app_id not in self._backend_autostarted
+                        or self._backend_owners.get(app_id)
+                        or app_id in self._backend_launching):
+                    return
+                guard = self._backend_idle_guards.get(app_id)
+            try:
+                idle = guard is None or bool(guard())
+            except Exception:
+                idle = False
+            with self._backend_lock:
+                # Acquisition/manual adoption can happen during the queue check.
+                if (app_id not in self._backend_autostarted
+                        or self._backend_owners.get(app_id)
+                        or app_id in self._backend_launching):
+                    return
+                if not idle:
+                    self._schedule_backend_release(app_id, 2.0)
+                    return
+                self._backend_autostarted.discard(app_id)
                 self.stop(app_id)
 
-            t = threading.Timer(grace, _fire)
-            t.daemon = True
-            self._backend_release_timers[app_id] = t
-            t.start()
-        return True
+        timer = threading.Timer(max(0.0, grace), _fire)
+        timer.daemon = True
+        self._backend_release_timers[app_id] = timer
+        timer.start()
+
+    def _backend_launch_failed(self, app_id: str):
+        with self._backend_lock:
+            self._backend_launching.discard(app_id)
+            self._backend_autostarted.discard(app_id)
+            self._backend_manual_open.discard(app_id)
+            self._backend_owners.pop(app_id, None)
+            self._cancel_backend_release(app_id)
+
+    def _backend_process_started(self, app_id: str) -> bool:
+        """Finish startup and honor a last release whose grace already elapsed."""
+        with self._backend_lock:
+            self._backend_launching.discard(app_id)
+            manual_open = app_id in self._backend_manual_open
+            self._backend_manual_open.discard(app_id)
+            if (app_id in self._backend_autostarted
+                    and not self._backend_owners.get(app_id)
+                    and app_id not in self._backend_release_timers):
+                self._schedule_backend_release(app_id, 0.0)
+            return manual_open
 
     def _cancel_backend_release(self, app_id: str):
         """Cancela un cierre de backend pendiente. Asume _backend_lock tomado."""
@@ -682,6 +771,7 @@ class HubBridge:
     # ── Threads de fondo ────────────────────────────────────────────────
 
     def _launch_thread(self, app_id: str, open_browser: bool = True):
+        process_started = False
         try:
             from modules.cuda_guardian import build_env_overrides
             from modules.storage_manager import build_app_model_args
@@ -739,6 +829,16 @@ class HubBridge:
             effective_port = port_override or app_cfg.get("default_port")
 
             if effective_port and _is_port_in_use(int(effective_port)):
+                if not open_browser:
+                    # Another process may have won the port after acquisition.
+                    # An automatic startup must never kill/adopt that process.
+                    with self._backend_lock:
+                        self._backend_autostarted.discard(app_id)
+                        self._backend_launching.discard(app_id)
+                    self._state.clear_busy(app_id)
+                    self._emit_log(app_id, f"Backend disponible en {effective_port}; se reutiliza sin cerrarlo al salir.")
+                    self._emit_state(app_id)
+                    return
                 self._emit_log(app_id, f"⚠ Puerto {effective_port} ocupado — liberando...")
                 killed = _kill_processes_on_port(int(effective_port))
                 if killed:
@@ -749,7 +849,8 @@ class HubBridge:
             proc = launch_app(
                 app_cfg, app_dir, cuda_env,
                 model_args, extra_args + user_args,
-                outputs_dir, logger=None, async_mode=True, capture_output=True
+                outputs_dir, logger=None, async_mode=True, capture_output=True,
+                headless=not open_browser
             )
 
             if not isinstance(proc, subprocess.Popen):
@@ -757,13 +858,16 @@ class HubBridge:
                 self._emit_state(app_id)
                 return
 
-            self._state.clear_busy(app_id)
             self._state.set_running(app_id, proc)
+            process_started = True
+            manual_open = self._backend_process_started(app_id)
+            if self._state.busy_apps.get(app_id) != "stopping":
+                self._state.clear_busy(app_id)
             self._state.log_event("LAUNCH", app_id, f"PID {proc.pid}")
             self._emit_state(app_id)
             self._emit_log(app_id, f"=== {app_cfg.get('name', app_id)} iniciada (PID {proc.pid}) ===")
 
-            if open_browser and app_cfg.get("auto_open_browser") and effective_port:
+            if (open_browser or manual_open) and app_cfg.get("auto_open_browser") and effective_port:
                 threading.Thread(
                     target=self._open_browser_when_ready,
                     args=(app_id, int(effective_port), proc),
@@ -798,6 +902,9 @@ class HubBridge:
             self._state.clear_running(app_id)
             self._state.clear_busy(app_id)
             self._emit_state(app_id)
+        finally:
+            if not process_started:
+                self._backend_launch_failed(app_id)
 
     def _stop_thread(self, app_id: str, proc: subprocess.Popen):
         try:
@@ -977,25 +1084,46 @@ class HubBridge:
                 return
             time.sleep(0.5)
 
-    def stop_all_running(self, wait_secs: float = 4.0):
+    def stop_all_running(self, wait_secs: float = 4.0, preserve_backends: bool = False):
         """Detiene todas las apps corriendo. Llamado al cerrar el hub."""
         with self._state._lock:
             procs = dict(self._state.running_apps)
+
+        if preserve_backends:
+            with self._backend_lock:
+                protected = {app_id for app_id, owners in self._backend_owners.items() if owners}
+                guards = dict(self._backend_idle_guards)
+            for app_id in procs:
+                if app_id in protected or app_id not in guards:
+                    continue
+                try:
+                    if not guards[app_id]():
+                        protected.add(app_id)
+                except Exception:
+                    protected.add(app_id)
+            procs = {app_id: proc for app_id, proc in procs.items() if app_id not in protected}
 
         if not procs:
             return
 
         print(f"\n  [hub] Deteniendo {len(procs)} app(s) en ejecución...")
+        stopping = {}
         for app_id, proc in procs.items():
             if proc.poll() is not None:
                 continue
             name = self._state.registry_apps.get(app_id, {}).get("name", app_id)
-            _interrupt_tree(proc)
+            with self._backend_lock:
+                # A page can acquire while the idle guard is checking the queue.
+                if preserve_backends and self._backend_owners.get(app_id):
+                    continue
+                self._state.set_busy(app_id, "stopping")
+                stopping[app_id] = proc
+                _interrupt_tree(proc)
             print(f"  [hub] {name} — interrupción enviada")
 
         # Esperar que terminen, luego matar a la fuerza a los que queden
         deadline = time.monotonic() + wait_secs
-        remaining = dict(procs)
+        remaining = dict(stopping)
         while remaining and time.monotonic() < deadline:
             time.sleep(0.3)
             remaining = {aid: p for aid, p in remaining.items() if p.poll() is None}
@@ -1004,6 +1132,9 @@ class HubBridge:
             name = self._state.registry_apps.get(app_id, {}).get("name", app_id)
             _kill_tree(proc)
             print(f"  [hub] {name} — árbol terminado (no respondió a la interrupción)")
+
+        for app_id in stopping:
+            self._state.clear_busy(app_id)
 
         print("  [hub] Apps detenidas.")
 

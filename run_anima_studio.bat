@@ -31,7 +31,7 @@ echo Configura la carpeta de modelos desde el Hub o define AI_HUB_CONFIG con su 
 goto error
 :config_ready
 echo [5/5] Taller Anima: http://127.0.0.1:9754
-echo Inicia ComfyUI desde el Hub para generar. Cierra esta ventana con Ctrl+C al terminar.
+echo ComfyUI se prepara automaticamente al abrir el taller. Cierra esta ventana con Ctrl+C al terminar.
 set "STUDIO_BROWSER=--open-browser"
 if /i "%~1"=="--no-browser" set "STUDIO_BROWSER="
 "hub-webui\.venv\Scripts\python.exe" "hub-webui\anima_studio_poc.py" --port 9754 %STUDIO_BROWSER%

@@ -300,7 +300,8 @@ def _serialize_commandline_args(args: list) -> str:
 
 def launch_app(app_config: dict, app_dir: str, cuda_env: dict,
                model_args: list = None, extra_args: list = None,
-               outputs_dir: str = None, logger=None, async_mode: bool = False, capture_output: bool = False):
+               outputs_dir: str = None, logger=None, async_mode: bool = False,
+               capture_output: bool = False, headless: bool = False):
     """
     Launch an AI app with CUDA enforcement, model paths, and output config.
     
@@ -312,6 +313,7 @@ def launch_app(app_config: dict, app_dir: str, cuda_env: dict,
         extra_args: Additional CLI args from user config
         outputs_dir: Path to centralized output directory
         logger: HubLogger instance
+        headless: Hide the child console on Windows (backend use).
     
     Returns:
         Process return code if async_mode is False, otherwise the Popen object
@@ -422,6 +424,9 @@ def launch_app(app_config: dict, app_dir: str, cuda_env: dict,
             kwargs["stdin"] = sys.stdin
             kwargs["stdout"] = sys.stdout
             kwargs["stderr"] = sys.stderr
+
+        if headless and os.name == "nt":
+            kwargs["creationflags"] = kwargs.get("creationflags", 0) | subprocess.CREATE_NO_WINDOW
 
         proc = subprocess.Popen(cmd, **kwargs)
 

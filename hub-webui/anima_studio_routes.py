@@ -12,11 +12,12 @@ import uuid
 from dataclasses import asdict, fields
 from pathlib import Path
 
-from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi import APIRouter, Body, HTTPException, Query, WebSocket
 from fastapi.responses import FileResponse, JSONResponse
 from PIL import Image
 
 import comfy_jobs
+from backend_sessions import BackendSessions
 
 _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT / "apps"))
@@ -28,6 +29,14 @@ from anima_studio.core import pipeline
 anima_studio_router = APIRouter(prefix="/api/anima-studio", tags=["anima-studio"])
 _library = Library(Path(os.environ.get("ANIMA_STUDIO_DATA", _ROOT / "apps/anima_studio/data")))
 _comfy = ComfyClient()
+
+
+def _backend_bridge():
+    from hub_bridge import bridge
+    return bridge
+
+
+_sessions = BackendSessions(_comfy, _backend_bridge)
 _jobs: dict[str, dict] = {}
 _tasks: set[asyncio.Task] = set()
 _active_masters: set[str] = set()
@@ -97,6 +106,26 @@ async def status():
             "expressions": "inpaint facial + composición exacta",
             "limitations": ["Referencias IP-Adapter y control de pose 3D aún no integrados.",
                             "Txt2img produce RGB; pedir alfa en un perfil no elimina el fondo."]}
+
+
+@anima_studio_router.post("/session/open")
+async def session_open(payload: dict = Body(...)):
+    return await _sessions.open(payload.get("session_id"))
+
+
+@anima_studio_router.post("/session/heartbeat")
+async def session_heartbeat(payload: dict = Body(...)):
+    return await _sessions.heartbeat(payload.get("session_id"))
+
+
+@anima_studio_router.post("/session/close")
+async def session_close(payload: dict = Body(...)):
+    return await _sessions.close(payload.get("session_id"))
+
+
+@anima_studio_router.websocket("/session/socket/{session_id}")
+async def session_socket(websocket: WebSocket, session_id: str):
+    await _sessions.socket(websocket, session_id)
 
 
 @anima_studio_router.get("/sampling-options")
@@ -380,6 +409,7 @@ def _image(value: str) -> bytes:
 
 @anima_studio_router.post("/generate")
 @comfy_jobs.exclusive("Anima Studio")
+@_sessions.job
 async def generate(payload: dict = Body(...)):
     assembled = await compose(payload)
     if not assembled["prompt"].strip():
@@ -414,7 +444,7 @@ async def generate(payload: dict = Body(...)):
     if category not in category_ids:
         raise HTTPException(400, "La categoría no pertenece al proyecto.")
     if not await _comfy.health_check():
-        raise HTTPException(503, "ComfyUI está apagado. Inícialo desde el Hub.")
+        raise HTTPException(503, "ComfyUI aún no está disponible. Espera al inicio o reintenta desde el taller.")
     master = mask = None
     master_record = None
     if params.mode == "expression":
@@ -485,6 +515,7 @@ async def generate(payload: dict = Body(...)):
             _active_masters.discard(master_record["id"])
         raise
     _tasks.add(task)
+    _sessions.track_worker(task)
     task.add_done_callback(_tasks.discard)
     if master_record:
         task.add_done_callback(lambda _: _active_masters.discard(master_record["id"]))

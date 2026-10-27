@@ -10,6 +10,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import wraps
 from inspect import signature
+import threading
 
 from fastapi import HTTPException
 
@@ -22,13 +23,39 @@ class _Lease:
 
 _active: _Lease | None = None
 _context: ContextVar[_Lease | None] = ContextVar("comfy_job", default=None)
+_state_lock = threading.RLock()
 
 
 def _release(lease: _Lease):
     global _active
-    lease.users -= 1
-    if lease.users == 0 and _active is lease:
-        _active = None
+    with _state_lock:
+        lease.users -= 1
+        if lease.users == 0 and _active is lease:
+            _active = None
+
+
+def reserve_backend_shutdown(owner: str = "ComfyUI se está cerrando"):
+    """Atomically block new Hub jobs while a timer thread stops the backend.
+
+    Return an idempotent release callback, or None if a job/control already
+    owns admission. The callback may run from any thread. No ContextVar is
+    installed: a shutdown reservation cannot spawn GPU work.
+    """
+    global _active
+    with _state_lock:
+        if _active is not None:
+            return None
+        lease = _active = _Lease(owner)
+    released = False
+
+    def release():
+        nonlocal released
+        with _state_lock:
+            if not released:
+                released = True
+                _release(lease)
+
+    return release
 
 
 def _busy():
@@ -45,17 +72,18 @@ def exclusive(owner: str, *, control: bool = False):
         @wraps(func)
         async def wrapped(*args, **kwargs):
             global _active
-            if control:
-                if _active is None:
-                    raise HTTPException(409, "No hay un trabajo de este módulo que interrumpir.")
-                if _active.owner != owner:
-                    raise _busy()
-                lease = _active
-                lease.users += 1
-            else:
-                if _active is not None:
-                    raise _busy()
-                lease = _active = _Lease(owner)
+            with _state_lock:
+                if control:
+                    if _active is None:
+                        raise HTTPException(409, "No hay un trabajo de este módulo que interrumpir.")
+                    if _active.owner != owner:
+                        raise _busy()
+                    lease = _active
+                    lease.users += 1
+                else:
+                    if _active is not None:
+                        raise _busy()
+                    lease = _active = _Lease(owner)
             token = _context.set(lease)
             try:
                 return await func(*args, **kwargs)
@@ -78,10 +106,13 @@ def spawn(coro) -> asyncio.Task:
     """
     lease = _context.get()
     if lease is not None:
-        if _active is not lease:
+        with _state_lock:
+            expired = _active is not lease
+            if not expired:
+                lease.users += 1
+        if expired:
             coro.close()
             raise RuntimeError("Expired ComfyUI reservation")
-        lease.users += 1
     try:
         task = asyncio.create_task(coro)
     except BaseException:

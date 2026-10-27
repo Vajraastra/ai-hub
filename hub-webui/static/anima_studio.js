@@ -6,6 +6,7 @@
   const KINDS = {character:'Personaje', personality:'Personalidad', outfit:'Outfit', pose:'Pose', expression:'Expresión', scene:'Escenario'};
   const STATES = {pending:'Pendiente', accepted:'Aceptado', rejected:'Rechazado'};
   const state = {projects:[], styles:[], pieces:[], recipes:[], generations:[], catalog:{models:[],loras:[],text_encoders:[],vaes:[]}, projectId:'', sampleIds:new Set(), purgeIds:new Set(), activeJob:null, masterId:null, masterBase64:null, masterReady:false, masterToken:0, currentStyle:null, recipeStyleRevision:null, recipePieceRevisions:{}, recipeFormatSnapshot:null};
+  const session={id:null,active:false,status:'starting',error:'',timer:null,inFlight:null,controller:null,socket:null,epoch:0,generationPending:false};
   let favorites;
   try { favorites = new Set(JSON.parse(localStorage.getItem('anima-studio-favorites') || '[]')); } catch { favorites = new Set(); }
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -17,8 +18,8 @@
   const optionValue = item => typeof item === 'string' ? item : (item.file ?? item.id ?? item.name);
   const optionName = item => typeof item === 'string' ? item : (item.name ?? item.label ?? item.file ?? item.id);
 
-  async function api(path, method='GET', body) {
-    const response = await fetch(API + path, {method, headers: body === undefined ? {} : {'Content-Type':'application/json'}, ...(body === undefined ? {} : {body:JSON.stringify(body)})});
+  async function api(path, method='GET', body, options={}) {
+    const response = await fetch(API + path, {method, headers: body === undefined ? {} : {'Content-Type':'application/json'}, ...(body === undefined ? {} : {body:JSON.stringify(body)}),...options});
     const text = await response.text();
     let data;
     try { data = text ? JSON.parse(text) : null; } catch { data = text; }
@@ -169,11 +170,112 @@
     if(data.catalog_error)notice(data.catalog_error,true);
   }
   function updateStatus(status) {
-    const up=!!status.comfyui;
-    $('backend-status').className=`status-pill ${up?'up':'down'}`;
-    $('backend-status').textContent=up?'ComfyUI disponible':'ComfyUI sin conexión';
-    $('backend-status').title=status.message || 'Las bibliotecas pueden editarse aunque ComfyUI esté apagado.';
     $('capability-note').textContent=(status.limitations||[]).join(' ');
+    updateSessionView();
+  }
+  function sessionReady() {return session.active&&session.status==='ready'&&session.socket?.readyState===WebSocket.OPEN;}
+  function updateGenerationAvailability() {
+    const busy=session.generationPending||!!state.activeJob;
+    document.querySelectorAll('.generate-action').forEach(button=>button.disabled=busy||!sessionReady());
+    $('project-select').disabled=busy;
+  }
+  function updateSessionView() {
+    const ready=sessionReady(),failed=session.status==='error';
+    $('backend-status').className=`status-pill ${ready?'up':'down'}`;
+    $('backend-status').textContent=ready?'ComfyUI disponible':failed?'ComfyUI no disponible':'Iniciando ComfyUI…';
+    $('backend-status').title=failed?session.error:'El backend se prepara automáticamente para esta pestaña.';
+    $('backend-session').classList.toggle('hidden',ready);
+    $('backend-session').classList.toggle('error',failed);
+    $('backend-session-title').textContent=failed?'No se pudo preparar ComfyUI':'Iniciando ComfyUI…';
+    $('backend-session-message').textContent=failed?(session.error||'Reintenta para volver a preparar el backend.'):'El taller prepara el backend automáticamente. Puedes organizar tus estilos y piezas mientras inicia.';
+    $('retry-backend').classList.toggle('hidden',!failed);
+    $('retry-backend').disabled=!!session.inFlight;
+    updateGenerationAvailability();
+  }
+  function scheduleHeartbeat() {
+    if(session.timer!==null)clearTimeout(session.timer);
+    session.timer=null;
+    if(session.active&&session.socket?.readyState<WebSocket.CLOSING)session.timer=setTimeout(()=>{session.timer=null;void requestSession('heartbeat');},10000);
+  }
+  function sendSessionClose(id) {
+    const body=JSON.stringify({session_id:id});
+    let sent=false;
+    try{sent=navigator.sendBeacon(`${API}/session/close`,new Blob([body],{type:'application/json'}));}catch{}
+    if(!sent)void fetch(`${API}/session/close`,{method:'POST',headers:{'Content-Type':'application/json'},body,keepalive:true}).catch(()=>{});
+  }
+  function connectSessionSocket() {
+    const epoch=session.epoch,id=session.id;
+    let socket;
+    try{socket=new WebSocket(`${location.protocol==='https:'?'wss':'ws'}://${location.host}${API}/session/socket/${encodeURIComponent(id)}`);}
+    catch(error){session.status='error';session.error=`No se pudo conectar la sesión del taller: ${error.message||error}`;sendSessionClose(id);updateSessionView();return false;}
+    session.socket=socket;
+    let disconnected=false;
+    const current=()=>session.active&&epoch===session.epoch&&session.socket===socket;
+    const disconnect=()=>{
+      if(disconnected||!current())return;
+      disconnected=true;session.status='error';session.error='Se perdió la conexión de esta pestaña con ComfyUI. Reintenta para abrir una nueva sesión.';
+      if(session.timer!==null)clearTimeout(session.timer);
+      session.timer=null;session.controller?.abort();
+      try{socket.close();}catch{}
+      sendSessionClose(id);updateSessionView();
+    };
+    socket.onopen=()=>{if(current())updateSessionView();};
+    socket.onmessage=event=>{
+      if(!current()||disconnected)return;
+      let result;try{result=JSON.parse(event.data);}catch{return;}
+      if(result?.session_id&&result.session_id!==id)return;
+      if(result?.status==='closed'){session.status='error';session.error=result.error||'La sesión de ComfyUI se cerró. Reintenta para abrir una nueva.';}
+      else if(['starting','ready','error'].includes(result?.status)){session.status=result.status;session.error=result.error||'';}
+      else return;
+      updateSessionView();
+    };
+    socket.onclose=disconnect;socket.onerror=disconnect;
+    return true;
+  }
+  async function requestSession(action='heartbeat') {
+    if(!session.active||!session.socket||session.socket.readyState>=WebSocket.CLOSING)return null;
+    if(session.inFlight)return session.inFlight;
+    const epoch=session.epoch,controller=new AbortController();
+    session.controller=controller;
+    const timeout=setTimeout(()=>controller.abort(),15000);
+    const request=(async()=>{
+      try {
+        const result=await api(`/session/${action}`,'POST',{session_id:session.id},{signal:controller.signal});
+        if(!session.active||epoch!==session.epoch||!session.socket||session.socket.readyState>=WebSocket.CLOSING)return null;
+        if(result?.status==='closed'){session.status='error';session.error=result.error||'La sesión de ComfyUI se cerró. Reintenta para abrir una nueva.';return result;}
+        if(!['starting','ready','error'].includes(result?.status))throw new Error('El servidor no devolvió un estado válido para ComfyUI.');
+        session.status=result.status;session.error=result.error||'';
+        return result;
+      } catch(error) {
+        if(session.active&&epoch===session.epoch&&session.socket?.readyState<WebSocket.CLOSING){session.status='error';session.error=error.name==='AbortError'?'El servidor tardó demasiado en responder. Puedes reintentar la conexión.':error.message||String(error);}
+        return null;
+      } finally {
+        clearTimeout(timeout);
+        if(epoch===session.epoch){session.inFlight=null;session.controller=null;updateSessionView();scheduleHeartbeat();}
+      }
+    })();
+    session.inFlight=request;updateSessionView();
+    return request;
+  }
+  function openSession() {
+    if(session.inFlight)return session.inFlight;
+    if(session.active&&session.status!=='error'&&session.socket?.readyState<WebSocket.CLOSING)return Promise.resolve({session_id:session.id,status:session.status});
+    if(session.active)closeSession();
+    session.id=crypto.randomUUID();session.active=true;session.epoch++;
+    if(session.timer!==null)clearTimeout(session.timer);
+    session.timer=null;session.status='starting';session.error='';updateSessionView();
+    if(!connectSessionSocket())return Promise.resolve(null);
+    return requestSession('open');
+  }
+  function closeSession() {
+    if(!session.active)return;
+    const closingId=session.id,closingSocket=session.socket;
+    session.active=false;session.epoch++;
+    if(session.timer!==null)clearTimeout(session.timer);
+    session.timer=null;session.controller?.abort();session.controller=null;session.inFlight=null;session.socket=null;
+    try{closingSocket?.close();}catch{}
+    sendSessionClose(closingId);
+    updateGenerationAvailability();
   }
   async function refreshGenerations() { state.generations=list(await api(`/generations?project_id=${encodeURIComponent(state.projectId)}`)); renderGalleries(); }
   function addLora(file='',strength=1) {
@@ -239,14 +341,14 @@
   }
   async function startGeneration(payload) {
     if(state.activeJob)throw new Error('Ya hay una generación del taller en curso.');
+    if(!sessionReady())throw new Error(session.status==='error'?'ComfyUI no está disponible. Usa Reintentar para preparar el backend.':'ComfyUI está iniciando. La generación se habilitará cuando esté listo.');
     assertProject();
-    document.querySelectorAll('.generate-action').forEach(b=>b.disabled=true);
-    $('project-select').disabled=true;$('interrupt-job').disabled=false;
+    session.generationPending=true;updateGenerationAvailability();$('interrupt-job').disabled=false;
     try {
-      const job=await api('/generate','POST',payload); if(!job?.job_id)throw new Error('El servidor no devolvió el identificador del trabajo.');
+      const job=await api('/generate','POST',{...payload,session_id:session.id}); if(!job?.job_id)throw new Error('El servidor no devolvió el identificador del trabajo.');
       state.activeJob=job.job_id; $('job-status').classList.remove('hidden'); $('job-title').textContent=payload.purpose==='calibration'?'Generando prueba de estilo':'Generando recurso'; $('job-progress').value=0;
       await pollJob(job.job_id,payload);
-    } finally { state.activeJob=null;document.querySelectorAll('.generate-action').forEach(b=>b.disabled=false);$('project-select').disabled=false;$('interrupt-job').disabled=true; }
+    } finally { state.activeJob=null;session.generationPending=false;updateGenerationAvailability();$('interrupt-job').disabled=true; }
   }
   async function pollJob(id,payload) {
     while(state.activeJob===id) {
@@ -379,7 +481,8 @@
     $('export-project').onclick=action(async()=>{const id=$('project-id').value;if(id)downloadJson(await api(`/projects/${encodeURIComponent(id)}/export`),`${currentProject()?.name||'proyecto'}-perfil.json`);});
     $('import-project').onchange=action(async()=>{const file=$('import-project').files[0];if(!file)return;let profile;try{profile=JSON.parse(await file.text());}catch{throw new Error('El archivo de perfil no contiene JSON válido.');}const result=await api('/projects/import','POST',profile);state.projectId=result.id;resetWorkspace();$('project-dialog').close();await reload();notice('Perfil importado.');});
     $('refresh').onclick=action(reload);$('refresh-gallery').onclick=action(refreshGenerations);$('refresh-catalog').onclick=action(async()=>{state.catalog=await api('/catalog?refresh=true');renderCatalog();notice('Catálogo actualizado.');});
-    $('interrupt-job').onclick=action(async()=>{await api('/interrupt','POST',{});$('interrupt-job').disabled=true;$('job-phase').textContent='Interrupción solicitada; esperando al backend…';});
+    $('retry-backend').onclick=action(openSession);
+    $('interrupt-job').onclick=action(async()=>{await api('/interrupt','POST',{session_id:session.id});$('interrupt-job').disabled=true;$('job-phase').textContent='Interrupción solicitada; esperando al backend…';});
     $('style-search').oninput=renderStyles;
     $('favorite-style').onclick=()=>{const id=$('cal-style').value;if(!id)return;favorites.has(id)?favorites.delete(id):favorites.add(id);try{localStorage.setItem('anima-studio-favorites',JSON.stringify([...favorites]));}catch{}renderStyles();};
     $('add-lora').onclick=()=>addLora();$('cal-style').onchange=()=>{loadStyle($('cal-style').value);renderStyles();};$('save-style').onclick=action(()=>saveStyle());$('duplicate-style').onclick=action(()=>saveStyle(true));$('generate-test').onclick=action(generateTest);
@@ -411,6 +514,9 @@
   async function init() {
     for(const id of ['piece-kind','piece-filter'])selectOptions($(id),Object.entries(KINDS).map(([id,name])=>({id,name})),id==='piece-filter'?'Todos':undefined);
     wireEvents();
+    window.addEventListener('pagehide',closeSession);
+    window.addEventListener('pageshow',event=>{if(event.persisted)void openSession();});
+    await openSession();
     try {await reload();const sampling=await api('/sampling-options');selectOptions($('sampler'),sampling.samplers||[],undefined);selectOptions($('scheduler'),sampling.schedulers||[],undefined);if(!state.projects.length)openProject();}catch(error){notice(`No se pudo abrir el taller: ${error.message}`,true);updateStatus({});}
   }
   init();

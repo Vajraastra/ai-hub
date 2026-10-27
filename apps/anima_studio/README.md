@@ -6,8 +6,14 @@ de organización. La biblioteca comparte estilos y piezas únicamente cuando se 
 ## Abrir
 
 Desde la raíz del Hub, abrir `run_anima_studio.bat`. Prepara su entorno con uv y abre
-`http://127.0.0.1:9754`. Iniciar ComfyUI desde el Hub para generar; cerrar el taller con Ctrl+C.
-También está integrado como herramienta interna en `/anima-studio` del Hub.
+`http://127.0.0.1:9754`; cerrar el servidor con Ctrl+C. En el Hub habitual, abrir la tarjeta
+**Taller Anima** en **Aplicaciones**: el taller está integrado en `/anima-studio`.
+
+Al abrir una pestaña del taller, ComfyUI se inicia automáticamente en segundo plano, sin otra
+consola ni navegador. La interfaz indica cuándo está listo. Al cerrar la última pestaña que lo
+arrancó, se cierra tras una breve gracia para tolerar recargas; espera los trabajos en curso.
+Una instancia que ya estaba abierta manualmente o que usa otro propietario no se cierra.
+Si se pierde el aviso de cierre, los latidos de sesión permiten recuperar el backend huérfano.
 
 Lee `paths.models` de `hub/hub_config.json`. Para una copia de desarrollo puede definirse
 `AI_HUB_CONFIG` con la ruta al archivo de configuración de la instalación. No copia ni cambia
