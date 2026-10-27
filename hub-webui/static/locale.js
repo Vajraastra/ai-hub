@@ -9,6 +9,7 @@
       ws: { connecting:"conectando...", connected:"conectado", reconnecting:"reconectando...", error:"error" },
       terminal: { title:"Log de salida", copy:"Copiar", clear:"Limpiar", copied:"Log copiado al portapapeles.", copy_error:"No se pudo copiar." },
       apps: {
+        anima_studio_desc:"Estilos, personajes y expresiones para tus juegos.",
         count:"{installed} de {total} instaladas", cleanup:"Limpiar procesos", cleaning:"Limpiando...",
         badge_webui:"WebUI", badge_desktop:"Desktop", no_running:"Sin procesos activos.",
         status: { running:"● Corriendo", installed:"○ Instalada", not_installed:"○ No instalada", launching:"Iniciando...", installing:"Instalando...", updating:"Actualizando...", uninstalling:"Desinstalando...", stopping:"Deteniendo..." },
@@ -195,6 +196,7 @@
       ws: { connecting:"connecting...", connected:"connected", reconnecting:"reconnecting...", error:"error" },
       terminal: { title:"Output log", copy:"Copy", clear:"Clear", copied:"Log copied to clipboard.", copy_error:"Could not copy." },
       apps: {
+        anima_studio_desc:"Styles, characters and expressions for your games.",
         count:"{installed} of {total} installed", cleanup:"Clean up processes", cleaning:"Cleaning...",
         badge_webui:"WebUI", badge_desktop:"Desktop", no_running:"No active processes.",
         status: { running:"● Running", installed:"○ Installed", not_installed:"○ Not installed", launching:"Launching...", installing:"Installing...", updating:"Updating...", uninstalling:"Uninstalling...", stopping:"Stopping..." },

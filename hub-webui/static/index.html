@@ -51,6 +51,19 @@
         <button class="btn btn-outline" id="btn-cleanup" data-i18n="apps.cleanup">🧹 Limpiar procesos</button>
       </div>
       <div id="apps-scroll">
+        <div class="app-card" id="card-anima-studio">
+          <div class="app-icon" aria-hidden="true">A</div>
+          <div class="app-info">
+            <div class="app-name-row">
+              <span class="app-name">Taller Anima</span>
+              <span class="app-badge webui">PoC</span>
+            </div>
+            <span class="app-desc" data-i18n="apps.anima_studio_desc">Estilos, personajes y expresiones para tus juegos.</span>
+          </div>
+          <div class="app-right">
+            <button class="btn btn-primary" onclick="window.open('/anima-studio','_blank','noopener')" data-i18n="tools.open">Abrir</button>
+          </div>
+        </div>
         <div id="apps-list"></div>
       </div>
       <!-- Terminal -->
@@ -105,12 +118,6 @@
           <span class="tool-card-name">MiniMax H3</span>
           <span class="tool-card-desc" data-i18n="tools.minimax_desc">Video + audio local: Ref2V, I2V y cadenas de clips encadenados.</span>
           <button class="btn btn-outline" onclick="window.open('/minimax-h3','_blank')" data-i18n="tools.open">Abrir</button>
-        </div>
-        <div class="tool-card">
-          <span class="tool-card-icon">🎨</span>
-          <span class="tool-card-name">Anima Studio · PoC</span>
-          <span class="tool-card-desc">Estilos, personajes y expresiones para tus juegos.</span>
-          <button class="btn btn-outline" onclick="window.open('/anima-studio','_blank')">Abrir</button>
         </div>
       </div>
     </div>
