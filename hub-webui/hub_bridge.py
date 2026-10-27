@@ -113,6 +113,7 @@ class HubBridge:
         self._backend_idle_guards: dict[str, object] = {}
         self._backend_release_timers: dict[str, threading.Timer] = {}
         self._backend_lock = threading.RLock()
+        self._shutdown_requested = False
         self._run_startup_sync()
 
     # ── Startup sync ────────────────────────────────────────────────────
@@ -566,6 +567,8 @@ class HubBridge:
 
     def launch(self, app_id: str, open_browser: bool = True) -> bool:
         with self._backend_lock:
+            if self._shutdown_requested:
+                return False
             # A dashboard launch adopts a backend already started by a page.
             # Its later page release must not stop the user's manual instance.
             if open_browser and app_id in self._backend_autostarted:
@@ -629,6 +632,8 @@ class HubBridge:
         módulo — no la re-arranca ni la marca como auto-arrancada; solo registra
         al propietario. Cancela cualquier cierre pendiente (p. ej. tras un F5)."""
         with self._backend_lock:
+            if self._shutdown_requested:
+                return False
             if self._state.busy_apps.get(app_id) == "stopping":
                 return False
             self._cancel_backend_release(app_id)
@@ -846,20 +851,25 @@ class HubBridge:
                     self._emit_log(app_id, f"✓ Puerto liberado (PID {killed})")
 
             outputs_dir = hub_config.get("paths", {}).get("outputs")
-            proc = launch_app(
-                app_cfg, app_dir, cuda_env,
-                model_args, extra_args + user_args,
-                outputs_dir, logger=None, async_mode=True, capture_output=True,
-                headless=not open_browser
-            )
+            # Spawn and registration are one operation relative to final
+            # shutdown: it either sees this process or prevents its creation.
+            with self._backend_lock:
+                if self._shutdown_requested:
+                    return
+                proc = launch_app(
+                    app_cfg, app_dir, cuda_env,
+                    model_args, extra_args + user_args,
+                    outputs_dir, logger=None, async_mode=True, capture_output=True,
+                    headless=not open_browser
+                )
 
-            if not isinstance(proc, subprocess.Popen):
-                self._state.clear_busy(app_id)
-                self._emit_state(app_id)
-                return
+                if not isinstance(proc, subprocess.Popen):
+                    self._state.clear_busy(app_id)
+                    self._emit_state(app_id)
+                    return
 
-            self._state.set_running(app_id, proc)
-            process_started = True
+                self._state.set_running(app_id, proc)
+                process_started = True
             manual_open = self._backend_process_started(app_id)
             if self._state.busy_apps.get(app_id) != "stopping":
                 self._state.clear_busy(app_id)
@@ -905,6 +915,7 @@ class HubBridge:
         finally:
             if not process_started:
                 self._backend_launch_failed(app_id)
+                self._state.clear_busy(app_id)
 
     def _stop_thread(self, app_id: str, proc: subprocess.Popen):
         try:
@@ -1086,8 +1097,15 @@ class HubBridge:
 
     def stop_all_running(self, wait_secs: float = 4.0, preserve_backends: bool = False):
         """Detiene todas las apps corriendo. Llamado al cerrar el hub."""
-        with self._state._lock:
-            procs = dict(self._state.running_apps)
+        with self._backend_lock:
+            if not preserve_backends:
+                # Fence pending launch threads even when running_apps is empty.
+                # Dashboard pagehide deliberately does not set this final flag.
+                self._shutdown_requested = True
+                for app_id in list(self._backend_release_timers):
+                    self._cancel_backend_release(app_id)
+            with self._state._lock:
+                procs = dict(self._state.running_apps)
 
         if preserve_backends:
             with self._backend_lock:

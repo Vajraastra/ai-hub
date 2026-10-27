@@ -5,6 +5,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -231,6 +232,97 @@ class BackendChecks(unittest.TestCase):
             self.bridge.stop_all_running(wait_secs=0, preserve_backends=True)
             interrupt.assert_not_called()
         self.assertEqual(self.bridge._backend_owners["comfyui"], {"new-page"})
+
+    def startup_patches(self, launcher, prepare=None):
+        stack = ExitStack()
+        stack.enter_context(patch("modules.cuda_guardian.build_env_overrides", return_value={}))
+        stack.enter_context(patch("modules.app_installer.apply_post_install_patches",
+                                  side_effect=prepare or (lambda *args: {"failed": []})))
+        stack.enter_context(patch.object(hub_bridge, "_is_port_in_use", return_value=False))
+        stack.enter_context(patch("modules.app_launcher.launch_app", launcher))
+        return stack
+
+    def test_final_shutdown_fences_a_launch_still_in_preparation(self):
+        self.bridge._backend_launching.add("comfyui")
+        self.bridge._backend_autostarted.add("comfyui")
+        self.bridge._backend_owners["comfyui"] = {"page"}
+        self.bridge._state.set_busy("comfyui", "launching")
+
+        def shutdown_during_prepare(*args):
+            self.assertFalse(self.bridge._state.running_apps)
+            self.bridge.stop_all_running(wait_secs=0)
+            return {"failed": []}
+
+        launcher = MagicMock()
+        with self.startup_patches(launcher, shutdown_during_prepare):
+            self.bridge._launch_thread("comfyui", open_browser=False)
+        launcher.assert_not_called()
+        self.assertFalse(self.bridge._state.running_apps)
+        self.assertFalse(self.bridge._state.busy_apps)
+        self.assertFalse(self.bridge._backend_launching)
+        self.assertFalse(self.bridge.launch("comfyui"))
+        self.assertFalse(self.bridge.launch_backend("comfyui", "late-page"))
+
+    def test_dashboard_close_during_preparation_does_not_fence_launch(self):
+        proc = MagicMock(spec=subprocess.Popen)
+        proc.pid = 12345
+        proc.stdout = []
+        proc.wait.return_value = 0
+        launcher = MagicMock(return_value=proc)
+
+        def dashboard_close(*args):
+            self.bridge.stop_all_running(wait_secs=0, preserve_backends=True)
+            return {"failed": []}
+
+        with self.startup_patches(launcher, dashboard_close):
+            self.bridge._launch_thread("comfyui", open_browser=False)
+        launcher.assert_called_once()
+        self.assertFalse(self.bridge._shutdown_requested)
+
+    def test_shutdown_cannot_miss_a_process_between_spawn_and_registration(self):
+        entered, allow_return, stopped = threading.Event(), threading.Event(), threading.Event()
+        shutdown_started, shutdown_done = threading.Event(), threading.Event()
+        proc = MagicMock(spec=subprocess.Popen)
+        proc.pid = 12346
+        proc.stdout = []
+        proc.poll.side_effect = lambda: 0 if stopped.is_set() else None
+        proc.wait.side_effect = lambda timeout=None: stopped.wait(timeout or 2)
+        self.bridge._backend_launching.add("comfyui")
+        self.bridge._backend_autostarted.add("comfyui")
+        self.bridge._backend_owners["comfyui"] = {"page"}
+
+        def spawn(*args, **kwargs):
+            entered.set()
+            if not allow_return.wait(2):
+                raise RuntimeError("test did not release mocked spawn")
+            return proc
+
+        def shutdown():
+            shutdown_started.set()
+            self.bridge.stop_all_running(wait_secs=0.1)
+            shutdown_done.set()
+
+        with self.startup_patches(MagicMock(side_effect=spawn)), \
+                patch.object(hub_bridge, "_interrupt_tree", side_effect=lambda _: stopped.set()) as interrupt:
+            worker = threading.Thread(target=self.bridge._launch_thread, args=("comfyui", False))
+            closer = threading.Thread(target=shutdown)
+            worker.start()
+            self.assertTrue(entered.wait(2))
+            closer.start()
+            self.assertTrue(shutdown_started.wait(2))
+            try:
+                # Shutdown must wait until the returned Popen has been registered.
+                self.assertFalse(shutdown_done.wait(0.05))
+            finally:
+                allow_return.set()
+                worker.join(3)
+                closer.join(3)
+            self.assertFalse(worker.is_alive())
+            self.assertFalse(closer.is_alive())
+            interrupt.assert_called_once_with(proc)
+        self.assertTrue(shutdown_done.is_set())
+        self.assertTrue(stopped.is_set())
+        self.assertFalse(self.bridge._state.running_apps)
 
     def test_headless_startup_does_not_kill_a_port_won_by_an_external_process(self):
         self.bridge._backend_autostarted.add("comfyui")
