@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Taller Anima · AI Hub</title>
+  <link rel="stylesheet" href="/static/anima_studio.css">
+  <script src="/static/anima_studio.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="hub-link" href="/">← AI Hub</a>
+    <div class="brand"><span class="brand-mark">A</span><div><h1>Taller Anima <span class="badge">PoC</span></h1><p>Del estilo a los recursos de tu juego</p></div></div>
+    <div class="project-bar"><label class="sr-only" for="project-select">Proyecto activo</label><select id="project-select"></select><button id="edit-project" class="subtle" title="Configurar proyecto">Configurar</button><button id="new-project" class="secondary">+ Proyecto</button></div>
+    <span id="backend-status" class="status-pill">Conectando…</span>
+  </header>
+  <nav class="tabs" aria-label="Etapas del taller">
+    <button class="tab active" data-tab="styles" aria-selected="true"><span>01</span> Estilos</button>
+    <button class="tab" data-tab="production" aria-selected="false"><span>02</span> Producción</button>
+    <button class="tab" data-tab="library" aria-selected="false"><span>03</span> Biblioteca y revisión</button>
+    <button id="refresh" class="subtle nav-refresh">Actualizar</button>
+  </nav>
+  <div id="notice" class="notice hidden" role="status" aria-live="polite"></div>
+  <div id="job-status" class="job hidden" role="status" aria-live="polite"><div><strong id="job-title">Generando</strong><span id="job-phase"></span><button id="interrupt-job" class="subtle">Cancelar generación</button></div><progress id="job-progress" max="100" value="0"></progress></div>
+  <main>
+    <section id="tab-styles" class="page active" aria-label="Calibración de estilos">
+      <div class="page-heading"><div><p class="eyebrow">PRIMERO, ENCUENTRA EL ACABADO</p><h2>Calibra una vez. Reutiliza el estilo.</h2><p>Compara modelos y LoRAs con la misma seed. Guarda la configuración elegida para este proyecto.</p></div><span id="style-count" class="muted"></span></div>
+      <div class="work-grid">
+        <div class="panel control-panel">
+          <div class="section-title"><h3>Configuración del estilo</h3><button id="reset-style" class="text-button">Nueva prueba</button></div>
+          <label>Buscar estilos<input id="style-search" type="search" placeholder="Nombre o acabado…"></label><div class="field-row"><label class="grow">Estilo guardado<select id="cal-style"><option value="">Sin estilo guardado</option></select></label><button id="favorite-style" class="subtle align-end" aria-label="Marcar estilo como favorito" disabled>☆</button></div>
+          <div class="field-row"><label class="grow">Modelo Anima<select id="model-select" required></select></label><button id="refresh-catalog" class="subtle align-end" title="Volver a leer la biblioteca de modelos">↻ Catálogo</button></div>
+          <p id="catalog-note" class="hint">Sólo modelos y LoRAs compatibles con Anima de la biblioteca del Hub.</p>
+          <div class="section-title small"><h4>LoRAs</h4><button id="add-lora" class="text-button">+ Añadir</button></div><div id="lora-list"></div><p id="empty-loras" class="hint">Prueba el modelo solo o combina LoRAs con pesos independientes.</p>
+          <details class="advanced"><summary>Encoder y VAE</summary><label>Encoder<select id="encoder-select"></select></label><label>VAE<select id="vae-select"></select></label></details>
+          <div class="field-grid four"><label>Pasos<input id="steps" type="number" min="1" max="100" value="30"></label><label>CFG<input id="cfg" type="number" min="0" max="30" step="0.1" value="4"></label><label>Sampler<select id="sampler"><option>er_sde</option><option>euler</option><option>euler_ancestral</option><option>dpmpp_2m</option><option>dpmpp_2m_sde</option></select></label><label>Scheduler<select id="scheduler"><option>simple</option><option>normal</option><option>karras</option><option>beta</option></select></label></div>
+          <div class="field-grid three"><label>Ancho<input id="width" type="number" min="256" max="2048" step="16" value="1024"></label><label>Alto<input id="height" type="number" min="256" max="2048" step="16" value="1024"></label><label>Seed fija<input id="cal-seed" type="text" inputmode="numeric" value="42" spellcheck="false"></label></div>
+          <label>Prompt de estilo<textarea id="style-prompt" rows="3" placeholder="Acabado, líneas, luz, materiales y tratamiento del color…"></textarea></label>
+          <label>Negativo del estilo<textarea id="style-negative" rows="2" placeholder="Rasgos visuales que quieres evitar…"></textarea></label>
+          <label>Escena de prueba<textarea id="test-prompt" rows="3" placeholder="Describe un sujeto o escenario para comparar. Esta descripción no se guardará dentro del estilo."></textarea></label>
+          <button id="generate-test" class="primary wide generate-action">Generar prueba</button>
+          <div class="save-box"><label>Nombre del estilo<input id="style-name" type="text" placeholder="Ej. Personajes pintados"></label><label class="check"><input id="style-shared" type="checkbox"> Disponible en otros proyectos</label><div class="button-row"><button id="save-style" class="secondary grow">Guardar estilo</button><button id="duplicate-style" class="subtle" title="Crear una copia con otro nombre">Guardar copia</button></div><p class="hint">Se guardan los ajustes y las muestras seleccionadas. Cada revisión conserva su configuración.</p></div>
+        </div>
+        <div class="panel comparison-panel"><div class="section-title"><div><h3>Estilos del proyecto</h3><p class="hint">Cada estilo conserva su modelo, LoRAs y ajustes. Selecciona uno para continuar calibrándolo.</p></div></div><div id="style-shelf" class="style-shelf"></div><div class="section-title"><div><h3>Muestras de calibración</h3><p class="hint">Marca las imágenes que representen el estilo. Puedes abrirlas para comparar a tamaño completo.</p></div></div><div id="cal-gallery" class="gallery comparison"></div></div>
+      </div>
+    </section>
+    <section id="tab-production" class="page" aria-label="Producción de recursos">
+      <div class="page-heading"><div><p class="eyebrow">CONSTRUYE A PARTIR DE PIEZAS</p><h2>Una identidad. Muchas combinaciones.</h2><p>Escoge un estilo, combina las piezas del recurso y conserva la seed para crear variantes.</p></div></div>
+      <div class="work-grid">
+        <div class="panel control-panel">
+          <label>Estilo<select id="prod-style"><option value="">Selecciona un estilo guardado</option></select></label>
+          <div class="field-grid two"><label>Receta guardada<select id="recipe-select"><option value="">Nueva combinación</option></select></label><label>Formato<select id="format-select"></select></label></div><p id="recipe-revision-note" class="hint hidden"></p>
+          <div class="section-title small"><h3>Piezas del recurso</h3><button class="text-button" id="open-piece-form">+ Crear pieza</button></div><div id="piece-pickers" class="field-grid two"></div>
+          <label>Instrucciones de esta toma<textarea id="prod-prompt" rows="3" placeholder="Cambios o detalles para esta imagen…"></textarea></label><label>Negativo adicional<textarea id="prod-negative" rows="2"></textarea></label>
+          <div class="field-grid two"><label>Seed de la toma<input id="prod-seed" type="text" inputmode="numeric" value="42" spellcheck="false"></label><label>Categoría de salida<select id="category-select"></select></label></div>
+          <div class="button-row"><label class="check grow"><input id="seed-lock" type="checkbox" checked> Mantener seed</label><button id="new-seed" class="text-button">Nueva variación</button></div>
+          <details class="advanced"><summary>Guardar esta combinación como receta</summary><label>Nombre<input id="recipe-name" placeholder="Ej. Saludo de bienvenida"></label><button id="save-recipe" class="secondary wide">Guardar receta</button></details>
+          <div class="section-title small"><h3>Tipo de generación</h3></div><div class="segmented"><label><input type="radio" name="mode" value="txt2img" checked> Imagen nueva</label><label><input type="radio" name="mode" value="expression"> Expresión facial</label></div>
+          <div id="expression-controls" class="hidden">
+            <p class="hint">Elige un maestro y pinta la zona facial que puede cambiar. El resto se conserva sobre el original.</p>
+            <label>Maestro del proyecto<select id="master-select"><option value="">Selecciona una imagen o carga un PNG</option></select></label><label class="file-field">Cargar maestro PNG<input id="master-upload" type="file" accept="image/png"></label>
+            <div class="field-grid two"><label>Nombre para organizar la expresión<input id="expression-name" placeholder="Ej. Alegre"></label><label>Intensidad de edición<input id="denoise" type="number" min="0.05" max="1" step="0.05" value="0.5"></label></div><p class="hint">El nombre organiza el archivo. Para cambiar la cara, selecciona una expresión guardada o descríbela en las instrucciones de esta toma.</p>
+            <div class="mask-toolbar"><label>Pincel <input id="brush-size" type="range" min="5" max="180" value="45"></label><label class="check"><input id="mask-erase" type="checkbox"> Borrar</label><button id="clear-mask" class="subtle">Limpiar</button></div>
+            <div id="mask-stage" class="mask-stage"><canvas id="master-canvas" width="512" height="512"></canvas><canvas id="mask-canvas" width="512" height="512" aria-label="Máscara facial. Arrastra para pintar la región editable."></canvas><span id="mask-placeholder">Carga un maestro para pintar la máscara</span></div><p id="mask-info" class="hint">La máscara se guarda con la generación.</p>
+          </div>
+          <div class="button-row"><button id="preview-prompt" class="subtle grow">Ver prompt ensamblado</button><button id="generate-production" class="primary grow generate-action">Generar recurso</button></div><p id="capability-note" class="hint"></p>
+          <details id="assembled-preview" class="advanced"><summary>Prompt final y configuración</summary><pre id="composed-output">Aquí aparecerá la combinación resuelta.</pre></details>
+        </div>
+        <div class="panel"><div class="section-title"><div><h3>Resultados de producción</h3><p class="hint">Acepta una imagen para organizarla. Usa «Como maestro» para derivar expresiones.</p></div></div><div id="production-gallery" class="gallery"></div></div>
+      </div>
+    </section>
+    <section id="tab-library" class="page" aria-label="Biblioteca y revisión">
+      <div class="page-heading"><div><p class="eyebrow">CONSERVA LO QUE FUNCIONA</p><h2>Biblioteca y revisión</h2><p>Las piezas y recetas se guardan en el proyecto. Los rechazados permanecen recuperables hasta limpiarlos.</p></div></div>
+      <div class="panel"><div class="section-title"><h3>Piezas reutilizables</h3><button id="add-piece" class="secondary">+ Nueva pieza</button></div><div class="filter-row"><label class="grow">Buscar<input id="piece-search" type="search" placeholder="Nombre o contenido…"></label><label>Tipo<select id="piece-filter"><option value="">Todos</option></select></label><label class="check"><input id="favorites-only" type="checkbox"> Favoritos</label></div><div id="pieces-library" class="piece-library"></div></div>
+      <div class="panel"><div class="section-title"><div><h3>Revisión de imágenes</h3><p id="review-count" class="hint"></p></div><button id="refresh-gallery" class="subtle">Actualizar</button></div><div class="filter-row"><label>Estado<select id="review-filter"><option value="">Todos</option><option value="pending">Pendientes</option><option value="accepted">Aceptados</option><option value="rejected">Rechazados</option></select></label><label class="grow">Buscar<input id="image-search" type="search" placeholder="Personaje, outfit, expresión…"></label></div>
+        <div id="purge-controls" class="purge hidden"><div><strong>Concentrador de rechazados</strong><p id="purge-count" class="hint">Selecciona imágenes para limpiar.</p></div><label>Antigüedad mínima (días)<input id="purge-days" type="number" min="0" max="3650" value="30"></label><button id="select-rejected" class="subtle">Seleccionar visibles</button><button id="purge-rejected" class="danger" disabled>Borrar seleccionados</button></div>
+        <div id="review-gallery" class="gallery"></div>
+      </div>
+    </section>
+  </main>
+  <dialog id="project-dialog"><form id="project-form"><div class="section-title"><h2 id="project-dialog-title">Nuevo proyecto</h2><button type="button" class="subtle" data-close="project-dialog" aria-label="Cerrar">✕</button></div><input id="project-id" type="hidden"><label>Nombre del proyecto<input id="project-name" required maxlength="120"></label><label>Categorías, separadas por comas<input id="project-categories" value="personajes, fondos, objetos, cartas" required></label><label>Retención de rechazados (días)<input id="project-retention" type="number" min="0" max="3650" value="30"></label><p class="hint">La limpieza se realiza desde revisión. No se borran imágenes por el paso del tiempo.</p><div class="section-title small"><h3>Formatos del proyecto</h3><button type="button" id="add-format" class="text-button">+ Formato</button></div><div id="format-editor"></div><details class="advanced"><summary>Nombres de los archivos</summary><label>Plantilla<input id="project-naming" value="{project}_{category}_{character}_{outfit}_{expression}_{revision}"></label><p class="hint">Campos: project, category, character, outfit, expression, revision. El identificador se añade para evitar colisiones.</p></details><div class="button-row"><button type="submit" class="primary grow">Guardar proyecto</button><button type="button" id="export-project" class="subtle">Exportar perfil</button><label class="file-button subtle">Importar perfil<input id="import-project" type="file" accept="application/json,.json"></label></div></form></dialog>
+  <dialog id="piece-dialog"><form id="piece-form"><div class="section-title"><h2 id="piece-dialog-title">Nueva pieza</h2><button type="button" class="subtle" data-close="piece-dialog" aria-label="Cerrar">✕</button></div><input id="piece-id" type="hidden"><label>Tipo<select id="piece-kind"></select></label><label>Nombre<input id="piece-name" required maxlength="120" placeholder="Ej. Outfit camarera"></label><label>Prompt de esta pieza<textarea id="piece-prompt" rows="6" required placeholder="Describe sólo lo que corresponde a esta pieza."></textarea></label><label>Negativo<textarea id="piece-negative" rows="3"></textarea></label><label>Etiquetas, separadas por comas<input id="piece-tags" placeholder="Ej. uniforme, interior"></label><label class="check"><input id="piece-shared" type="checkbox"> Disponible en otros proyectos</label><p class="hint">El personaje conserva identidad y proporciones. El outfit describe únicamente prendas y accesorios.</p><button type="submit" class="primary wide">Guardar pieza</button></form></dialog>
+  <dialog id="image-dialog" class="image-dialog"><div class="image-dialog-bar"><span id="image-dialog-title"></span><button class="subtle" data-close="image-dialog" aria-label="Cerrar">✕</button></div><img id="image-dialog-image" alt="Imagen generada a tamaño completo"></dialog>
+</body>
+</html>

@@ -49,6 +49,7 @@ from fusion_routes import fusion_router
 from ideogram_routes import ideogram_router
 from faceswap_routes import faceswap_router
 from minimax_h3_routes import minimax_h3_router
+from anima_studio_routes import anima_studio_router
 
 # ── WebSocket clients ───────────────────────────────────────────────────────
 _ws_clients: list[WebSocket] = []
@@ -106,7 +107,7 @@ bridge.on_log(_on_log)
 api = FastAPI(title="AI Hub WebUI")
 
 
-_NO_CACHE_PATHS = {"/", "/vault", "/painter", "/fusion", "/ideogram", "/faceswap", "/minimax-h3"}
+_NO_CACHE_PATHS = {"/", "/vault", "/painter", "/fusion", "/ideogram", "/faceswap", "/minimax-h3", "/anima-studio"}
 
 # ── Stop-all con periodo de gracia ───────────────────────────────────────────
 _STOP_GRACE_SECS = 8.0
@@ -152,6 +153,7 @@ api.include_router(fusion_router)
 api.include_router(ideogram_router)
 api.include_router(faceswap_router)
 api.include_router(minimax_h3_router)
+api.include_router(anima_studio_router)
 
 
 # ── Models Pydantic ──────────────────────────────────────────────────────────
@@ -209,6 +211,11 @@ async def faceswap_page():
 @api.get("/minimax-h3")
 async def minimax_h3_page():
     return FileResponse(os.path.join(POC_DIR, "static", "minimax_h3.html"))
+
+
+@api.get("/anima-studio")
+async def anima_studio_page():
+    return FileResponse(os.path.join(POC_DIR, "static", "anima_studio.html"))
 
 
 # ── Apps ─────────────────────────────────────────────────────────────────────

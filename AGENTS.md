@@ -22,7 +22,7 @@ apps/comfyui/venv/Scripts/python.exe main.py  # backend de generación → :8188
 ## Estructura
 
 - `apps/` — un directorio por app. **Nuestros** (se versionan): `minimax_h3`, `painter`,
-  `ideogram`, `faceswap`, `forge_fusion`, `model_vault`. **De terceros** (gitignored, no editar
+  `ideogram`, `faceswap`, `forge_fusion`, `model_vault`, `anima_studio`. **De terceros** (gitignored, no editar
   salvo parche documentado en el propio archivo): `comfyui`, `sd-webui-forge-neo`, `ai-toolkit`,
   `anima-standalone-trainer`.
 - `hub-webui/` — servidor FastAPI + frontend. Un `<modulo>_routes.py` y un `static/<modulo>.{html,js}`

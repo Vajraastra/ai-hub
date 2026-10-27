@@ -180,6 +180,8 @@ apps/*
 !apps/faceswap/
 !apps/painter/
 !apps/minimax_h3/
+!apps/anima_studio/
+apps/anima_studio/data/
 # tags CSV de painter: 5.5MB descargables, no versionar (solo el .gitkeep)
 apps/painter/tags/*
 !apps/painter/tags/.gitkeep

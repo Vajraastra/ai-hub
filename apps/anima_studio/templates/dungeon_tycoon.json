@@ -1,0 +1,11 @@
+{
+  "name": "Dungeon Tycoon",
+  "categories": ["characters", "backgrounds", "items", "cards"],
+  "formats": [
+    {"id": "character", "name": "Personaje · 1024 × 1536", "width": 1024, "height": 1536, "alpha": true},
+    {"id": "square", "name": "Cuadrado de prueba · 1024 × 1024", "width": 1024, "height": 1024, "alpha": false},
+    {"id": "background", "name": "Fondo de prueba · 1536 × 864", "width": 1536, "height": 864, "alpha": false}
+  ],
+  "retention_days": 30,
+  "notes": "Primer perfil. Los formatos cuadrados/horizontales son propuestas para pruebas; no cambian los recursos existentes. La transparencia del formato es un requisito de exportación, no una capacidad automática de txt2img. Sin borrado automático."
+}

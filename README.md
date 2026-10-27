@@ -30,6 +30,7 @@ tested target. `run.sh` remains as a best-effort, untested fallback for Linux.
 | **Ideogram 4** | Text-heavy image generation via JSON + bounding boxes (sharp typography, controlled layout) |
 | **Face Swap** | Face replacement with real pose (LivePortrait + ReActor/HyperSwap) |
 | **MiniMax H3** | Local video generation with native audio: single clips or chained segments |
+| **Anima Studio (PoC)** | Game art workshop: project styles, reusable prompt pieces and facial expression edits |
 
 Retired modules (kept out of the active tree, history in `git log`): FaceFusion, dataset-refiner,
 TagGUI, LoRA Merger, Forge Lab — the last two were superseded by Forge Fusion.

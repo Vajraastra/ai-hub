@@ -1,0 +1,16 @@
+{
+  "_comment": "Face crop inpainting; final pixel preservation is enforced by CPU composition, not VAE masking.",
+  "1": {"class_type": "UNETLoader", "inputs": {"unet_name": "{{model}}", "weight_dtype": "default"}},
+  "2": {"class_type": "CLIPLoader", "inputs": {"clip_name": "{{text_encoder}}", "type": "cosmos"}},
+  "3": {"class_type": "VAELoader", "inputs": {"vae_name": "{{vae}}"}},
+  "4": {"class_type": "CLIPTextEncode", "inputs": {"text": "{{prompt}}", "clip": ["2", 0]}},
+  "5": {"class_type": "CLIPTextEncode", "inputs": {"text": "{{negative}}", "clip": ["2", 0]}},
+  "10": {"class_type": "LoadImage", "inputs": {"image": "{{image_name}}"}},
+  "11": {"class_type": "LoadImage", "inputs": {"image": "{{mask_name}}"}},
+  "12": {"class_type": "ImageToMask", "inputs": {"image": ["11", 0], "channel": "red"}},
+  "13": {"class_type": "VAEEncode", "inputs": {"pixels": ["10", 0], "vae": ["3", 0]}},
+  "6": {"class_type": "SetLatentNoiseMask", "inputs": {"samples": ["13", 0], "mask": ["12", 0]}},
+  "7": {"class_type": "KSampler", "inputs": {"model": ["1", 0], "positive": ["4", 0], "negative": ["5", 0], "latent_image": ["6", 0], "seed": "{{seed}}", "steps": "{{steps}}", "cfg": "{{cfg}}", "sampler_name": "{{sampler}}", "scheduler": "{{scheduler}}", "denoise": "{{denoise}}"}},
+  "8": {"class_type": "VAEDecode", "inputs": {"samples": ["7", 0], "vae": ["3", 0]}},
+  "9": {"class_type": "SaveImage", "inputs": {"images": ["8", 0], "filename_prefix": "anima_studio_expression"}}
+}
