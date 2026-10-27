@@ -7,13 +7,13 @@ import sys
 import uuid
 import json
 import queue
-import shutil
 import asyncio
 import threading
+import time
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse, FileResponse, Response
 from pydantic import BaseModel
 
@@ -37,10 +37,65 @@ _scan_sessions: dict[str, queue.Queue] = {}
 _scan_lock = threading.Lock()
 _civitai_sessions: dict[str, queue.Queue] = {}
 _civitai_lock = threading.Lock()
+_operation_lock = threading.Lock()
 _pool = ThreadPoolExecutor(max_workers=2)
 
 
+class _SessionQueue(queue.Queue):
+    """Keep recent progress and the terminal event if the browser disconnects."""
+    def __init__(self):
+        super().__init__(maxsize=2)
+        self.finished_at = None
+
+    def put(self, item, block=True, timeout=None):
+        while True:
+            try:
+                return super().put(item, block=False)
+            except queue.Full:
+                try:
+                    super().get(block=False)
+                except queue.Empty:
+                    pass
+
+
+def _prune_sessions(sessions, reserve=False):
+    now = time.monotonic()
+    completed = sorted((q.finished_at, key) for key, q in sessions.items()
+                       if getattr(q, "finished_at", None) is not None)
+    for finished_at, key in completed:
+        if now - finished_at > 300 or len(sessions) > (15 if reserve else 16):
+            sessions.pop(key, None)
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _start_operation(sessions, sessions_lock, worker):
+    """Una sola revisión/descarga modifica el inventario a la vez, entre pestañas."""
+    if not _operation_lock.acquire(blocking=False):
+        raise HTTPException(409, "Model Vault ya está actualizando la biblioteca o los datos de Civitai.")
+    session_id = str(uuid.uuid4())
+    q = _SessionQueue()
+
+    def _run():
+        try:
+            worker(q)
+        except Exception as exc:
+            q.put({"type": "error", "error": str(exc)})
+        finally:
+            q.finished_at = time.monotonic()
+            _operation_lock.release()
+
+    with sessions_lock:
+        _prune_sessions(sessions, reserve=True)
+        sessions[session_id] = q
+    try:
+        threading.Thread(target=_run, daemon=True).start()
+    except Exception:
+        with sessions_lock:
+            sessions.pop(session_id, None)
+        _operation_lock.release()
+        raise
+    return session_id
 
 def _load_config() -> dict:
     try:
@@ -79,18 +134,20 @@ def _enrich(m: dict, models_root: str = "") -> dict:
     m["has_thumbnail"] = bool(_find_thumbnail(m.get("file_path", "")))
 
     subfolder = ""
+    folder = ""
+    storage_category = ""
     file_path = m.get("file_path", "")
     if file_path and models_root:
         try:
-            rel = os.path.relpath(file_path, models_root)
-            parts = rel.replace("\\", "/").split("/")
-            # parts[0]=carpeta_categoria, parts[-1]=archivo
-            # path completo del subfolder (soporta anidamiento arbitrario)
-            if len(parts) > 2:
-                subfolder = "/".join(parts[1:-1])
+            from model_vault.core.file_operations import relative_folder
+            folder, storage_category = relative_folder(file_path, models_root)
+            parts = folder.split("/")
+            subfolder = "/".join(parts[1:])
         except Exception:
             pass
     m["subfolder"] = subfolder
+    m["folder"] = folder
+    m["storage_category"] = storage_category
     return m
 
 
@@ -102,7 +159,8 @@ class UpdateModelPayload(BaseModel):
 
 class MoveEntry(BaseModel):
     hash:             str
-    target_subfolder: str   # "" = raíz de la categoría
+    target_subfolder: str = ""  # legado: relativo a la categoría física de origen
+    target_folder: Optional[str] = None  # relativo a la raíz configurada de modelos
 
 class ApplyMovesPayload(BaseModel):
     moves: list[MoveEntry]
@@ -111,7 +169,7 @@ class ApplyMovesPayload(BaseModel):
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @vault_router.get("/models")
-async def get_models(q: str = "", cat: str = "", sort: str = "recent"):
+async def get_models(q: str = "", cat: str = "", sort: str = "recent", arch: str = ""):
     """Lista modelos del DB con filtrado por categoría, búsqueda y orden."""
     loop = asyncio.get_event_loop()
 
@@ -124,17 +182,20 @@ async def get_models(q: str = "", cat: str = "", sort: str = "recent"):
             models = [m for m in models
                       if (m.get("model_type") or "").lower() == cat.lower()]
 
+        if arch:
+            models = [m for m in models
+                      if (m.get("base_model") or "Unknown").strip().casefold() == arch.strip().casefold()]
+
         # Filtrar búsqueda
         if q:
-            ql = q.lower()
-            models = [m for m in models if
-                      ql in (m.get("name") or "").lower()
-                      or ql in (m.get("display_name") or "").lower()
-                      or ql in (m.get("creator_name") or "").lower()
-                      or ql in (m.get("custom_tags") or "").lower()
-                      or ql in (m.get("civitai_tags") or "").lower()
-                      or ql in (m.get("base_model") or "").lower()
-                      or ql in (m.get("triggers") or "").lower()]
+            ql = q.lower().replace("\\", "/")
+            fields = ("name", "display_name", "creator_name", "custom_tags",
+                      "civitai_tags", "base_model", "triggers", "file_path")
+            models = [m for m in models if any(
+                ql in (m.get(field) or "").lower().replace("\\", "/")
+                for field in fields
+            ) or any(ql in path.lower().replace("\\", "/")
+                     for path in m.get("file_paths", []))]
 
         # Ordenar
         if sort == "name":
@@ -183,6 +244,8 @@ async def update_model(model_hash: str, payload: UpdateModelPayload):
 
     def _update():
         svc = _get_service()
+        if not svc.db.get_model_by_hash(model_hash):
+            raise HTTPException(404, "Modelo no encontrado")
         if payload.user_notes is not None:
             svc.db.update_user_notes(model_hash, payload.user_notes)
         if payload.custom_tags is not None:
@@ -194,43 +257,31 @@ async def update_model(model_hash: str, payload: UpdateModelPayload):
 
 @vault_router.post("/scan")
 async def start_scan(deep: bool = False):
-    """Inicia un scan del directorio de modelos. Devuelve session_id."""
-    session_id = str(uuid.uuid4())
-    q: queue.Queue = queue.Queue()
-    with _scan_lock:
-        _scan_sessions[session_id] = q
+    """Actualiza el inventario local sin depender de Civitai."""
+    def _run(q):
+        models_dir = _get_models_root()
+        if not models_dir or not os.path.isdir(models_dir):
+            raise ValueError(f"Directorio de modelos no configurado: {models_dir}")
+        svc = _get_service()
 
-    def _run():
-        try:
-            cfg        = _load_config()
-            models_dir = cfg.get("paths", {}).get("models")
-            if not models_dir or not os.path.isdir(models_dir):
-                q.put({"type": "error",
-                       "error": f"Directorio de modelos no configurado: {models_dir}"})
-                return
+        def _cb(current, total, name):
+            q.put({"type": "progress", "current": current,
+                   "total": total, "name": name})
 
-            svc = _get_service()
+        stats = svc.scan_and_index(models_dir, deep_scan=deep, progress_callback=_cb)
+        count = len(svc.db.get_all_models())
+        q.put({"type": "done", "total": count, **(stats or {})})
 
-            def _cb(current, total, name):
-                q.put({"type": "progress", "current": current,
-                       "total": total, "name": name})
-
-            svc.scan_and_index(models_dir, deep_scan=deep, progress_callback=_cb)
-            count = len(svc.db.get_all_models())
-            q.put({"type": "done", "total": count})
-        except Exception as e:
-            import traceback
-            q.put({"type": "error",
-                   "error": f"{e}\n{traceback.format_exc()}"})
-
-    threading.Thread(target=_run, daemon=True).start()
+    session_id = _start_operation(_scan_sessions, _scan_lock, _run)
     return {"session_id": session_id}
 
 
 @vault_router.get("/scan-progress/{session_id}")
 async def scan_progress(session_id: str):
     """SSE stream del progreso de un scan en curso."""
-    q = _scan_sessions.get(session_id)
+    with _scan_lock:
+        _prune_sessions(_scan_sessions)
+        q = _scan_sessions.get(session_id)
     if not q:
         return Response(status_code=404)
 
@@ -265,8 +316,7 @@ async def get_civitai_pending():
 
     def _count():
         svc = _get_service()
-        models = svc.db.get_all_models()
-        return sum(1 for m in models if not (m.get("civitai_tags") or "").strip())
+        return len(svc.pending_models())
 
     pending = await loop.run_in_executor(_pool, _count)
     return {"pending": pending}
@@ -279,39 +329,29 @@ async def start_civitai_sync(force: bool = False):
 
     def _prepare():
         svc = _get_service()
-        models = svc.db.get_all_models()
-        if force:
-            return len(models)
-        return sum(1 for m in models if not (m.get("civitai_tags") or "").strip())
+        return len(svc.pending_models(force=force))
 
     pending = await loop.run_in_executor(_pool, _prepare)
 
-    session_id = str(uuid.uuid4())
-    q: queue.Queue = queue.Queue()
-    with _civitai_lock:
-        _civitai_sessions[session_id] = q
+    def _run(q):
+        svc = _get_service()
 
-    def _run():
-        try:
-            svc = _get_service()
+        def _cb(current, total, name):
+            q.put({"type": "progress", "current": current, "total": total, "name": name})
 
-            def _cb(current, total, name):
-                q.put({"type": "progress", "current": current, "total": total, "name": name})
+        stats = svc.sync_all(progress_cb=_cb, force=force)
+        q.put({"type": "done", **stats})
 
-            stats = svc.sync_all(progress_cb=_cb, force=force)
-            q.put({"type": "done", **stats})
-        except Exception as e:
-            import traceback
-            q.put({"type": "error", "error": f"{e}\n{traceback.format_exc()}"})
-
-    threading.Thread(target=_run, daemon=True).start()
+    session_id = _start_operation(_civitai_sessions, _civitai_lock, _run)
     return {"session_id": session_id, "pending": pending}
 
 
 @vault_router.get("/civitai-progress/{session_id}")
 async def civitai_progress(session_id: str):
     """SSE stream del progreso del sync de Civitai."""
-    q = _civitai_sessions.get(session_id)
+    with _civitai_lock:
+        _prune_sessions(_civitai_sessions)
+        q = _civitai_sessions.get(session_id)
     if not q:
         return Response(status_code=404)
 
@@ -345,56 +385,53 @@ async def apply_moves(payload: ApplyMovesPayload):
     loop = asyncio.get_event_loop()
 
     def _run():
+        from model_vault.core.file_operations import move_model_files, relative_folder
         svc         = _get_service()
         models_root = _get_models_root()
         moved  = 0
         errors = []
+        moved_hashes = []
+        failed_hashes = []
 
         for entry in payload.moves:
             try:
                 m = svc.db.get_model_by_hash(entry.hash)
                 if not m:
-                    errors.append(f"{entry.hash[:8]}: no encontrado")
-                    continue
+                    raise ValueError("Modelo no encontrado")
 
                 file_path  = m["file_path"]
-                rel        = os.path.relpath(file_path, models_root)
-                parts      = rel.replace("\\", "/").split("/")
-                cat_folder = parts[0]
-                filename   = parts[-1]
-
-                if entry.target_subfolder:
-                    new_path = os.path.join(models_root, cat_folder,
-                                            entry.target_subfolder, filename)
-                else:
-                    new_path = os.path.join(models_root, cat_folder, filename)
-
-                if os.path.normpath(new_path) == os.path.normpath(file_path):
-                    continue
-
-                new_dir   = os.path.dirname(new_path)
-                os.makedirs(new_dir, exist_ok=True)
-
-                # Mover archivos compañeros (preview, json, etc.) que comparten el nombre base
-                src_dir   = os.path.dirname(file_path)
-                base_name = os.path.splitext(os.path.basename(file_path))[0]
-                main_name = os.path.basename(file_path)
-                for fname in os.listdir(src_dir):
-                    if fname != main_name and fname.startswith(base_name + "."):
-                        companion = os.path.join(src_dir, fname)
-                        if os.path.isfile(companion):
-                            shutil.move(companion, os.path.join(new_dir, fname))
-
-                shutil.move(file_path, new_path)
-                svc.db.update_file_path(entry.hash, new_path)
-                moved += 1
+                target_folder = entry.target_folder
+                if target_folder is None:
+                    _, cat_folder = relative_folder(file_path, models_root)
+                    target_folder = "/".join(part for part in (cat_folder, entry.target_subfolder) if part)
+                _, changed = move_model_files(
+                    file_path, models_root, target_folder,
+                    update_path=lambda path: svc.db.update_file_path(entry.hash, path, old_path=file_path),
+                )
+                moved += int(changed)
+                moved_hashes.append(entry.hash)
 
             except Exception as e:
                 errors.append(f"{entry.hash[:8]}: {e}")
+                failed_hashes.append(entry.hash)
 
-        return {"moved": moved, "errors": len(errors), "error_detail": errors}
+        return {"moved": moved, "errors": len(errors), "error_detail": errors,
+                "moved_hashes": moved_hashes, "failed_hashes": failed_hashes}
 
-    return await loop.run_in_executor(_pool, _run)
+    if not _operation_lock.acquire(blocking=False):
+        raise HTTPException(409, "Espera a que termine la actualización de Model Vault antes de mover modelos.")
+    def _guarded_run():
+        try:
+            return _run()
+        finally:
+            _operation_lock.release()
+
+    try:
+        future = loop.run_in_executor(_pool, _guarded_run)
+    except Exception:
+        _operation_lock.release()
+        raise
+    return await asyncio.shield(future)
 
 
 @vault_router.get("/arch-map")
@@ -409,12 +446,13 @@ async def arch_map():
         models = svc.db.get_all_models()
         result = {}
         for m in models:
-            fp   = m.get("file_path", "")
             arch = m.get("base_model") or ""
-            if fp and arch:
-                # Clave: nombre de archivo sin extensión (case-insensitive en consulta)
-                stem = os.path.splitext(os.path.basename(fp))[0]
-                result[stem] = arch
+            if arch:
+                for fp in m.get("file_paths") or [m.get("file_path", "")]:
+                    if fp:
+                        # Cada nombre físico (incluidos hardlinks) necesita su arquitectura.
+                        stem = os.path.splitext(os.path.basename(fp))[0]
+                        result[stem] = arch
         return result
 
     loop = asyncio.get_event_loop()

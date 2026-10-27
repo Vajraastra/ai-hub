@@ -72,6 +72,11 @@ def _classify_by_keys(keys: set[str], metadata: dict) -> tuple[str, str, str, fl
         arch = _detect_lora_arch(keys, metadata)
         return "lora", "loras", arch, 0.95
 
+    # Anima's Cosmos DiT has a built-in LLM adapter and separate cross/self AdaLN.
+    # Both official net.* and ComfyUI model.diffusion_model.* containers use this signature.
+    if _is_anima(keys):
+        return "diffusion_model", "diffusion_models", "Anima", 0.95
+
     # ── ControlNet ─────────────────────────────────────────────────────────
     cn_signals = [
         "controlnet_cond_embedding", "control_model.input_blocks",
@@ -148,7 +153,16 @@ def _classify_by_keys(keys: set[str], metadata: dict) -> tuple[str, str, str, fl
     return "unknown", "checkpoints", "Unknown", 0.30
 
 
+def _is_anima(keys: set[str]) -> bool:
+    return (any("llm_adapter" in key for key in keys)
+            and any("adaln_modulation_cross_attn" in key for key in keys)
+            and any("adaln_modulation_self_attn" in key for key in keys))
+
+
 def _detect_lora_arch(keys: set[str], metadata: dict) -> str:
+    declared = str(metadata.get("ss_base_model_version") or metadata.get("modelspec.architecture") or "").lower()
+    if _is_anima(keys) or declared == "anima" or declared.startswith("anima-") or declared.endswith("/anima"):
+        return "Anima"
     if any("double_blocks" in k or "single_blocks" in k for k in keys):
         return "Flux.1"
     if any("lora_te1_" in k or "lora_te2_" in k for k in keys):
@@ -170,6 +184,8 @@ def _detect_lora_arch(keys: set[str], metadata: dict) -> str:
 
 
 def _detect_base_arch_from_keys(keys: set[str]) -> str:
+    if _is_anima(keys):
+        return "Anima"
     if any("double_blocks" in k for k in keys):
         return "Flux.1"
     if any("conditioner.embedders" in k for k in keys):
@@ -192,7 +208,7 @@ def _classify_by_extension(path: str, size_mb: float) -> tuple[str, str, str, fl
     if ext == ".gguf":
         return "diffusion_model", "diffusion_models", "Unknown", 0.70
 
-    if ext in (".ckpt", ".pt"):
+    if ext in (".ckpt", ".pt", ".pth"):
         if size_mb < 200:
             if "vae" in name:
                 return "vae", "vae", "Unknown", 0.65
@@ -229,7 +245,7 @@ def classify(file_path: str) -> ModelClassification:
     size_mb = p.stat().st_size / (1024 * 1024)
     ext = p.suffix.lower()
 
-    if ext == ".safetensors":
+    if ext in (".safetensors", ".sft"):
         try:
             header, metadata = _read_safetensors_header(file_path)
             keys = set(header.keys())

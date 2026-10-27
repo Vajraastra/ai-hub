@@ -24,7 +24,7 @@ tested target. `run.sh` remains as a best-effort, untested fallback for Linux.
 
 | Tool | What it does |
 |---|---|
-| **Model Vault** | Local model library manager with Civitai tag sync and subfolder organization |
+| **Model Vault** | Offline model inventory, architecture filters, optional Civitai metadata, and protected file moves |
 | **Painter** | Browser-based AI image editor: inpaint, outpaint, upscale, regional conditioning, ADetailer, LoRA inline |
 | **Forge Fusion** | Checkpoint derivation and block-wise LoRA fusion/purification, across SDXL, Anima, and Z-Image |
 | **Ideogram 4** | Text-heavy image generation via JSON + bounding boxes (sharp typography, controlled layout) |
@@ -34,6 +34,22 @@ tested target. `run.sh` remains as a best-effort, untested fallback for Linux.
 
 Retired modules (kept out of the active tree, history in `git log`): FaceFusion, dataset-refiner,
 TagGUI, LoRA Merger, Forge Lab — the last two were superseded by Forge Fusion.
+
+### Using Model Vault
+
+Set your models directory in Settings, then open Model Vault.
+
+- **Update library** checks local files without contacting Civitai. Models remain visible even
+  when Civitai does not recognize them. Missing files retain their personal notes and tags.
+- **Architecture** searches across physical folders. Search also accepts filenames and full
+  Windows paths; **Clear filters** restores the whole library.
+- **Civitai data** completes missing metadata. **Advanced** can refresh metadata for every
+  registered model while preserving personal notes and tags.
+- Drag models between folders of the same type, then choose **Apply moves** or **Discard moves**.
+  Existing destination files are rejected, and failed moves remain pending for retry.
+- Identical files share one entry; its details list all known locations. Moves affect the
+  displayed primary path. An existing library keeps its cached hashes during the first scan
+  after upgrading; subsequent scans detect changes by file size, timestamp, and identity.
 
 ---
 

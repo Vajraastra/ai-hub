@@ -1,7 +1,17 @@
 import os
 import json
+import stat
 
-MODEL_EXTENSIONS = {".safetensors", ".ckpt", ".pt"}
+MODEL_EXTENSIONS = {".safetensors", ".sft", ".ckpt", ".pt", ".pth", ".gguf", ".bin"}
+
+
+def _is_directory_link(path):
+    """Do not descend into Windows junctions or directory symlinks."""
+    try:
+        info = os.lstat(path)
+        return stat.S_ISLNK(info.st_mode) or bool(getattr(info, "st_file_attributes", 0) & 0x400)
+    except OSError:
+        return True
 
 def scan_models(root_dir):
     """
@@ -9,7 +19,8 @@ def scan_models(root_dir):
     Returns a list of dictionaries with model info.
     """
     models = []
-    for root, _, files in os.walk(root_dir):
+    for root, dirs, files in os.walk(root_dir, followlinks=False):
+        dirs[:] = [name for name in dirs if not _is_directory_link(os.path.join(root, name))]
         for file in files:
             ext = os.path.splitext(file)[1].lower()
             if ext in MODEL_EXTENSIONS:

@@ -9,8 +9,6 @@ Flujo completo:
 """
 
 import os
-import shutil
-import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -91,7 +89,7 @@ def classify_inbox_file(file_path: str,
       - Si civitai_client está disponible, consulta por hash SHA256
       - Retorna InboxItem con toda la info disponible
     """
-    from core.header_classifier import classify, classify_with_civitai
+    from .header_classifier import classify, classify_with_civitai
 
     p = Path(file_path)
     size_mb = p.stat().st_size / (1024 * 1024)
@@ -220,7 +218,7 @@ def suggest_subfolder(category: str, civitai_tags: list[str],
 
 def place_model(item: InboxItem, models_dir: str,
                 category_override: str = "",
-                subfolder_override: str = "") -> dict:
+                subfolder_override: Optional[str] = None) -> dict:
     """
     Mueve el archivo desde _inbox/ a su destino final.
     También mueve los sidecars (.cm-info.json, .metadata.json, .preview.jpeg)
@@ -238,31 +236,10 @@ def place_model(item: InboxItem, models_dir: str,
     category  = category_override  or item.suggested_category
     subfolder = subfolder_override if subfolder_override is not None else item.suggested_subfolder
 
-    dest_dir = os.path.join(models_dir, category)
-    if subfolder:
-        dest_dir = os.path.join(dest_dir, subfolder)
-
-    os.makedirs(dest_dir, exist_ok=True)
-
-    src = Path(item.file_path)
-    dest_file = os.path.join(dest_dir, src.name)
-
-    if os.path.exists(dest_file):
-        return {"ok": False, "dest": dest_file,
-                "error": f"Ya existe: {dest_file}"}
-
     try:
-        shutil.move(str(src), dest_file)
-
-        # Mover sidecars si existen junto al archivo original
-        base = src.with_suffix("")
-        for sidecar_ext in (".cm-info.json", ".metadata.json", ".preview.jpeg"):
-            sidecar_src = Path(str(base) + sidecar_ext)
-            if sidecar_src.exists():
-                sidecar_dest = os.path.join(dest_dir, sidecar_src.name)
-                if not os.path.exists(sidecar_dest):
-                    shutil.move(str(sidecar_src), sidecar_dest)
-
+        from .file_operations import move_model_files
+        folder = "/".join(part for part in (category, subfolder) if part)
+        dest_file, _ = move_model_files(item.file_path, models_dir, folder)
         return {"ok": True, "dest": dest_file, "error": ""}
 
     except Exception as e:

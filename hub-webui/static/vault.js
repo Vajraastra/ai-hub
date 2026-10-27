@@ -7,14 +7,19 @@ const $ = id => document.getElementById(id);
 let allModels      = [];
 let filteredModels = [];
 let currentCat     = "all";
-let currentSubfolder = null;   // null = todos los subfolders de la categoría
+let currentSubfolder = null;   // null = todas; otro valor = directorio físico relativo completo
 let expandedCat    = null;     // qué categoría tiene su lista de subfolders visible
 let subfolderMap   = {};       // { "lora": { "personajes": 5, "": 2 }, ... }
 let currentSearch  = "";
+let currentArch    = "";
 let currentSort    = "recent";
 let selectedHash   = null;
 let _notesTimer    = null;
 let pendingMoves   = {};   // { hash: { targetSub, targetCat, label } }
+let operationBusy  = false;
+let modelsRequestId = 0;
+let detailRequestId = 0;
+const savingModels = new Set();
 
 const CATEGORIES = [
   { id: "checkpoint",        label: () => t("vault.cat_checkpoint") },
@@ -23,7 +28,19 @@ const CATEGORIES = [
   { id: "textualinversion",  label: () => t("vault.cat_embedding")  },
   { id: "vae",               label: () => t("vault.cat_vae")        },
   { id: "upscaler",          label: () => t("vault.cat_upscaler")   },
+  { id: "diffusion_model",   label: () => t("vault.cat_diffusion")  },
+  { id: "controlnet",        label: () => "ControlNet"              },
+  { id: "clip",              label: () => t("vault.cat_encoder")    },
+  { id: "embedding",         label: () => t("vault.cat_embedding")  },
+  { id: "unknown",           label: () => t("vault.cat_unknown")    },
 ];
+
+function modelCategories() {
+  const known = new Set(CATEGORIES.map(c => c.id));
+  const extra = [...new Set(allModels.map(m => (m.model_type || "unknown").toLowerCase()))]
+    .filter(id => !known.has(id)).sort();
+  return [...CATEGORIES, ...extra.map(id => ({ id, label: () => id }))];
+}
 
 // ════════════════════════════════════════════════════════════════
 // Toast
@@ -41,14 +58,20 @@ function showToast(msg) {
 // Copy for WebUI
 // ════════════════════════════════════════════════════════════════
 function getCopyString(model, weight) {
+  if (model.missing) return null;
   const type       = (model.model_type || "").toLowerCase();
-  const fname      = (model.file_path  || "").split("/").pop() || (model.name || "");
+  const fname      = String(model.file_path || model.name || "").replace(/\\/g, "/").split("/").pop();
   const nameNoExt  = fname.replace(/\.[^.]+$/, "");
   if (!nameNoExt) return null;
 
   if (type === "lora" || type === "locon")  return `<lora:${nameNoExt}:${weight}>`;
-  if (type === "textualinversion")           return `(${nameNoExt}:${weight})`;
+  if (type === "textualinversion" || type === "embedding") return `(${nameNoExt}:${weight})`;
   return null;
+}
+
+function copyWeight() {
+  const weight = Number.parseFloat($("copy-weight")?.value);
+  return Number.isFinite(weight) ? weight : 1;
 }
 
 async function copyToClipboard(text) {
@@ -64,7 +87,7 @@ async function copyToClipboard(text) {
 function copyModelFromDetail(hash) {
   const m = allModels.find(x => x.hash === hash);
   if (!m) return;
-  const weight = parseFloat($("copy-weight")?.value) || 1;
+  const weight = copyWeight();
   const str    = getCopyString(m, weight);
   if (str) copyToClipboard(str);
 }
@@ -72,7 +95,7 @@ function copyModelFromDetail(hash) {
 function updateCopyPreview(hash) {
   const m = allModels.find(x => x.hash === hash);
   if (!m) return;
-  const weight = parseFloat($("copy-weight")?.value) || 1;
+  const weight = copyWeight();
   const el     = $("copy-string-preview");
   if (el) el.textContent = getCopyString(m, weight) || "";
 }
@@ -81,16 +104,25 @@ function updateCopyPreview(hash) {
 // Carga de modelos
 // ════════════════════════════════════════════════════════════════
 async function loadModels() {
+  const requestId = ++modelsRequestId;
   try {
     const res  = await fetch("/api/vault/models");
+    if (!res.ok) throw new Error(t("vault.load_error"));
     const data = await res.json();
+    if (requestId !== modelsRequestId) return;
+    if (!Array.isArray(data.models)) throw new Error(t("vault.load_error"));
     allModels = data.models || [];
     computeSubfolderMap();
+    renderArchitectureOptions();
     renderSidebar();
     applyFilters();
+    return true;
   } catch (_) {
-    $("model-grid").innerHTML =
+    if (requestId !== modelsRequestId) return;
+    if (allModels.length) showToast("❌ " + t("vault.load_error"));
+    else $("model-grid").innerHTML =
       `<div class="grid-empty"><span class="big-icon">❌</span>${t("vault.load_error")}</div>`;
+    return false;
   }
 }
 
@@ -139,18 +171,19 @@ function renderGrid() {
       pending                 ? "pending-move" : "",
     ].filter(Boolean).join(" ");
     card.dataset.hash = m.hash;
-    card.draggable    = true;
+    card.draggable    = !m.missing;
 
     card.innerHTML = `
       ${thumbUrl
         ? `<img class="model-thumb" src="${thumbUrl}" alt="${escapeHtml(displayName)}" loading="lazy">`
         : `<div class="model-thumb-placeholder">📦</div>`}
       <div class="model-card-body">
-        <div class="model-card-name" title="${escapeHtml(displayName)}">${escapeHtml(displayName)}</div>
+        <div class="model-card-name" title="${escapeHtml(m.file_path || displayName)}">${escapeHtml(displayName)}</div>
         <div class="model-card-meta">
           ${baseModel ? `<span class="model-type-badge">${escapeHtml(baseModel)}</span> ` : ""}
           ${modelType ? `<span style="color:var(--text-dim)">${escapeHtml(modelType)}</span>` : ""}
         </div>
+        ${m.missing ? `<span class="missing-badge">${t("vault.file_missing")}</span>` : ""}
         ${pending ? `<span class="move-badge">→ ${escapeHtml(pending.label)}</span>` : ""}
       </div>
       ${copyStr ? `<button class="card-copy-btn" title="${escapeHtml(copyStr)}">⎘</button>` : ""}`;
@@ -165,6 +198,7 @@ function renderGrid() {
 
     // Drag events
     card.addEventListener("dragstart", e => {
+      if (m.missing || operationBusy) { e.preventDefault(); return; }
       // Ghost semitransparente
       const ghost = card.cloneNode(true);
       ghost.style.cssText = "position:fixed;top:-9999px;left:-9999px;width:160px;opacity:0.6;pointer-events:none;";
@@ -175,8 +209,8 @@ function renderGrid() {
       e.dataTransfer.effectAllowed = "move";
       e.dataTransfer.setData("application/json", JSON.stringify({
         hash:   m.hash,
-        catId:  (m.model_type || "").toLowerCase(),
-        sub:    m.subfolder || "",
+        catId:  (m.model_type || "unknown").toLowerCase(),
+        folder: modelFolder(m),
       }));
       card.classList.add("dragging");
     });
@@ -191,11 +225,11 @@ function renderGrid() {
 // Subfolders
 // ════════════════════════════════════════════════════════════════
 function computeSubfolderMap() {
-  subfolderMap = {};
-  allModels.forEach(m => {
-    const cat = (m.model_type || "").toLowerCase();
-    const sub = m.subfolder  || "";
-    if (!subfolderMap[cat]) subfolderMap[cat] = {};
+  subfolderMap = Object.create(null);
+  architectureModels().forEach(m => {
+    const cat = (m.model_type || "unknown").toLowerCase();
+    const sub = modelFolder(m);
+    if (!subfolderMap[cat]) subfolderMap[cat] = Object.create(null);
     subfolderMap[cat][sub] = (subfolderMap[cat][sub] || 0) + 1;
   });
 }
@@ -206,8 +240,8 @@ function selectCategory(catId) {
     currentSubfolder = null;
     expandedCat      = null;
   } else if (currentCat === catId) {
-    // Ya seleccionada — solo toggle del panel de subfolders
-    expandedCat = (expandedCat === catId) ? null : catId;
+    expandedCat = currentSubfolder !== null || expandedCat !== catId ? catId : null;
+    currentSubfolder = null;
   } else {
     currentCat       = catId;
     currentSubfolder = null;
@@ -228,6 +262,8 @@ function selectSubfolder(catId, sub) {
 }
 
 function renderSidebar() {
+  computeSubfolderMap();
+  const visibleModels = architectureModels();
   const nav = $("sidebar");
   nav.innerHTML = "";
 
@@ -239,19 +275,20 @@ function renderSidebar() {
   // Botón "Todos"
   const allBtn = document.createElement("button");
   allBtn.className = "cat-btn" + (currentCat === "all" ? " active" : "");
-  allBtn.innerHTML = `<span>${t("vault.cat_all")}</span><span class="cat-count">${allModels.length}</span>`;
+  allBtn.innerHTML = `<span>${t("vault.cat_all")}</span><span class="cat-count">${visibleModels.length}</span>`;
   allBtn.addEventListener("click", () => selectCategory("all"));
   nav.appendChild(allBtn);
 
-  CATEGORIES.forEach(({ id, label }) => {
-    const catCount = allModels.filter(m => (m.model_type || "").toLowerCase() === id).length;
+  modelCategories().forEach(({ id, label }) => {
+    const catCount = visibleModels.filter(m => (m.model_type || "unknown").toLowerCase() === id).length;
+    if (!catCount) return;
     const subs     = subfolderMap[id] || {};
     const subEntries = Object.entries(subs).sort(([a], [b]) => {
       if (a === "") return -1;
       if (b === "") return 1;
       return a.localeCompare(b);
     });
-    const hasSubfolders = subEntries.some(([s]) => s !== "");
+    const hasSubfolders = subEntries.length > 0;
     const isActive      = currentCat === id;
     const isExpanded    = expandedCat === id;
 
@@ -262,7 +299,7 @@ function renderSidebar() {
       isExpanded && hasSubfolders ? "expanded" : "",
     ].filter(Boolean).join(" ");
     btn.innerHTML = `
-      <span>${label()}</span>
+      <span>${escapeHtml(label())}</span>
       <span style="display:flex;align-items:center;gap:2px">
         <span class="cat-count">${catCount}</span>
         ${hasSubfolders ? `<span class="cat-expand">&#9658;</span>` : ""}
@@ -280,7 +317,7 @@ function renderSidebar() {
         const subBtn = document.createElement("button");
         subBtn.className = [
           "subfolder-btn",
-          sub === "" ? "is-root" : "",
+          !sub.includes("/") ? "is-root" : "",
           isSubActive ? "active" : "",
         ].filter(Boolean).join(" ");
         subBtn.innerHTML = `
@@ -329,6 +366,7 @@ async function openDetails(hash) {
     return;
   }
   selectedHash = hash;
+  const requestId = ++detailRequestId;
 
   // Marcar tarjeta activa
   document.querySelectorAll(".model-card").forEach(c => {
@@ -341,16 +379,20 @@ async function openDetails(hash) {
 
   try {
     const res = await fetch(`/api/vault/models/${hash}`);
-    if (!res.ok) { showToast("❌ " + t("vault.detail_not_found")); return; }
+    if (requestId !== detailRequestId || selectedHash !== hash) return;
+    if (!res.ok) throw new Error(t("vault.detail_not_found"));
     const m = await res.json();
+    if (requestId !== detailRequestId || selectedHash !== hash) return;
     renderDetails(m);
-  } catch (_) {
+  } catch (error) {
+    if (requestId !== detailRequestId || selectedHash !== hash) return;
     $("details-content").innerHTML =
-      `<div style="color:var(--status-error);font-size:12px">❌ ${t("vault.detail_error")}</div>`;
+      `<div style="color:var(--status-error);font-size:12px">❌ ${escapeHtml(error.message || t("vault.detail_error"))}</div>`;
   }
 }
 
 function closeDetails() {
+  detailRequestId++;
   selectedHash = null;
   $("details-panel").classList.remove("open");
   document.querySelectorAll(".model-card.selected").forEach(c => c.classList.remove("selected"));
@@ -371,12 +413,14 @@ function renderDetails(m) {
   const civitaiTagsHtml = civitaiTags.length
     ? civitaiTags.map(s => `<span class="civitai-tag-chip">${escapeHtml(s)}</span>`).join("")
     : null;
+  const otherPaths = (m.file_paths || []).filter(filePath => normalizeSearch(filePath) !== normalizeSearch(m.file_path));
 
   $("details-content").innerHTML = `
     ${thumbUrl
       ? `<img class="detail-thumb" src="${thumbUrl}" alt="${escapeHtml(displayName)}">`
       : ""}
     <div class="detail-name">${escapeHtml(displayName)}</div>
+    ${m.missing ? `<p class="missing-badge">${t("vault.file_missing")}</p>` : ""}
 
     <div class="detail-row">
       <span class="detail-lbl">${t("vault.detail_type")}</span>
@@ -400,12 +444,20 @@ function renderDetails(m) {
         ${escapeHtml(m.name || "—")}
       </span>
     </div>
+    <div class="detail-row">
+      <span class="detail-lbl">${t("vault.detail_path")}</span>
+      <span class="detail-val" style="font-size:11px;word-break:break-all">${escapeHtml(m.file_path || "—")}</span>
+    </div>
+    ${otherPaths.length ? `
+    <div class="detail-section-title">${t("vault.other_locations")}</div>
+    <div style="font-size:11px;line-height:1.6;word-break:break-all">${otherPaths.map(escapeHtml).join("<br>")}</div>
+    <p style="font-size:11px;color:var(--text-dim);margin-top:6px">${t("vault.move_primary_only")}</p>` : ""}
 
     ${getCopyString(m, 1) !== null ? `
     <div class="detail-section-title">${t("vault.copy_webui")}</div>
     <div class="copy-webui-row">
       <input type="number" id="copy-weight" class="copy-weight-input"
-             value="1" min="0.1" max="2" step="0.05"
+             value="1" step="0.05"
              oninput="updateCopyPreview('${m.hash}')">
       <span id="copy-string-preview" class="copy-string-preview">${escapeHtml(getCopyString(m, 1) || "")}</span>
       <button class="btn btn-outline" style="font-size:11px;padding:4px 10px;flex-shrink:0"
@@ -432,225 +484,216 @@ function renderDetails(m) {
     <div class="detail-section-title">${t("vault.detail_notes")}</div>
     <textarea id="detail-notes" placeholder="${escapeHtml(t("vault.detail_notes_placeholder"))}">${escapeHtml(m.user_notes || "")}</textarea>
     <div style="display:flex;gap:8px;margin-top:8px">
-      <button class="btn btn-primary" style="flex:1;font-size:12px"
+      <button id="detail-save" class="btn btn-primary" style="flex:1;font-size:12px" ${savingModels.has(m.hash) ? "disabled" : ""}
               onclick="saveModelData('${m.hash}')">${t("vault.detail_save")}</button>
     </div>`;
 }
 
 async function saveModelData(hash) {
+  if (selectedHash !== hash || savingModels.has(hash)) return;
   const notes = $("detail-notes")?.value ?? null;
   const tags  = $("detail-tags")?.value  ?? null;
+  savingModels.add(hash);
+  if ($("detail-save")) $("detail-save").disabled = true;
   try {
-    const res  = await fetch(`/api/vault/models/${hash}`, {
+    const data = await checkedJson(`/api/vault/models/${hash}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ user_notes: notes, custom_tags: tags }),
     });
-    const data = await res.json();
-    if (data.ok) showToast("✅ " + t("vault.saved"));
-    else         showToast("❌ " + t("vault.save_error"));
-  } catch (_) {
-    showToast("❌ " + t("vault.conn_error"));
+    if (!data.ok) throw new Error(t("vault.save_error"));
+    const model = allModels.find(m => m.hash === hash);
+    if (model) { model.user_notes = notes; model.custom_tags = tags; }
+    applyFilters();
+    showToast("✅ " + t("vault.saved"));
+  } catch (error) {
+    showToast("❌ " + (error.message || t("vault.conn_error")));
+  } finally {
+    savingModels.delete(hash);
+    if (selectedHash === hash && $("detail-save")) $("detail-save").disabled = false;
   }
 }
 
 // ════════════════════════════════════════════════════════════════
 // Scan con SSE
 // ════════════════════════════════════════════════════════════════
-async function startScan() {
-  // Si hay movimientos pendientes: aplicar y recargar desde DB (sin scan de filesystem)
-  if (Object.keys(pendingMoves).length > 0) {
-    const ok = await applyPendingMoves();
-    if (ok) await loadModels();
-    return;
-  }
+const OPERATION_BUTTONS = ["btn-scan", "btn-civitai-menu", "btn-civitai-sync", "btn-civitai-force", "btn-apply-moves", "btn-cancel-moves"];
 
-  const btn = $("btn-scan");
-  btn.disabled = true;
-  btn.textContent = t("vault.scanning") + "...";
+function setOperationBusy(busy) {
+  operationBusy = busy;
+  OPERATION_BUTTONS.forEach(id => { $(id).disabled = busy; });
+  if (busy) closeCivitaiMenu();
+}
+
+function closeCivitaiMenu() {
+  $("civitai-menu").hidden = true;
+  $("btn-civitai-menu").setAttribute("aria-expanded", "false");
+}
+
+async function withLibraryOperation(action) {
+  if (operationBusy) return;
+  setOperationBusy(true);
+  try {
+    await action();
+  } catch (error) {
+    showToast("❌ " + error.message);
+  } finally {
+    $("scan-progress").classList.remove("visible");
+    setOperationBusy(false);
+  }
+}
+
+async function checkedJson(url, options) {
+  const res = await fetch(url, options);
+  const info = await res.json();
+  if (!res.ok) throw new Error(info.detail || info.error || `Error ${res.status}`);
+  return info;
+}
+
+async function runLibraryJob(url, kind) {
+  const local = kind === "scan";
+  $("scan-kind").dataset.kind = local ? "vault.scanning_local" : "vault.downloading_civitai";
+  $("scan-kind").textContent = t(local ? "vault.scanning_local" : "vault.downloading_civitai");
   $("scan-progress").classList.add("visible");
   $("scan-bar-fill").style.width = "0%";
-  $("scan-label").textContent = t("vault.scan_starting");
+  $("scan-label").textContent = t(local ? "vault.scan_starting" : "vault.civitai_connecting");
   $("scan-fraction").textContent = "";
-
-  try {
-    const res = await fetch("/api/vault/scan?deep=false", { method: "POST" });
-    const { session_id } = await res.json();
-
-    const sse = new EventSource(`/api/vault/scan-progress/${session_id}`);
+  const info = await checkedJson(url, { method: "POST" });
+  if (!info.session_id) throw new Error(t(local ? "vault.scan_start_error" : "vault.civitai_start_error"));
+  return new Promise((resolve, reject) => {
+    const sse = new EventSource(`/api/vault/${local ? "scan-progress" : "civitai-progress"}/${encodeURIComponent(info.session_id)}`);
+    const fail = message => { sse.close(); reject(new Error(message)); };
     sse.onmessage = e => {
-      const ev = JSON.parse(e.data);
-      if (ev.type === "ping") return;
-
+      let ev;
+      try { ev = JSON.parse(e.data); }
+      catch (_) { fail(t("vault.invalid_progress")); return; }
       if (ev.type === "progress") {
         const pct = ev.total ? Math.round(ev.current / ev.total * 100) : 0;
         $("scan-bar-fill").style.width = `${pct}%`;
         $("scan-label").textContent = ev.name || "";
         $("scan-fraction").textContent = ev.total ? `${ev.current}/${ev.total}` : "";
-      }
-
-      if (ev.type === "done") {
+      } else if (ev.type === "done") {
         sse.close();
-        $("scan-progress").classList.remove("visible");
-        btn.disabled = false;
-        btn.textContent = t("vault.btn_scan");
-        showToast("✅ " + t("vault.scan_complete", { total: ev.total }));
-        refresh();
-      }
-
-      if (ev.type === "error") {
-        sse.close();
-        $("scan-progress").classList.remove("visible");
-        btn.disabled = false;
-        btn.textContent = t("vault.btn_scan");
-        showToast(`❌ ${ev.error}`);
+        resolve(ev);
+      } else if (ev.type === "error") {
+        fail(ev.error || t(local ? "vault.scan_error" : "vault.civitai_stream_error"));
       }
     };
-    sse.onerror = () => {
-      sse.close();
-      $("scan-progress").classList.remove("visible");
-      btn.disabled = false;
-      btn.textContent = t("vault.btn_scan");
-      showToast("❌ " + t("vault.scan_error"));
-    };
-  } catch (_) {
-    $("scan-progress").classList.remove("visible");
-    btn.disabled = false;
-    btn.textContent = t("vault.btn_scan");
-    showToast("❌ " + t("vault.scan_start_error"));
-  }
+    sse.onerror = () => fail(t(local ? "vault.scan_error" : "vault.civitai_stream_error"));
+  });
 }
 
-// ════════════════════════════════════════════════════════════════
-// Civitai Tag Sync
-// ════════════════════════════════════════════════════════════════
+async function startScan() {
+  await withLibraryOperation(async () => {
+    const ev = await runLibraryJob("/api/vault/scan?deep=false", "scan");
+    showToast((ev.errors ? "⚠ " : "✅ ") + t("vault.scan_complete", { total: ev.total })
+      + (ev.errors ? " " + t("vault.scan_partial_errors", { count: ev.errors }) : ""));
+    await loadModels();
+  });
+}
+
 async function syncCivitai() {
-  // Paso 1: consultar pendientes SIN iniciar el thread
-  let pending = 0;
-  try {
-    const res  = await fetch("/api/vault/civitai-pending");
-    const data = await res.json();
-    pending = data.pending ?? 0;
-  } catch (_) {
-    showToast("❌ " + t("vault.civitai_pending_error"));
-    return;
-  }
-
-  if (pending === 0) {
-    showToast("✅ " + t("vault.civitai_all_synced"));
-    return;
-  }
-
-  const etaMin = Math.ceil(pending * 1.5 / 60);
-  const ok = confirm(t("vault.civitai_confirm", { count: pending, eta: etaMin }));
-  if (!ok) return;
-
-  await _runCivitaiSync(false);
+  await withLibraryOperation(async () => {
+    const data = await checkedJson("/api/vault/civitai-pending");
+    const pending = data.pending ?? 0;
+    if (pending === 0) {
+      showToast("✅ " + t("vault.civitai_all_synced"));
+      return;
+    }
+    const etaMin = Math.ceil(pending * 1.5 / 60);
+    if (!confirm(t("vault.civitai_confirm", { count: pending, eta: etaMin }))) return;
+    await runCivitaiSync(false);
+  });
 }
 
 async function forceSyncCivitai() {
-  let total = allModels.length || 100;
-  const etaMin = Math.ceil(total * 1.5 / 60);
-  const ok = confirm(t("vault.civitai_force_confirm", { eta: etaMin }));
-  if (!ok) return;
-  await _runCivitaiSync(true);
+  await withLibraryOperation(async () => {
+    const etaMin = Math.ceil(allModels.length * 1.5 / 60);
+    if (!confirm(t("vault.civitai_force_confirm", { eta: etaMin }))) return;
+    await runCivitaiSync(true);
+  });
 }
 
-async function _runCivitaiSync(force) {
-  const btn = force ? $("btn-civitai-force") : $("btn-civitai-sync");
-
-  // Iniciar el sync
-  let session_id;
-  try {
-    const res  = await fetch(`/api/vault/civitai-sync?force=${force}`, { method: "POST" });
-    const info = await res.json();
-    session_id = info.session_id;
-  } catch (_) {
-    showToast("❌ " + t("vault.civitai_start_error"));
-    return;
-  }
-
-  const btnLabel = t(force ? "vault.btn_resync_all" : "vault.btn_sync_civitai");
-  btn.disabled = true;
-  btn.textContent = t("vault.scanning") + "...";
-  $("scan-progress").classList.add("visible");
-  $("scan-bar-fill").style.width = "0%";
-  $("scan-label").textContent = t("vault.civitai_connecting");
-  $("scan-fraction").textContent = "";
-
-  try {
-    const sse = new EventSource(`/api/vault/civitai-progress/${session_id}`);
-    sse.onmessage = e => {
-      const ev = JSON.parse(e.data);
-      if (ev.type === "ping") return;
-
-      if (ev.type === "progress") {
-        const pct = ev.total ? Math.round(ev.current / ev.total * 100) : 0;
-        $("scan-bar-fill").style.width = `${pct}%`;
-        $("scan-label").textContent = ev.name || "";
-        $("scan-fraction").textContent = ev.total ? `${ev.current}/${ev.total}` : "";
-      }
-
-      if (ev.type === "done") {
-        sse.close();
-        $("scan-progress").classList.remove("visible");
-        btn.disabled = false;
-        btn.textContent = btnLabel;
-        showToast("☁ " + t("vault.civitai_done", {
-          synced: ev.synced ?? 0, skipped: ev.skipped ?? 0,
-          not_found: ev.not_found ?? 0, errors: ev.errors ?? 0
-        }));
-        refresh();
-      }
-
-      if (ev.type === "error") {
-        sse.close();
-        $("scan-progress").classList.remove("visible");
-        btn.disabled = false;
-        btn.textContent = btnLabel;
-        showToast(`❌ ${ev.error}`);
-      }
-    };
-    sse.onerror = () => {
-      sse.close();
-      $("scan-progress").classList.remove("visible");
-      btn.disabled = false;
-      btn.textContent = btnLabel;
-      showToast("❌ " + t("vault.civitai_stream_error"));
-    };
-  } catch (_) {
-    $("scan-progress").classList.remove("visible");
-    btn.disabled = false;
-    btn.textContent = btnLabel;
-    showToast("❌ " + t("vault.civitai_start_error"));
-  }
+async function runCivitaiSync(force) {
+  const ev = await runLibraryJob(`/api/vault/civitai-sync?force=${force}`, "civitai");
+  showToast("☁ " + t("vault.civitai_done", {
+    synced: ev.synced ?? 0, skipped: ev.skipped ?? 0,
+    not_found: ev.not_found ?? 0, errors: ev.errors ?? 0
+  }));
+  await loadModels();
 }
 
 // ════════════════════════════════════════════════════════════════
 // Filtrado en cliente
 // ════════════════════════════════════════════════════════════════
+function normalizeSearch(value) {
+  return String(value || "").toLowerCase().replace(/\\/g, "/");
+}
+
+function modelFolder(model) {
+  return model.folder !== undefined ? model.folder : model.subfolder || "";
+}
+
+function modelArchitecture(model) {
+  return String(model.base_model || "Unknown").trim() || "Unknown";
+}
+
+function architectureModels() {
+  return currentArch ? allModels.filter(m => modelArchitecture(m).toLowerCase() === currentArch.toLowerCase()) : allModels;
+}
+
+function renderArchitectureOptions() {
+  const architectureNames = new Map();
+  allModels.forEach(m => {
+    const arch = modelArchitecture(m);
+    if (!architectureNames.has(arch.toLowerCase())) architectureNames.set(arch.toLowerCase(), arch);
+  });
+  const architectures = [...architectureNames.values()]
+    .sort((a, b) => a.localeCompare(b));
+  if (currentArch && !architectures.includes(currentArch)) currentArch = "";
+  const select = $("arch-select");
+  select.innerHTML = `<option value="">${escapeHtml(t("vault.all_architectures"))}</option>`
+    + architectures.map(arch => `<option value="${escapeHtml(arch)}">${escapeHtml(arch)}</option>`).join("");
+  select.value = currentArch;
+}
+
+function renderFilterContext() {
+  const category = modelCategories().find(c => c.id === currentCat);
+  const location = currentCat === "all" ? t("vault.all_types") : category?.label() || currentCat;
+  const folder = currentSubfolder === null ? t("vault.all_folders") : currentSubfolder || t("vault.subfolder_root");
+  $("filter-context").textContent = `${t("vault.location")}: ${location} · ${folder}`;
+  $("btn-clear-filters").hidden = !currentSearch && !currentArch && currentCat === "all" && currentSubfolder === null;
+}
+
+function clearFilters() {
+  currentCat = "all";
+  currentSubfolder = null;
+  expandedCat = null;
+  currentSearch = "";
+  currentArch = "";
+  $("search-box").value = "";
+  $("arch-select").value = "";
+  renderSidebar();
+  applyFilters();
+}
+
 function applyFilters() {
-  let result = allModels;
+  let result = architectureModels();
 
   if (currentCat !== "all") {
     result = result.filter(m =>
-      (m.model_type || "").toLowerCase() === currentCat
+      (m.model_type || "unknown").toLowerCase() === currentCat
     );
     if (currentSubfolder !== null) {
-      result = result.filter(m => (m.subfolder || "") === currentSubfolder);
+      result = result.filter(m => modelFolder(m) === currentSubfolder);
     }
   }
 
   if (currentSearch) {
-    const ql = currentSearch.toLowerCase();
+    const ql = normalizeSearch(currentSearch);
     result = result.filter(m =>
-      (m.name          || "").toLowerCase().includes(ql) ||
-      (m.display_name  || "").toLowerCase().includes(ql) ||
-      (m.creator_name  || "").toLowerCase().includes(ql) ||
-      (m.custom_tags   || "").toLowerCase().includes(ql) ||
-      (m.civitai_tags  || "").toLowerCase().includes(ql) ||
-      (m.base_model    || "").toLowerCase().includes(ql) ||
-      (m.triggers      || "").toLowerCase().includes(ql)
+      [m.name, m.file_path, ...(m.file_paths || []), m.display_name, m.creator_name, m.custom_tags,
+        m.civitai_tags, m.base_model, m.triggers].some(value => normalizeSearch(value).includes(ql))
     );
   }
 
@@ -665,6 +708,7 @@ function applyFilters() {
   }
 
   filteredModels = result;
+  renderFilterContext();
   renderGrid();
 }
 
@@ -672,40 +716,48 @@ function applyFilters() {
 // Drag & Drop — staging
 // ════════════════════════════════════════════════════════════════
 function stageMove(dragData, targetCat, targetSub) {
-  const { hash, catId, sub: currentSub } = dragData;
+  if (operationBusy) return;
+  const { hash } = dragData || {};
+  const model = allModels.find(m => m.hash === hash);
+  if (!model) return;
+  if (model.missing) { showToast(t("vault.file_missing")); return; }
+  const catId = (model.model_type || "unknown").toLowerCase();
+  const currentSub = modelFolder(model);
 
   // Ya está en el destino
   if (catId === targetCat && currentSub === targetSub) {
-    showToast(t("vault.move_already_there"));
+    if (pendingMoves[hash]) {
+      delete pendingMoves[hash];
+      updateSyncBtn();
+      renderGrid();
+      showToast(t("vault.move_canceled"));
+    } else showToast(t("vault.move_already_there"));
     return;
   }
 
-  // Warning cross-categoría
   if (catId !== targetCat) {
-    const ok = confirm(t("vault.move_cross_cat_warn", {
-      from: catId, to: targetCat,
-    }));
-    if (!ok) return;
+    showToast(t("vault.move_cross_cat_blocked"));
+    return;
   }
 
   const label = targetSub || t("vault.subfolder_root");
-  pendingMoves[hash] = { targetSub, targetCat, label };
+  pendingMoves[hash] = { targetFolder: targetSub, targetCat, label };
   updateSyncBtn();
   renderGrid();
 }
 
 function updateSyncBtn() {
   const count = Object.keys(pendingMoves).length;
-  const btn   = $("btn-scan");
-  btn.textContent = count > 0
-    ? `${t("vault.btn_scan")} (${count})`
-    : t("vault.btn_scan");
+  const btn   = $("btn-apply-moves");
+  btn.hidden = count === 0;
+  btn.textContent = t("vault.apply_moves", { count });
+  $("btn-cancel-moves").hidden = count === 0;
 }
 
 async function applyPendingMoves() {
   const moves = Object.entries(pendingMoves).map(([hash, info]) => ({
     hash,
-    target_subfolder: info.targetSub,
+    target_folder: info.targetFolder,
   }));
   if (!moves.length) return true;
 
@@ -723,7 +775,7 @@ async function applyPendingMoves() {
     }
 
     const data = await res.json();
-    pendingMoves = {};
+    for (const hash of data.moved_hashes || []) delete pendingMoves[hash];
     updateSyncBtn();
 
     if (data.errors > 0) {
@@ -776,9 +828,40 @@ document.addEventListener("DOMContentLoaded", () => {
   // Civitai sync
   $("btn-civitai-sync").addEventListener("click", syncCivitai);
   $("btn-civitai-force").addEventListener("click", forceSyncCivitai);
+  $("btn-civitai-menu").addEventListener("click", () => {
+    if (operationBusy) return;
+    const menu = $("civitai-menu");
+    menu.hidden = !menu.hidden;
+    $("btn-civitai-menu").setAttribute("aria-expanded", String(!menu.hidden));
+  });
+  document.addEventListener("click", e => {
+    if (!$("civitai-menu").contains(e.target) && !$("btn-civitai-menu").contains(e.target)) closeCivitaiMenu();
+  });
+  document.addEventListener("keydown", e => { if (e.key === "Escape") closeCivitaiMenu(); });
+  $("btn-apply-moves").addEventListener("click", () => withLibraryOperation(async () => {
+    if (await applyPendingMoves()) await loadModels();
+  }));
+  $("btn-cancel-moves").addEventListener("click", () => {
+    if (operationBusy) return;
+    pendingMoves = {};
+    updateSyncBtn();
+    renderGrid();
+  });
+  $("arch-select").addEventListener("change", e => {
+    currentArch = e.target.value;
+    currentCat = "all";
+    currentSubfolder = null;
+    expandedCat = null;
+    renderSidebar();
+    applyFilters();
+  });
+  $("btn-clear-filters").addEventListener("click", clearFilters);
 
   // Re-render sidebar al cambiar idioma (locale.js solo actualiza data-i18n estático)
   document.querySelectorAll("[data-i18n-lang-btn]").forEach(btn => {
-    btn.addEventListener("click", () => setTimeout(renderSidebar, 0));
+    btn.addEventListener("click", () => setTimeout(() => {
+      renderSidebar(); renderArchitectureOptions(); renderFilterContext(); updateSyncBtn();
+      if (operationBusy) $("scan-kind").textContent = t($("scan-kind").dataset.kind || "vault.scanning_local");
+    }, 0));
   });
 });

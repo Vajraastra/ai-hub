@@ -4,9 +4,10 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from .hasher import calculate_sha256
 from .scanner import scan_models
-from .civitai_client import CivitaiClient
+from .civitai_client import CivitaiClient, CivitaiError
 from .database import VaultDatabase
 from .metadata_processor import MetadataProcessor
+from .header_classifier import classify
 
 class VaultService:
     """
@@ -20,31 +21,121 @@ class VaultService:
         self.executor = ThreadPoolExecutor(max_workers=4)
 
     def scan_and_index(self, root_dir, deep_scan=False, progress_callback=None):
-        """
-        Scans a directory and indexes models.
-        If deep_scan=True, it calculates hashes for all files.
-        Otherwise, only for files without metadata.
+        """Index local files without network calls or changes to model sidecars.
+
+        Known paths reuse their hash unless deep_scan explicitly requests a rehash.
+        Civitai synchronization is a separate, optional operation.
         """
         raw_models = scan_models(root_dir)
         total = len(raw_models)
-        
+        known = {self.db._path_key(m["file_path"]): m
+                 for m in self.db.get_all_models() if m.get("file_path")}
+        known.update({entry["path_key"]: entry for entry in self.db.get_file_records()})
+        physical_hashes = {(entry.get("file_id"), entry.get("file_size"), entry.get("file_mtime_ns")): entry["hash"]
+                           for entry in known.values() if entry.get("file_id")}
+        verified = {}
+        stats = {"indexed": 0, "added": 0, "errors": 0, "error_detail": []}
+
         for i, model in enumerate(raw_models):
             if progress_callback:
                 progress_callback(i + 1, total, model["name"])
+            try:
+                existing = known.get(self.db._path_key(model["path"]))
+                info = os.stat(model["path"])
+                file_info = {"file_size": info.st_size, "file_mtime_ns": info.st_mtime_ns,
+                             "file_id": f"{info.st_dev}:{info.st_ino}" if info.st_ino else None}
+                identity = (file_info["file_id"], info.st_size, info.st_mtime_ns)
+                unchanged = existing and (existing.get("file_size") is None or (
+                    existing.get("file_size") == info.st_size and existing.get("file_mtime_ns") == info.st_mtime_ns
+                    and existing.get("file_id") in (None, file_info["file_id"])))
+                if not deep_scan and unchanged:
+                    file_hash = existing["hash"]
+                else:
+                    file_hash = verified.get(identity) if info.st_ino else None
+                    if not file_hash and not deep_scan and info.st_ino:
+                        file_hash = physical_hashes.get(identity)
+                    if not file_hash:
+                        file_hash = calculate_sha256(model["path"])
+                    after = os.stat(model["path"])
+                    if (after.st_size, after.st_mtime_ns, after.st_ino) != (info.st_size, info.st_mtime_ns, info.st_ino):
+                        raise OSError("El archivo cambió durante la revisión; vuelve a actualizar la biblioteca")
+                if not file_hash:
+                    raise OSError("No se pudo leer el archivo para calcular su hash")
+                if info.st_ino:
+                    verified[identity] = file_hash
+                existing_hash = self.db.get_model_by_hash(file_hash)
+                record = self._local_record(model, file_hash, root_dir, existing_hash)
+                self.db.index_local_model(record, file_info=file_info,
+                                          previous_hash=existing["hash"] if existing else None)
+                stats["indexed"] += 1
+                stats["added"] += int(existing_hash is None)
+            except Exception as exc:
+                stats["errors"] += 1
+                stats["error_detail"].append({"path": model["path"], "error": str(exc)})
+        return stats
 
-            # Check if already in DB and not needing update
-            existing = self.db.get_model_by_path(model["path"])
-            
-            # Logic for when to re-hash
-            file_hash = None
-            if existing and not deep_scan:
-                file_hash = existing["hash"]
-            else:
-                file_hash = calculate_sha256(model["path"])
+    def _local_record(self, model, file_hash, root_dir, existing):
+        """Read optional local metadata, accepting hashed sidecars only on a match."""
+        record = {"hash": file_hash, "file_path": model["path"], "name": model["name"]}
+        for key in ("metadata_path", "cm_info_path"):
+            path = model.get(key)
+            if not path:
+                continue
+            try:
+                with open(path, encoding="utf-8-sig") as stream:
+                    data = json.load(stream)
+                if not isinstance(data, dict):
+                    continue
+                hashes = data.get("Hashes") or {}
+                sidecar_hash = data.get("sha256") or (hashes.get("SHA256") if isinstance(hashes, dict) else None)
+                if sidecar_hash and str(sidecar_hash).lower() != file_hash.lower():
+                    continue
+                version = data.get("civitai")
+                if isinstance(version, dict):
+                    meta = self.client.extract_metadata(version)
+                    values = {
+                        "display_name": meta.get("modelName"), "creator_name": meta.get("creator"),
+                        "base_model": meta.get("baseModel"), "model_type": meta.get("modelType"),
+                        "version_id": meta.get("modelVersionId"), "model_id": version.get("modelId"),
+                        "version_name": meta.get("versionName"),
+                        "triggers": self.processor.format_triggers(meta.get("triggers") or []),
+                        "description": self.processor.clean_html(meta.get("description")),
+                        "civitai_tags": ", ".join(meta.get("tags") or []),
+                    }
+                else:
+                    values = {
+                        "display_name": data.get("ModelName") or data.get("display_name"),
+                        "creator_name": data.get("creator_name"),
+                        "base_model": data.get("BaseModel") or data.get("base_model"),
+                        "model_type": data.get("ModelType") or data.get("model_type"),
+                        "version_id": data.get("VersionId"), "model_id": data.get("ModelId"),
+                        "version_name": data.get("VersionName"),
+                        "triggers": self.processor.format_triggers(data.get("TrainedWords") or []),
+                    }
+                for field, value in values.items():
+                    if value is not None and value != "" and str(value).lower() != "unknown":
+                        record.setdefault(field, value)
+            except (OSError, ValueError, TypeError, AttributeError):
+                # A damaged sidecar must not hide an otherwise readable model.
+                continue
 
-            if file_hash:
-                # Sync with Civitai if needed
-                self.sync_model(model["path"], file_hash)
+        unknown = (None, "", "unknown")
+        needs_type = str((existing or {}).get("model_type") or record.get("model_type") or "").lower() in unknown
+        needs_arch = str((existing or {}).get("base_model") or record.get("base_model") or "").lower() in unknown
+        if needs_type or needs_arch:
+            classification = classify(model["path"])
+            if needs_arch:
+                record.setdefault("base_model", classification.arch)
+            if needs_type:
+                local_type = classification.model_type
+                if local_type == "unknown":
+                    category = os.path.relpath(model["path"], root_dir).replace("\\", "/").split("/")[0].lower()
+                    local_type = {"checkpoints": "checkpoint", "diffusion_models": "diffusion_model",
+                                  "loras": "lora", "embeddings": "textualinversion", "vae": "vae",
+                                  "clip": "clip", "text_encoders": "clip", "controlnet": "controlnet",
+                                  "upscale_models": "upscaler", "ipadapter": "ipadapter"}.get(category, local_type)
+                record.setdefault("model_type", "textualinversion" if local_type == "embedding" else local_type)
+        return record
 
     def sync_model(self, file_path, file_hash, version_data=None):
         """
@@ -82,10 +173,16 @@ class VaultService:
             "model_id": version_data.get("modelId"),
             "version_name": meta["versionName"],
             "triggers": self.processor.format_triggers(meta["triggers"]),
-            "custom_tags": ", ".join(meta.get("tags", [])) if meta.get("tags") else "",
+            "civitai_tags": ", ".join(meta.get("tags", [])) if meta.get("tags") else "",
             "description": meta["description"]
         }
-        self.db.upsert_model(model_record)
+        info = os.stat(file_path)
+        self.db.index_local_model(model_record, file_info={
+            "file_size": info.st_size, "file_mtime_ns": info.st_mtime_ns,
+            "file_id": f"{info.st_dev}:{info.st_ino}" if info.st_ino else None,
+        })
+        self.db.update_civitai_data(file_hash, model_record)
+        self.db.mark_civitai_synced(file_hash)
 
         # 4. Save local JSON sidecars (Stability Matrix compatibility)
         self._update_local_sidecars(file_path, version_data, model_record)
@@ -130,27 +227,34 @@ class VaultService:
                     # Attempt to download, download_image already filters for videos/formats
                     if self.client.download_image(image_url, preview_path):
                         break # Found a valid one
+    @staticmethod
+    def needs_civitai_sync(model):
+        """An empty tag list is valid; successful metadata retrieval is tracked explicitly."""
+        required = ("model_id", "version_id", "display_name", "base_model", "model_type")
+        complete = all(str(model.get(key) or "").strip().lower() not in ("", "unknown") for key in required)
+        legacy_synced = bool((model.get("civitai_tags") or "").strip())
+        return not (complete and (model.get("civitai_synced_at") or legacy_synced))
+
+    def pending_models(self, force=False):
+        return [model for model in self.db.get_all_models()
+                if not model.get("missing") and (force or self.needs_civitai_sync(model))]
+
     def sync_all(self, progress_cb=None, force=False) -> dict:
         """
         Re-sincroniza con Civitai todos los modelos ya registrados en DB.
-        Salta los que ya tienen civitai_tags a menos que force=True.
+        Solo completa datos pendientes, salvo que force=True.
         progress_cb(current, total, model_name) para actualizar UI.
         Retorna stats: {"synced": N, "skipped": N, "not_found": N, "errors": N}
         """
-        models = self.db.get_all_models()
-        # Solo procesar modelos cuyo archivo existe
-        models = [m for m in models if m.get("file_path") and os.path.isfile(m["file_path"])]
-
-        stats = {"synced": 0, "skipped": 0, "not_found": 0, "errors": 0}
+        available = [model for model in self.db.get_all_models() if not model.get("missing")]
+        models = [model for model in available if force or self.needs_civitai_sync(model)]
+        stats = {"synced": 0, "skipped": len(available) - len(models), "not_found": 0,
+                 "errors": 0, "error_detail": []}
         total = len(models)
 
         for i, model in enumerate(models):
             if progress_cb:
                 progress_cb(i + 1, total, model.get("display_name") or model.get("name", ""))
-
-            if not force and model.get("civitai_tags"):
-                stats["skipped"] += 1
-                continue
 
             try:
                 version_data = self.client.get_model_version_by_hash(model["hash"])
@@ -186,12 +290,15 @@ class VaultService:
                     "civitai_tags": ", ".join(meta.get("tags", [])) if meta.get("tags") else "",
                 }
                 self.db.update_civitai_data(model["hash"], civitai_data)
+                self.db.mark_civitai_synced(model["hash"])
                 stats["synced"] += 1
                 time.sleep(0.7)
 
             except Exception as e:
-                print(f"[sync_all] Error en {model.get('name')}: {e}")
+                if isinstance(e, CivitaiError) and e.status_code in (401, 403):
+                    raise
                 stats["errors"] += 1
+                stats["error_detail"].append({"path": model["file_path"], "error": str(e)})
 
         return stats
 
