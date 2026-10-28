@@ -59,14 +59,31 @@ y [WAI Anima 1.0 — WAI0731](https://tensor.art/models/1003360262834670526).
 1. Crear un proyecto y ajustar categorías/formatos. Dungeon Tycoon es un perfil inicial editable.
 2. En **Estilos**, elegir modelo, LoRAs, pesos, prompt de acabado y sampling. La escena de prueba
    es independiente del prompt de estilo. Comparar muestras con la misma seed y guardar el estilo.
-3. En **Producción**, seleccionar un estilo y combinar personaje, personalidad, outfit, pose,
-   expresión y escenario. Guardar la combinación como receta para recuperarla después.
-4. Para expresiones, elegir un maestro del proyecto o cargar un PNG, pintar la región facial y
+   **Borrar** permite quitar una prueba fallida desde su propia tarjeta. Para corregir un nombre,
+   cargar el estilo, editarlo y guardar una revisión; **Borrar estilo** retira uno creado por error.
+3. En **Producción**, elegir primero qué generar: personajes, fondos, objetos, cartas o una
+   categoría del proyecto. Cada opción abre sus piezas y herramientas; **Cambiar recurso** vuelve
+   al menú. Elegir un estilo y formato, combinar las piezas y guardar una receta si se reutilizará.
+4. En **Expresiones**, elegir un maestro del proyecto o cargar un PNG, pintar la región facial y
    ajustar la intensidad. El parche se compone sobre el original; conserva el alfa y todos los
    píxeles exteriores a la máscara final. Cada expresión debe partir del maestro de referencia.
 5. Aceptar, rechazar o restaurar imágenes desde la galería. Los aceptados se organizan por
    proyecto/categoría/personaje/outfit; los rechazados permanecen recuperables hasta su limpieza
-   explícita. La limpieza protege maestros y muestras referenciadas por versiones guardadas.
+   explícita. **Borrar** elimina una imagen tras confirmar, sin esperar el plazo de rechazados.
+   La limpieza por lotes sigue disponible en **Biblioteca y revisión → Rechazados**.
+6. Las piezas tienen **Borrar** en la biblioteca y las recetas junto a su selector en producción.
+   Un recurso utilizado por otra entrada o revisión guardada se conserva: el aviso identifica
+   la dependencia que debe quitarse primero. Para borrar un proyecto, quitar antes sus recursos
+   propios y sus imágenes disponibles; los recursos compartidos se conservan.
+
+Borrar imágenes elimina el PNG, sus variantes y su ficha. La ficha sólo se conserva de forma
+temporal si hace falta completar la limpieza, para poder reintentar sin perder su procedencia.
+Las pendientes y rechazadas se pueden borrar aunque sean muestras de un estilo: desaparecen de
+sus miniaturas y selecciones, mientras el estilo conserva sus ajustes y revisiones. Los maestros
+utilizados por otros resultados y las muestras aceptadas referenciadas quedan protegidos.
+Las tarjetas desaparecen al confirmarse el borrado, incluso si falla la actualización posterior;
+los avisos permanecen visibles al desplazarse por la página. Si quedan archivos bloqueados o
+ComfyUI está ocupado, el aviso indica que la limpieza sigue pendiente.
 
 Las seeds se conservan como texto para no perder precisión de 64 bits. El historial guarda
 configuración efectiva, workflow, piezas, revisiones y procedencia. Cambiar una pieza o estilo
@@ -78,6 +95,16 @@ fijadas por sus recetas; los archivos de modelos e imágenes no se incluyen en e
 `data/` está excluido de Git. Contiene biblioteca, revisiones, historial, aceptados y rechazados.
 Para respaldar o trasladar la biblioteca completa, conservar este directorio. Los metadatos JSON
 acompañan al PNG; las expresiones incluyen maestro, parche y máscaras.
+El borrado de estilos, piezas, recetas y proyectos elimina sus JSON y todas sus revisiones,
+sin conservarlos en `.trash`. Las generaciones que sigan vigentes mantienen sus propios ajustes
+de procedencia. Una operación de metadatos interrumpida se recupera al volver a abrir el taller.
+
+Cada generación usa una carpeta propia en ComfyUI. Cuando el resultado queda guardado en la
+biblioteca, se retiran sus entradas y salidas temporales; repetir seed reutiliza el cálculo sin
+depender del PNG anterior. Las limpiezas pendientes se reintentan con el backend libre.
+**Biblioteca y revisión → Limpiar archivos pendientes** permite reintentarlas de inmediato.
+Los restos antiguos se reconocen por hashes y por el workflow, conservando archivos compartidos
+con recursos vigentes. La comprobación rechaza enlaces y archivos de procedencia desconocida.
 
 `ANIMA_STUDIO_DATA` permite elegir otro directorio de datos. El PoC organiza los recursos dentro
 de esa biblioteca; la descarga PNG entrega el archivo con su nombre contextual. No escribe
@@ -119,9 +146,19 @@ Usar la biblioteca `apps/anima_studio/data` de la instalación habitual, no una 
    Para comparar calidad, hacer una prueba sin los tags de calidad y otra con el preset del
    autor. Mantener iguales modelo, LoRAs/pesos, prompt restante, negativo, seed y sampling.
    Registrar cuál se prefiere por modelo/estilo: la guía no sustituye esta comparación visual.
-4. Combinar piezas de personaje y outfit. Probar expresiones sobre el mismo maestro,
-   revisar el rostro y verificar que el exterior de la máscara conserve su posición.
-5. Aceptar y rechazar muestras; comprobar su organización y sus fichas de configuración.
+4. En Producción, elegir Personajes y combinar personaje/outfit. Volver al menú y elegir Fondos:
+   comprobar que no se incorporen piezas del personaje y que recetas/resultados correspondan al
+   tipo elegido. En Expresiones, usar el mismo maestro y revisar rostro y exterior de la máscara.
+5. Aceptar y rechazar muestras; comprobar organización y fichas. Con datos desechables, borrar
+   una prueba desde Estilos, un estilo erróneo, una pieza y una receta. Comprobar que las imágenes
+   pendientes/rechazadas se borren aun como muestras guardadas, manteniendo los ajustes del estilo;
+   comprobar que los maestros utilizados y muestras aceptadas referenciadas se protejan con aviso.
+   Tras borrar, confirmar que las tarjetas y miniaturas desaparezcan también al actualizar y
+   volver a abrir el taller; los estilos borrados deben salir de ambos selectores y la biblioteca.
+   Generar otra vez con la misma seed y ajustes después de borrar la prueba anterior: debe
+   recuperarse el cálculo disponible sin errores por un PNG antiguo que ya no existe.
+   Si aparece limpieza pendiente, esperar a que ComfyUI esté libre y usar **Limpiar archivos
+   pendientes**. Confirmar que el aviso desaparezca al completarse la retirada de archivos.
 6. Cerrar la última pestaña del taller. El ComfyUI iniciado automáticamente debe terminar
    tras sus trabajos y la breve gracia de cierre; una instancia manual o compartida se conserva.
 7. Volver a abrir el taller y esperar **ComfyUI disponible**. Sin trabajos en curso, usar
@@ -140,6 +177,8 @@ hub-webui/.venv/Scripts/python.exe apps/anima_studio/tests/check_library.py
 hub-webui/.venv/Scripts/python.exe apps/anima_studio/tests/check_generation.py
 hub-webui/.venv/Scripts/python.exe apps/anima_studio/tests/check_api.py
 hub-webui/.venv/Scripts/python.exe apps/anima_studio/tests/check_catalog_assets.py
+hub-webui/.venv/Scripts/python.exe apps/anima_studio/tests/check_backend_artifacts.py
+hub-webui/.venv/Scripts/python.exe apps/anima_studio/tests/check_storage.py
 hub-webui/.venv/Scripts/python.exe hub-webui/tests/check_backend_sessions.py
 hub-webui/.venv/Scripts/python.exe hub/tests/check_backend_lifecycle.py
 hub-webui/.venv/Scripts/python.exe hub/tests/check_process_guard.py
@@ -148,7 +187,7 @@ hub-webui/.venv/Scripts/python.exe hub/tests/check_backend_http_windows.py
 hub-webui/.venv/Scripts/python.exe hub-webui/tests/test_comfy_jobs.py -v
 hub-webui/.venv/Scripts/python.exe hub-webui/tests/check_tag_engine.py
 hub-webui/.venv/Scripts/python.exe hub-webui/tests/check_tag_routes.py
-node --test hub-webui/tests/check_anima_catalog_ui.cjs hub-webui/tests/check_anima_tags.cjs hub-webui/tests/check_tag_autocomplete.cjs hub-webui/tests/check_anima_prompt_guide.cjs
+node --test hub-webui/tests/check_anima_catalog_ui.cjs hub-webui/tests/check_anima_tags.cjs hub-webui/tests/check_tag_autocomplete.cjs hub-webui/tests/check_anima_prompt_guide.cjs hub-webui/tests/check_anima_production.cjs hub-webui/tests/check_anima_workflow.cjs
 ```
 
 Las integraciones Windows usan procesos de prueba y puertos libres, sin GPU ni instancias

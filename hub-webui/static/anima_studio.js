@@ -5,9 +5,11 @@
   const $ = id => document.getElementById(id);
   const KINDS = {character:'Personaje', personality:'Personalidad', outfit:'Outfit', pose:'Pose', expression:'Expresión', scene:'Escenario'};
   const STATES = {pending:'Pendiente', accepted:'Aceptado', rejected:'Rechazado'};
-  const state = {projects:[], styles:[], pieces:[], recipes:[], generations:[], catalog:{models:[],loras:[],text_encoders:[],vaes:[]}, projectId:'', sampleIds:new Set(), purgeIds:new Set(), activeJob:null, masterId:null, masterBase64:null, masterReady:false, masterToken:0, currentStyle:null, recipeStyleRevision:null, recipePieceRevisions:{}, recipeFormatSnapshot:null};
+  const state = {projects:[], styles:[], pieces:[], recipes:[], generations:[], catalog:{models:[],loras:[],text_encoders:[],vaes:[]}, projectId:'', productionCategory:'', productionMode:'txt2img', sampleIds:new Set(), purgeIds:new Set(), activeJob:null, masterId:null, masterBase64:null, masterReady:false, masterToken:0, currentStyle:null, recipeStyleRevision:null, recipePieceRevisions:{}, recipeFormatSnapshot:null};
   const session={id:null,active:false,status:'starting',error:'',timer:null,inFlight:null,controller:null,socket:null,epoch:0,generationPending:false};
   const catalogPicker={kind:'models',row:null,limit:48,folder:'*'};
+  const deleted = Object.fromEntries(['projects','styles','pieces','recipes','generations'].map(kind=>[kind,new Set()]));
+  let storageRetryAt=0,storageCleanupBusy=false,storagePending=false;
   let favorites;
   try { favorites = new Set(JSON.parse(localStorage.getItem('anima-studio-favorites') || '[]')); } catch { favorites = new Set(); }
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -16,11 +18,11 @@
   const inProject = item => !item.project_id || item.project_id === state.projectId;
   const projectGenerations = () => state.generations.filter(g => g.project_id === state.projectId);
   const imageUrl = id => `${API}/images/${encodeURIComponent(id)}`;
-  const optionValue = item => typeof item === 'string' ? item : (item.file ?? item.id ?? item.name);
-  const optionName = item => typeof item === 'string' ? item : (item.name ?? item.label ?? item.file ?? item.id);
+  const optionValue = item => typeof item === 'string' ? item : (item?.file ?? item?.id ?? item?.name ?? '');
+  const optionName = item => typeof item === 'string' ? item : (item?.name ?? item?.label ?? item?.file ?? item?.id ?? '');
 
   async function api(path, method='GET', body, options={}) {
-    const response = await fetch(API + path, {method, headers: body === undefined ? {} : {'Content-Type':'application/json'}, ...(body === undefined ? {} : {body:JSON.stringify(body)}),...options});
+    const response = await fetch(API + path, {method, cache:'no-store', headers: body === undefined ? {} : {'Content-Type':'application/json'}, ...(body === undefined ? {} : {body:JSON.stringify(body)}),...options});
     const text = await response.text();
     let data;
     try { data = text ? JSON.parse(text) : null; } catch { data = text; }
@@ -33,11 +35,35 @@
   }
   function notice(message, error=false) {
     const node = $('notice');
+    const dialog=document.querySelector?.('dialog[open]');
+    if(dialog)dialog.append(node);else document.body?.append(node);
+    node.setAttribute('role',error?'alert':'status');node.setAttribute('aria-live',error?'assertive':'polite');
     node.className = `notice${error ? ' error' : ''}`;
     node.innerHTML = `<span>${esc(message)}</span><button aria-label="Cerrar mensaje">✕</button>`;
     node.querySelector('button').onclick = () => node.classList.add('hidden');
   }
   const action = fn => async event => { try { await fn(event); } catch (error) { console.error(error); notice(error.message || String(error), true); } };
+  function sampleAvailable(id) {
+    const record=state.generations.find(g=>g.id===id);
+    return !deleted.generations.has(id)&&!record?.purged_at&&!record?.purged;
+  }
+  function availableRecords(kind,items) {
+    if(kind==='generations')for(const item of list(items))if(item.purged_at||item.purged)deleted.generations.add(item.id);
+    return list(items).filter(item=>!deleted[kind].has(item.id)).map(item=>kind==='styles'?{...item,sample_ids:(item.sample_ids||[]).filter(sampleAvailable)}:item);
+  }
+  function forgetDeleted(kind,id) {
+    deleted[kind].add(id);state[kind]=availableRecords(kind,state[kind]);
+    if(kind==='generations'){
+      state.sampleIds.delete(id);state.purgeIds.delete(id);
+      state.styles=availableRecords('styles',state.styles);
+      if(state.currentStyle)state.currentStyle={...state.currentStyle,sample_ids:(state.currentStyle.sample_ids||[]).filter(sample=>sample!==id)};
+      if($('image-dialog-image').getAttribute('src')===imageUrl(id)){$('image-dialog').close();$('image-dialog-image').removeAttribute('src');}
+    }
+  }
+  async function refreshAfterDelete(refresh,message) {
+    notice(message);
+    try{await refresh();}catch(error){console.error(error);notice(`${message} No se pudo actualizar el resto de la biblioteca: ${error.message}. Usa Actualizar para reintentarlo.`,true);}
+  }
   function selectOptions(element, items, emptyLabel, preferred) {
     const previous = preferred ?? element.value;
     element.innerHTML = (emptyLabel === undefined ? '' : `<option value="">${esc(emptyLabel)}</option>`) + items.map(item => `<option value="${esc(optionValue(item))}">${esc(optionName(item))}</option>`).join('');
@@ -74,6 +100,53 @@
     renderFormatOptions();
     selectOptions($('category-select'),project?.categories || [],'Selecciona categoría');
     $('purge-days').value = project?.retention_days ?? 30;
+    renderProductionMenu();
+  }
+  function productionCategories() { return currentProject()?.categories || []; }
+  const sameCategory = (a,b) => String(optionValue(a)??'')===String(optionValue(b)??'');
+  function productionLabel(category) {
+    const name=String(optionName(category)||'');
+    return typeof category==='string'&&/^(characters?|personajes?|backgrounds?|fondos?|items?|objects?|objetos?|props?|cards?|cartas?|tarjetas?)$/i.test(name)?AnimaProduction.profile(category).label:name;
+  }
+  function productionProfile() { return AnimaProduction.profile(productionCategories().find(c=>String(optionValue(c))===state.productionCategory)||state.productionCategory); }
+  function renderProductionMenu() {
+    const categories=productionCategories();
+    if(state.productionCategory&&!categories.some(c=>String(optionValue(c))===state.productionCategory))state.productionCategory='';
+    let expressionCategories=categories.filter(c=>AnimaProduction.profile(c).id==='character');
+    if(!expressionCategories.length)expressionCategories=categories.filter(c=>AnimaProduction.profile(c).expression);
+    $('production-menu').innerHTML=categories.map(c=>{
+      const p=AnimaProduction.profile(c),label=productionLabel(c);
+      return `<button class="production-choice" data-production-category="${esc(optionValue(c))}" data-production-mode="txt2img"><strong>${esc(label)}</strong><span>${esc(p.description)}</span></button>`;
+    }).join('')+expressionCategories.map(c=>`<button class="production-choice" data-production-category="${esc(optionValue(c))}" data-production-mode="expression"><strong>Expresiones${expressionCategories.length>1?` · ${esc(productionLabel(c))}`:''}</strong><span>Cambia la expresión de un personaje a partir de un maestro y una máscara facial.</span></button>`).join('');
+    if(!categories.length)$('production-menu').innerHTML=empty('Configura las categorías del proyecto','Añade personajes, fondos, objetos u otras categorías desde Configurar.');
+    const chosen=!!state.productionCategory,p=productionProfile();
+    $('production-workspace').classList.toggle('hidden',!chosen);
+    $('production-menu').classList.toggle('hidden',chosen);
+    $('change-production').classList.toggle('hidden',!chosen);
+    $('production-title').textContent=chosen?(state.productionMode==='expression'?`Expresiones · ${productionLabel(categories.find(c=>String(optionValue(c))===state.productionCategory))}`:productionLabel(categories.find(c=>String(optionValue(c))===state.productionCategory))):'¿Qué quieres generar?';
+    $('production-description').textContent=chosen?(state.productionMode==='expression'?'Elige un maestro, pinta la zona facial y describe la expresión.':p.description):'Cada recurso tiene su propio espacio y las herramientas que necesita.';
+    $('prod-prompt').placeholder=p.promptPlaceholder;
+    $('expression-controls').classList.toggle('hidden',state.productionMode!=='expression');
+    $('generate-production').textContent=state.productionMode==='expression'?'Generar expresión':'Generar recurso';
+    $('production-results-help').textContent=p.expression?'Acepta una imagen para organizarla. Usa «Como maestro» para derivar expresiones.':'Acepta una imagen para organizarla o borra los resultados que no quieras conservar.';
+  }
+  function chooseProduction(category,mode='txt2img') {
+    const available=productionCategories().find(c=>String(optionValue(c))===String(category));
+    if(!available)throw new Error('Esta categoría ya no está en el proyecto. Revisa su configuración.');
+    if(mode==='expression'&&!AnimaProduction.profile(available).expression)throw new Error('Las expresiones requieren una categoría de personajes.');
+    const changed=state.productionCategory!==String(category)||state.productionMode!==mode;
+    state.productionCategory=String(category);state.productionMode=mode;
+    if(changed){
+      $('piece-pickers').replaceChildren();$('recipe-select').value='';state.recipeStyleRevision=null;state.recipePieceRevisions={};state.recipeFormatSnapshot=null;
+      for(const id of ['prod-prompt','prod-negative','recipe-name','expression-name'])$(id).value='';
+      clearMaster();renderFormatOptions();
+      const preferred=AnimaProduction.preferredFormat(productionProfile(),currentProject()?.formats||[]);
+      if(preferred)$('format-select').value=preferred;
+      $('composed-output').textContent='Aquí aparecerá la combinación resuelta.';$('assembled-preview').open=false;
+    }
+    $('category-select').value=String(category);
+    document.querySelectorAll('[name="mode"]').forEach(r=>r.checked=r.value===mode);
+    renderProductionMenu();renderPieces();renderGalleries();
   }
   function renderFormatOptions() {
     const formats=currentProject()?.formats||[], snapshot=state.recipeFormatSnapshot;
@@ -92,6 +165,7 @@
     $('recipe-revision-note').classList.toggle('hidden',!parts.length);
   }
   function renderStyles() {
+    state.styles=availableRecords('styles',state.styles);
     const term=$('style-search').value.trim().toLowerCase();
     const allStyles=state.styles.filter(inProject);
     const styles = allStyles.filter(s=>`${s.name} ${s.prompt}`.toLowerCase().includes(term));
@@ -100,7 +174,8 @@
     selectOptions($('prod-style'),allStyles.map(s=>({id:s.id,name:`${favorites.has(s.id)?'★ ':''}${s.name} · v${s.revision||1}${s.project_id?'':' · Compartido'}`})),'Selecciona un estilo guardado');
     $('favorite-style').disabled=!$('cal-style').value;
     $('favorite-style').textContent=favorites.has($('cal-style').value)?'★':'☆';
-    $('style-shelf').innerHTML=styles.length?styles.map(style=>`<button class="style-tile ${style.id===$('cal-style').value?'selected':''}" data-load-style="${esc(style.id)}">${style.sample_ids?.length?`<img src="${imageUrl(style.sample_ids[0])}" alt="Muestra de ${esc(style.name)}" loading="lazy">`:'<span class="style-swatch">A</span>'}<span><strong>${favorites.has(style.id)?'★ ':''}${esc(style.name)}</strong><small>v${style.revision||1}${style.project_id?'':' · Compartido'}</small></span></button>`).join(''):'<p class="hint">Guarda tu primera calibración para verla aquí.</p>';
+    $('delete-style').disabled=!$('cal-style').value;
+    $('style-shelf').innerHTML=styles.length?styles.map(style=>`<div class="style-entry"><button class="style-tile ${style.id===$('cal-style').value?'selected':''}" data-load-style="${esc(style.id)}">${style.sample_ids?.length?`<img src="${imageUrl(style.sample_ids[0])}" alt="Muestra de ${esc(style.name)}" loading="lazy">`:'<span class="style-swatch">A</span>'}<span><strong>${favorites.has(style.id)?'★ ':''}${esc(style.name)}</strong><small>v${style.revision||1}${style.project_id?'':' · Compartido'}</small></span></button><button class="text-button" data-delete-resource="styles" data-id="${esc(style.id)}">Borrar estilo</button></div>`).join(''):'<p class="hint">Guarda tu primera calibración para verla aquí.</p>';
     $('style-count').textContent = `${allStyles.length} estilo${allStyles.length === 1 ? '' : 's'} disponible${allStyles.length === 1 ? '' : 's'}`;
   }
   function renderCatalog() {
@@ -218,19 +293,25 @@
   function renderPieces() {
     const previous = selectedPieces();
     const pieces = state.pieces.filter(inProject);
-    $('piece-pickers').innerHTML = Object.entries(KINDS).map(([kind,label]) => `<label>${label}<select data-piece-kind="${kind}"><option value="">Sin ${label.toLowerCase()}</option>${pieces.filter(p=>p.kind===kind).map(p=>`<option value="${esc(p.id)}">${esc(p.name)}${p.project_id?'':' · Compartido'}</option>`).join('')}</select></label>`).join('');
+    $('piece-pickers').innerHTML = Object.entries(KINDS).filter(([kind])=>state.productionCategory&&productionProfile().kinds.includes(kind)).map(([kind,label]) => `<label>${label}<select data-piece-kind="${kind}"><option value="">Sin ${label.toLowerCase()}</option>${pieces.filter(p=>p.kind===kind).map(p=>`<option value="${esc(p.id)}">${esc(p.name)}${p.project_id?'':' · Compartido'}</option>`).join('')}</select></label>`).join('');
     for (const select of $('piece-pickers').querySelectorAll('select')) {
       const old = previous.find(id => pieces.some(p=>p.id===id && p.kind===select.dataset.pieceKind));
       if (old) select.value=old;
       select.dataset.previousValue=select.value;
     }
     renderPieceLibrary();
-    selectOptions($('recipe-select'),state.recipes.filter(inProject).map(r=>({id:r.id,name:r.name})),'Nueva combinación');
+    selectOptions($('recipe-select'),state.recipes.filter(inProject).filter(r=>r.category&&sameCategory(r.category,state.productionCategory)&&(r.mode||'txt2img')===state.productionMode).map(r=>({id:r.id,name:r.name})),'Nueva combinación');
+    $('delete-recipe').disabled=!$('recipe-select').value;
+    renderRecipeLibrary();
   }
   function renderPieceLibrary() {
     const term=$('piece-search').value.trim().toLowerCase(), kind=$('piece-filter').value, onlyFavorites=$('favorites-only').checked;
     const pieces=state.pieces.filter(inProject).filter(p=>(!kind || p.kind===kind) && (!onlyFavorites || favorites.has(p.id)) && `${p.name} ${p.prompt} ${(p.tags||[]).join(' ')}`.toLowerCase().includes(term));
-    $('pieces-library').innerHTML=pieces.length ? pieces.map(p=>`<article class="piece-card"><div class="piece-top"><div><div class="piece-kind">${esc(KINDS[p.kind]||p.kind)} · v${p.revision||1}${p.project_id?'':' · Compartida'}</div><h4>${esc(p.name)}</h4></div><button class="favorite ${favorites.has(p.id)?'active':''}" data-favorite="${esc(p.id)}" aria-label="${favorites.has(p.id)?'Quitar de':'Añadir a'} favoritos">${favorites.has(p.id)?'★':'☆'}</button></div><p>${esc(p.prompt)}</p><div class="asset-actions"><button data-edit-piece="${esc(p.id)}">Editar</button><button data-use-piece="${esc(p.id)}">Usar en producción</button></div></article>`).join('') : empty('Aún no hay piezas en esta vista','Guarda un personaje, outfit o pose para empezar a combinarlos.');
+    $('pieces-library').innerHTML=pieces.length ? pieces.map(p=>`<article class="piece-card"><div class="piece-top"><div><div class="piece-kind">${esc(KINDS[p.kind]||p.kind)} · v${p.revision||1}${p.project_id?'':' · Compartida'}</div><h4>${esc(p.name)}</h4></div><button class="favorite ${favorites.has(p.id)?'active':''}" data-favorite="${esc(p.id)}" aria-label="${favorites.has(p.id)?'Quitar de':'Añadir a'} favoritos">${favorites.has(p.id)?'★':'☆'}</button></div><p>${esc(p.prompt)}</p><div class="asset-actions"><button data-edit-piece="${esc(p.id)}">Editar</button><button data-use-piece="${esc(p.id)}">Usar en producción</button><button class="danger" data-delete-resource="pieces" data-id="${esc(p.id)}">Borrar</button></div></article>`).join('') : empty('Aún no hay piezas en esta vista','Guarda un personaje, outfit o pose para empezar a combinarlos.');
+  }
+  function renderRecipeLibrary() {
+    const recipes=state.recipes.filter(inProject);
+    $('recipes-library').innerHTML=recipes.length?recipes.map(r=>`<article class="piece-card"><h4>${esc(r.name)}</h4><p>${esc(r.category||'Sin categoría')} · v${r.revision||1}</p><div class="asset-actions"><button data-use-recipe="${esc(r.id)}">Usar receta</button><button class="danger" data-delete-resource="recipes" data-id="${esc(r.id)}">Borrar</button></div></article>`).join(''):empty('Sin recetas guardadas','Guarda una combinación desde el espacio del recurso.');
   }
   function empty(title,description) { return `<div class="empty-state"><strong>${esc(title)}</strong><p>${esc(description)}</p></div>`; }
   function recordInfo(g) {
@@ -241,13 +322,13 @@
     const info=recordInfo(g), selected=context==='cal'?state.sampleIds.has(g.id):state.purgeIds.has(g.id);
     const choose=context==='cal' ? `<label class="asset-check"><input type="checkbox" data-sample="${esc(g.id)}" ${selected?'checked':''}>Muestra del estilo</label>` : context==='review' && g.status==='rejected' ? `<label class="asset-check"><input type="checkbox" data-purge="${esc(g.id)}" ${selected?'checked':''}>Seleccionar</label>` : '';
     const status=g.status||'pending';
-    return `<article class="asset-card"><div class="asset-image"><img src="${imageUrl(g.id)}" loading="lazy" alt="${esc(info.name)}" data-open-image="${esc(g.id)}">${choose}</div><div class="asset-content"><div class="asset-title">${esc(info.name)}</div><div class="asset-meta">Seed ${esc(info.seed)}${info.config.steps?` · ${esc(info.config.steps)} pasos`:''}</div><span class="asset-state ${esc(status)}">${esc(STATES[status]||status)}</span><div class="asset-actions">${status!=='accepted'?`<button data-review="accepted" data-id="${esc(g.id)}">Aceptar</button>`:''}${status!=='rejected'?`<button data-review="rejected" data-id="${esc(g.id)}">Rechazar</button>`:`<button data-review="pending" data-id="${esc(g.id)}">Restaurar</button>`}<button data-master="${esc(g.id)}">Como maestro</button><a href="${imageUrl(g.id)}?download=true" download>PNG</a><a href="${API}/generations/${encodeURIComponent(g.id)}" download="${esc(g.id)}.json">Ficha</a>${context==='cal'?`<button data-load-config="${esc(g.id)}">Recuperar ajustes</button>`:''}</div></div></article>`;
+    return `<article class="asset-card"><div class="asset-image"><img src="${imageUrl(g.id)}" loading="lazy" alt="${esc(info.name)}" data-open-image="${esc(g.id)}">${choose}</div><div class="asset-content"><div class="asset-title">${esc(info.name)}</div><div class="asset-meta">Seed ${esc(info.seed)}${info.config.steps?` · ${esc(info.config.steps)} pasos`:''}</div><span class="asset-state ${esc(status)}">${esc(STATES[status]||status)}</span><div class="asset-actions">${status!=='accepted'?`<button data-review="accepted" data-id="${esc(g.id)}">Aceptar</button>`:''}${status!=='rejected'?`<button data-review="rejected" data-id="${esc(g.id)}">Rechazar</button>`:`<button data-review="pending" data-id="${esc(g.id)}">Restaurar</button>`}${productionCategories().some(c=>AnimaProduction.profile(c).expression&&sameCategory(c,g.category))?`<button data-master="${esc(g.id)}">Como maestro</button>`:''}<a href="${imageUrl(g.id)}?download=true" download>PNG</a><a href="${API}/generations/${encodeURIComponent(g.id)}" download="${esc(g.id)}.json">Ficha</a>${context==='cal'?`<button data-load-config="${esc(g.id)}">Recuperar ajustes</button>`:''}<button class="danger" data-delete-image="${esc(g.id)}">Borrar imagen</button></div></div></article>`;
   }
   function renderGalleries() {
-    const generations=projectGenerations().filter(g=>!g.purged).slice().reverse();
+    const generations=availableRecords('generations',projectGenerations()).slice().reverse();
     const calibration=generations.filter(g=>g.purpose==='calibration' || g.metadata?.purpose==='calibration' || g.category==='calibration' || g.category==='calibracion' || state.sampleIds.has(g.id));
     $('cal-gallery').innerHTML=calibration.length ? calibration.map(g=>assetCard(g,'cal')).join('') : empty('Aquí empieza tu biblioteca de estilos','Genera una prueba para comparar el acabado y guardar sus ajustes.');
-    const production=generations.filter(g=>g.purpose!=='calibration' && g.metadata?.purpose!=='calibration' && !['calibration','calibracion'].includes(g.category));
+    const production=generations.filter(g=>g.purpose!=='calibration' && g.metadata?.purpose!=='calibration' && !['calibration','calibracion'].includes(g.category)&&sameCategory(g.category,state.productionCategory)&&(g.mode||g.metadata?.mode||'txt2img')===state.productionMode);
     $('production-gallery').innerHTML=production.length ? production.map(g=>assetCard(g,'production')).join('') : empty('Tu próximo recurso aparecerá aquí','Selecciona un estilo y las piezas que formarán la imagen.');
     const filter=$('review-filter').value, term=$('image-search').value.trim().toLowerCase();
     const review=generations.filter(g=>(!filter||g.status===filter) && JSON.stringify([g.name,g.category,g.character_name||g.character,g.outfit_name||g.outfit,g.expression_name||g.expression,g.id]).toLowerCase().includes(term));
@@ -255,7 +336,7 @@
     $('review-count').textContent=`${generations.length} imágenes · ${generations.filter(g=>g.status==='accepted').length} aceptadas · ${generations.filter(g=>g.status==='rejected').length} rechazadas`;
     $('purge-controls').classList.toggle('hidden',filter!=='rejected');
     updatePurgeCount();
-    selectOptions($('master-select'),generations.filter(g=>g.status!=='rejected').map(g=>({id:g.id,name:`${recordInfo(g).name} · ${g.id.slice(0,8)}`})),'Selecciona una imagen o carga un PNG',state.masterId || '');
+    selectOptions($('master-select'),generations.filter(g=>g.status!=='rejected'&&sameCategory(g.category,state.productionCategory)).map(g=>({id:g.id,name:`${recordInfo(g).name} · ${g.id.slice(0,8)}`})),'Selecciona una imagen o carga un PNG',state.masterId || '');
   }
   function updatePurgeCount() {
     const selected=projectGenerations().filter(g=>state.purgeIds.has(g.id)&&g.status==='rejected');
@@ -266,14 +347,16 @@
   function renderAll() { renderProjects(); renderStyles(); renderCatalog(); renderPieces(); renderGalleries(); }
   async function reload() {
     const data=await api('/bootstrap');
-    for (const kind of ['projects','styles','pieces','recipes','generations']) state[kind]=list(data[kind]);
+    for (const kind of ['generations','projects','styles','pieces','recipes']) state[kind]=availableRecords(kind,data[kind]);
     if (data.catalog) state.catalog=data.catalog;
+    storagePending=!!data.storage_cleanup?.cleanup_pending;
     if (!state.projects.some(p=>p.id===state.projectId)) {
       let remembered=''; try { remembered=localStorage.getItem('anima-studio-project')||''; } catch {}
       state.projectId=state.projects.find(p=>p.id===remembered)?.id || state.projects[0]?.id || '';
     }
     updateStatus(data.status || {}); renderAll();
     if(data.catalog_error)notice(data.catalog_error,true);
+    if(data.storage_cleanup?.errors?.length&&!data.storage_cleanup.deferred)notice(`Limpieza pendiente: ${data.storage_cleanup.errors.join(' ')}`,true);
   }
   function updateStatus(status) {
     $('capability-note').textContent=(status.limitations||[]).join(' ');
@@ -297,6 +380,19 @@
     $('retry-backend').classList.toggle('hidden',!failed);
     $('retry-backend').disabled=!!session.inFlight;
     updateGenerationAvailability();
+    if(ready&&storagePending&&!storageCleanupBusy&&!state.activeJob&&!session.generationPending&&Date.now()>=storageRetryAt)void cleanupStorage(true);
+  }
+  async function cleanupStorage(silent=false) {
+    if(storageCleanupBusy)return;
+    storageCleanupBusy=true;storageRetryAt=Date.now()+30000;
+    try{
+      const result=await api('/storage/cleanup','POST',{include_orphans:!silent});storagePending=!!result.cleanup_pending;
+      for(const id of result.deleted_images||[])forgetDeleted('generations',id);
+      renderStyles();renderGalleries();
+      if(result.errors?.length&&!result.deferred)notice(`Limpieza pendiente: ${result.errors.join(' ')}`,true);
+      else if(!silent)notice(result.deferred?'La limpieza se reintentará cuando ComfyUI esté libre.':`Limpieza completada: ${result.removed_files||0} archivos temporales retirados.`);
+    }catch(error){storagePending=true;if(!silent)notice(error.message,true);}
+    finally{storageCleanupBusy=false;}
   }
   function scheduleHeartbeat() {
     if(session.timer!==null)clearTimeout(session.timer);
@@ -383,7 +479,11 @@
     sendSessionClose(closingId);
     updateGenerationAvailability();
   }
-  async function refreshGenerations() { state.generations=list(await api(`/generations?project_id=${encodeURIComponent(state.projectId)}`)); renderGalleries(); }
+  async function refreshGenerations() {
+    const projectId=state.projectId,items=await api(`/generations?project_id=${encodeURIComponent(projectId)}`);
+    if(state.projectId!==projectId)return;
+    state.generations=availableRecords('generations',items);renderGalleries();
+  }
   function addLora(file='',strength=1) {
     const row=document.createElement('div'); row.className='lora-row';
     row.innerHTML='<select hidden aria-hidden="true" tabindex="-1"></select><button type="button" class="catalog-choice choose-lora" aria-haspopup="dialog" aria-controls="catalog-dialog"></button><label>Peso<input type="number" min="-3" max="3" step="0.05" value="1"></label><button type="button" class="subtle remove-lora" title="Quitar LoRA" aria-label="Quitar LoRA">✕</button>';
@@ -417,13 +517,13 @@
     $('favorite-style').disabled=!style;$('favorite-style').textContent=favorites.has(id)?'★':'☆';
     if(!style)return;
     $('style-name').value=style.name; $('style-shared').checked=!style.project_id; $('style-prompt').value=style.prompt||''; $('style-negative').value=style.negative||'';
-    state.sampleIds=new Set(style.sample_ids||[]); loadConfig(style.config||{}); $('save-style').textContent='Guardar nueva revisión'; renderGalleries();
+    state.sampleIds=new Set((style.sample_ids||[]).filter(sampleAvailable)); loadConfig(style.config||{}); $('save-style').textContent='Guardar nueva revisión'; renderGalleries();
   }
   async function saveStyle(copy=false) {
     assertProject(); const name=$('style-name').value.trim(); if(!name) throw new Error('Escribe un nombre para el estilo.');
     const projectId=$('style-shared').checked?null:state.projectId;
     const sameScope=!state.currentStyle || (state.currentStyle.project_id||null)===projectId;
-    const payload={...(state.currentStyle && !copy && sameScope?{id:state.currentStyle.id}:{}),project_id:projectId,name,prompt:$('style-prompt').value.trim(),negative:$('style-negative').value.trim(),config:calibrationConfig(),sample_ids:[...state.sampleIds]};
+    const payload={...(state.currentStyle && !copy && sameScope?{id:state.currentStyle.id}:{}),project_id:projectId,name,prompt:$('style-prompt').value.trim(),negative:$('style-negative').value.trim(),config:calibrationConfig(),sample_ids:[...state.sampleIds].filter(sampleAvailable)};
     const result=await api('/styles','POST',payload); $('style-search').value='';await reload(); $('cal-style').value=result.id; $('prod-style').value=result.id; productionStyleChanged();loadStyle(result.id);renderStyles();notice(`Estilo «${result.name}» guardado · revisión ${result.revision||1}.`);
   }
   function productionStyleChanged() {
@@ -440,12 +540,13 @@
   function selectedPieces() { return [...$('piece-pickers').querySelectorAll('select')].map(s=>s.value).filter(Boolean); }
   function pieceByKind(kind) { const id=$('piece-pickers').querySelector(`[data-piece-kind="${kind}"]`)?.value;return state.pieces.find(p=>p.id===id); }
   function productionPayload() {
+    if(!state.productionCategory)throw new Error('Elige primero qué recurso quieres generar.');
     assertProject(); const style=state.styles.find(s=>s.id===$('prod-style').value && inProject(s));
     if(!style)throw new Error('Selecciona un estilo guardado para producir el recurso.');
     const format=state.recipeFormatSnapshot||(currentProject().formats||[]).find(f=>String(f.id??f.name)===$('format-select').value);
     if(!format)throw new Error('Selecciona un formato del proyecto.');
     const ids=selectedPieces(), revisions=Object.fromEntries(Object.entries(state.recipePieceRevisions).filter(([id])=>ids.includes(id)));
-    return {project_id:state.projectId,style_id:style.id,style_revision:state.recipeStyleRevision??style.revision,piece_ids:ids,piece_revisions:Object.keys(revisions).length?revisions:undefined,prompt:$('prod-prompt').value.trim(),negative:$('prod-negative').value.trim(),config:{width:Number(format.width),height:Number(format.height),seed:seedValue('prod-seed')},format_id:format.id,format_snapshot:state.recipeFormatSnapshot?{...state.recipeFormatSnapshot}:undefined,category:$('category-select').value||optionValue(currentProject().categories?.[0]||'personajes'),character:pieceByKind('character')?.name||'',outfit:pieceByKind('outfit')?.name||'',expression:pieceByKind('expression')?.name||'',recipe_id:$('recipe-select').value||undefined};
+    return {project_id:state.projectId,style_id:style.id,style_revision:state.recipeStyleRevision??style.revision,piece_ids:ids,piece_revisions:Object.keys(revisions).length?revisions:undefined,prompt:$('prod-prompt').value.trim(),negative:$('prod-negative').value.trim(),config:{width:Number(format.width),height:Number(format.height),seed:seedValue('prod-seed')},format_id:format.id,format_snapshot:state.recipeFormatSnapshot?{...state.recipeFormatSnapshot}:undefined,category:state.productionCategory,mode:state.productionMode,character:pieceByKind('character')?.name||'',outfit:pieceByKind('outfit')?.name||'',expression:pieceByKind('expression')?.name||'',recipe_id:$('recipe-select').value||undefined};
   }
   async function previewPrompt() {
     const data=await api('/compose','POST',productionPayload()); $('composed-output').textContent=JSON.stringify(data,null,2); $('assembled-preview').open=true;
@@ -471,9 +572,10 @@
       if(['done','completed','success'].includes(job.status)) {
         $('job-progress').value=100; $('job-phase').textContent='Completado';
         const result=job.result||{};
-        if(payload.purpose==='calibration'&&result.id)state.sampleIds.add(result.id);
+        if(payload.purpose==='calibration'&&result.id&&sampleAvailable(result.id))state.sampleIds.add(result.id);
         await refreshGenerations();
-        notice(payload.mode==='expression'?'Expresión generada. Revisa la cara y su transición antes de aceptarla.':'Generación terminada. Revisa el resultado para aceptarlo o rechazarlo.');
+        if(job.warning){storagePending=true;notice(job.warning,true);}
+        else notice(payload.mode==='expression'?'Expresión generada. Revisa la cara y su transición antes de aceptarla.':'Generación terminada. Revisa el resultado para aceptarlo o rechazarlo.');
         return;
       }
       if(['error','failed','cancelled','canceled'].includes(job.status)) {$('job-phase').textContent='Finalizado con error';throw new Error(job.error||job.message||'No se pudo completar la generación.');}
@@ -487,7 +589,7 @@
   }
   async function generateProduction() {
     if(!$('seed-lock').checked)$('prod-seed').value=freshSeed();
-    const payload=productionPayload();payload.mode=document.querySelector('[name="mode"]:checked').value;payload.purpose='production';
+    const payload=productionPayload();payload.purpose='production';
     if(payload.mode==='expression') {
       if(!state.masterReady)throw new Error('Selecciona o carga el maestro de la expresión.');
       if(!maskHasPaint())throw new Error('Pinta la región facial que puede cambiar.');
@@ -503,16 +605,24 @@
     const saved=await api('/recipes','POST',{...payload,name,id:$('recipe-select').value||undefined});await reload();$('recipe-select').value=saved.id;loadRecipe(saved.id);notice(`Receta «${name}» guardada.`);
   }
   function loadRecipe(id) {
-    const recipe=state.recipes.find(r=>r.id===id);state.recipeStyleRevision=recipe?.style_revision??null;state.recipePieceRevisions={...(recipe?.piece_revisions||{})};state.recipeFormatSnapshot=recipe?.format_snapshot?{...recipe.format_snapshot}:null;renderFormatOptions();if(!recipe)return;
+    const recipe=state.recipes.find(r=>r.id===id);
+    if(recipe){
+      const category=productionCategories().find(c=>sameCategory(c,recipe.category))||(!recipe.category?productionCategories().find(c=>AnimaProduction.profile(c).id==='character'):null);
+      if(!category)throw new Error('La categoría de esta receta ya no está en el proyecto. Añádela desde Configurar para recuperarla.');
+      chooseProduction(optionValue(category),recipe.mode||'txt2img');$('recipe-select').value=id;
+    }
+    $('delete-recipe').disabled=!recipe;
+    state.recipeStyleRevision=recipe?.style_revision??null;state.recipePieceRevisions={...(recipe?.piece_revisions||{})};state.recipeFormatSnapshot=recipe?.format_snapshot?{...recipe.format_snapshot}:null;renderFormatOptions();if(!recipe)return;
     $('recipe-name').value=recipe.name;$('prod-style').value=recipe.style_id||recipe.snapshot?.style?.id||'';$('prod-prompt').value=recipe.prompt||'';$('prod-negative').value=recipe.negative||'';
     if(recipe.config?.seed!==undefined)$('prod-seed').value=String(recipe.config.seed);
-    if(recipe.format_id)$('format-select').value=recipe.format_id;if(recipe.category)$('category-select').value=recipe.category;
-    const ids=recipe.piece_ids||[];
+    if(recipe.format_id)$('format-select').value=recipe.format_id;
+    const ids=Array.isArray(recipe.piece_ids)?recipe.piece_ids:Object.values(recipe.piece_ids||{});
     for(const select of $('piece-pickers').querySelectorAll('select')){select.value=ids.find(id=>[...select.options].some(o=>o.value===id))||'';select.dataset.previousValue=select.value;}
   }
   function openPiece(piece) {
     $('piece-form').reset();$('piece-id').value=piece?.id||'';$('piece-dialog-title').textContent=piece?'Editar pieza':'Nueva pieza';
     if(piece){$('piece-kind').value=piece.kind;$('piece-name').value=piece.name;$('piece-prompt').value=piece.prompt||'';$('piece-negative').value=piece.negative||'';$('piece-tags').value=(piece.tags||[]).join(', ');$('piece-shared').checked=!piece.project_id;}
+    else if(state.productionCategory)$('piece-kind').value=productionProfile().kinds[0]||'scene';
     $('piece-dialog').showModal();
   }
   async function savePiece(event) {
@@ -530,7 +640,7 @@
   function openProject(project) {
     $('project-form').reset();$('project-id').value=project?.id||'';$('project-name').value=project?.name||'';$('project-dialog-title').textContent=project?'Configurar proyecto':'Nuevo proyecto';$('project-categories').value=(project?.categories||['personajes','fondos','objetos','cartas']).map(optionValue).join(', ');$('project-retention').value=project?.retention_days??30;$('project-naming').value=project?.naming||'{project}_{category}_{character}_{outfit}_{expression}_{revision}';$('format-editor').replaceChildren();
     (project?.formats||[{id:'portrait',name:'Personaje',width:1024,height:1536,alpha:true},{id:'square',name:'Cuadrado',width:1024,height:1024,alpha:false},{id:'landscape',name:'Fondo',width:1536,height:864,alpha:false}]).forEach(addFormat);
-    $('export-project').disabled=!project;$('project-dialog').showModal();
+    $('export-project').disabled=!project;$('delete-project').disabled=!project;$('project-dialog').showModal();
   }
   async function saveProject(event) {
     event.preventDefault();const old=state.projects.find(p=>p.id===$('project-id').value)||{};
@@ -544,12 +654,41 @@
     if(reason===null)return;
     await api(`/generations/${encodeURIComponent(id)}/review`,'POST',{status,reason});state.purgeIds.delete(id);await refreshGenerations();
   }
+  async function deleteImage(id) {
+    const image=state.generations.find(g=>g.id===id);if(!image)return;
+    if(state.masterId===id)throw new Error('Esta imagen es el maestro que estás editando. Quita el maestro antes de borrarla.');
+    if(!window.confirm(`¿Borrar definitivamente la imagen «${recordInfo(image).name}», sus variantes y su ficha? El estilo conserva sus ajustes. Los maestros utilizados por otras imágenes quedan protegidos.`))return;
+    const result=await api(`/generations/${encodeURIComponent(id)}`,'DELETE');storagePending=!!result.cleanup_pending;forgetDeleted('generations',id);renderStyles();renderGalleries();
+    await refreshAfterDelete(refreshGenerations,result.cleanup_pending?'Imagen retirada. Queda una limpieza de archivos pendiente que se reintentará al actualizar.':'Imagen borrada.');
+  }
+  async function deleteResource(kind,id) {
+    const item=state[kind]?.find(r=>r.id===id);if(!item)return;
+    const label={styles:'estilo',pieces:'pieza',recipes:'receta',projects:'proyecto'}[kind];
+    const scope=item.project_id?'':kind!=='projects'?' Es un recurso compartido con otros proyectos.':'';
+    if(!window.confirm(`¿Borrar definitivamente ${label} «${item.name}» y los archivos de todas sus revisiones, sin respaldo?${scope} Las imágenes generadas se conservan. Si otro recurso lo utiliza, el taller indicará cuál debes quitar primero.`))return;
+    await api(`/${kind}/${encodeURIComponent(id)}`,'DELETE');forgetDeleted(kind,id);favorites.delete(id);
+    try{localStorage.setItem('anima-studio-favorites',JSON.stringify([...favorites]));}catch{}
+    if(kind==='styles'&&state.currentStyle?.id===id)resetStyle();
+    if(kind==='recipes'&&$('recipe-select').value===id){$('recipe-select').value='';$('recipe-name').value='';state.recipeStyleRevision=null;state.recipePieceRevisions={};state.recipeFormatSnapshot=null;}
+    if(kind==='pieces'){delete state.recipePieceRevisions[id];$('recipe-select').value='';}
+    if(kind==='projects'){$('project-dialog').close();resetWorkspace();}
+    renderAll();await refreshAfterDelete(reload,`${label[0].toUpperCase()+label.slice(1)} borrado.`);
+  }
+  function resetStyle() {
+    state.currentStyle=null;state.sampleIds.clear();$('cal-style').value='';
+    for(const id of ['style-name','style-prompt','style-negative'])$(id).value='';
+    $('style-shared').checked=false;$('save-style').textContent='Guardar estilo';renderStyles();renderGalleries();
+  }
   async function purgeRejected() {
     const ids=[...state.purgeIds].filter(id=>projectGenerations().some(g=>g.id===id&&g.status==='rejected'));
     if(!ids.length)return;
     const days=numeric('purge-days',0,3650);
-    if(!window.confirm(`Borrar definitivamente hasta ${ids.length} imágenes rechazadas con al menos ${days} días de antigüedad. Los recursos utilizados como maestro o referencia se conservarán. ¿Continuar?`))return;
-    const result=await api('/rejected/purge','POST',{ids,min_age_days:days});state.purgeIds.clear();await refreshGenerations();notice(`Limpieza terminada. ${JSON.stringify(result)}`);
+    if(!window.confirm(`Borrar definitivamente hasta ${ids.length} imágenes rechazadas con al menos ${days} días de antigüedad. Los maestros utilizados por otros resultados se conservarán; los estilos mantienen sus ajustes. ¿Continuar?`))return;
+    const result=await api('/rejected/purge','POST',{ids,min_age_days:days});
+    storagePending=!!result.cleanup_pending;
+    for(const id of result.purged||[])forgetDeleted('generations',id);
+    state.purgeIds.clear();renderStyles();renderGalleries();
+    await refreshAfterDelete(refreshGenerations,`Limpieza terminada: ${result.purged?.length||0} imágenes retiradas y ${result.protected?.length||0} protegidas por otros usos.${result.cleanup_pending?' Queda una limpieza de archivos pendiente.':''}`);
   }
   async function selectMaster(id) {
     state.masterId=id||null;state.masterBase64=null;$('master-upload').value='';
@@ -579,6 +718,7 @@
   }
   function downloadJson(data,name) {const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
   function resetWorkspace() {
+    state.productionCategory='';state.productionMode='txt2img';$('piece-pickers').replaceChildren();
     state.sampleIds.clear();state.purgeIds.clear();state.currentStyle=null;state.recipeStyleRevision=null;state.recipePieceRevisions={};state.recipeFormatSnapshot=null;clearMaster();
     for(const id of ['style-name','style-prompt','style-negative','test-prompt','prod-prompt','prod-negative','recipe-name','expression-name','style-search'])$(id).value='';
     $('style-shared').checked=false;$('cal-style').value='';$('prod-style').value='';$('recipe-select').value='';$('save-style').textContent='Guardar estilo';$('recipe-revision-note').classList.add('hidden');$('prod-seed').value='42';
@@ -589,6 +729,7 @@
     document.querySelectorAll('[data-close]').forEach(button=>button.onclick=()=>$(button.dataset.close).close());
     $('project-select').onchange=action(async()=>{state.projectId=$('project-select').value;resetWorkspace();try{localStorage.setItem('anima-studio-project',state.projectId);}catch{}await reload();});
     $('new-project').onclick=()=>openProject();$('edit-project').onclick=()=>openProject(currentProject());$('project-form').onsubmit=action(saveProject);$('add-format').onclick=()=>addFormat();
+    $('delete-project').onclick=action(()=>deleteResource('projects',$('project-id').value));
     $('export-project').onclick=action(async()=>{const id=$('project-id').value;if(id)downloadJson(await api(`/projects/${encodeURIComponent(id)}/export`),`${currentProject()?.name||'proyecto'}-perfil.json`);});
     $('import-project').onchange=action(async()=>{const file=$('import-project').files[0];if(!file)return;let profile;try{profile=JSON.parse(await file.text());}catch{throw new Error('El archivo de perfil no contiene JSON válido.');}const result=await api('/projects/import','POST',profile);state.projectId=result.id;resetWorkspace();$('project-dialog').close();await reload();notice('Perfil importado.');});
     $('refresh').onclick=action(reload);$('refresh-gallery').onclick=action(refreshGenerations);$('refresh-catalog').onclick=action(async()=>{state.catalog=await api('/catalog?refresh=true');renderCatalog();notice('Catálogo actualizado.');});
@@ -612,25 +753,46 @@
     $('catalog-more').onclick=()=>{catalogPicker.limit+=48;renderCatalogPicker();};
     $('catalog-dialog').onclose=()=>{catalogPicker.row=null;};
     $('add-lora').onclick=()=>openCatalogPicker('loras');$('cal-style').onchange=()=>{loadStyle($('cal-style').value);renderStyles();};$('save-style').onclick=action(()=>saveStyle());$('duplicate-style').onclick=action(()=>saveStyle(true));$('generate-test').onclick=action(generateTest);
-    $('reset-style').onclick=()=>{state.currentStyle=null;state.sampleIds.clear();$('cal-style').value='';$('style-name').value='';$('style-prompt').value='';$('style-negative').value='';$('style-shared').checked=false;$('save-style').textContent='Guardar estilo';renderGalleries();};
+    $('reset-style').onclick=resetStyle;
+    $('delete-style').onclick=action(()=>deleteResource('styles',$('cal-style').value));
+    $('delete-recipe').onclick=action(()=>deleteResource('recipes',$('recipe-select').value));
+    $('change-production').onclick=()=>{$('production-workspace').classList.add('hidden');$('production-menu').classList.remove('hidden');$('change-production').classList.add('hidden');$('production-title').textContent='¿Qué quieres generar?';$('production-description').textContent='Cada recurso tiene su propio espacio y las herramientas que necesita.';};
+    $('production-menu').onclick=action(event=>{const choice=event.target.closest('[data-production-category]');if(choice)chooseProduction(choice.dataset.productionCategory,choice.dataset.productionMode);});
     $('prod-style').onchange=productionStyleChanged;
     $('format-select').onchange=()=>{state.recipeFormatSnapshot=null;renderFormatOptions();};
     $('preview-prompt').onclick=action(previewPrompt);$('generate-production').onclick=action(generateProduction);$('new-seed').onclick=()=>$('prod-seed').value=freshSeed();$('save-recipe').onclick=action(saveRecipe);$('recipe-select').onchange=()=>loadRecipe($('recipe-select').value);
     $('open-piece-form').onclick=()=>openPiece();$('add-piece').onclick=()=>openPiece();$('piece-form').onsubmit=action(savePiece);$('piece-search').oninput=renderPieceLibrary;$('piece-filter').onchange=renderPieceLibrary;$('favorites-only').onchange=renderPieceLibrary;
     $('review-filter').onchange=renderGalleries;$('image-search').oninput=renderGalleries;$('purge-rejected').onclick=action(purgeRejected);
+    $('cleanup-storage').onclick=()=>void cleanupStorage();
     $('select-rejected').onclick=()=>{for(const box of $('review-gallery').querySelectorAll('[data-purge]')){box.checked=true;state.purgeIds.add(box.dataset.purge);}updatePurgeCount();};
     document.querySelectorAll('[name="mode"]').forEach(radio=>radio.onchange=()=>$('expression-controls').classList.toggle('hidden',radio.value!=='expression'||!radio.checked));
     $('master-select').onchange=action(()=>selectMaster($('master-select').value));
+    $('clear-master').onclick=()=>{clearMaster();$('master-select').value='';$('master-upload').value='';};
     $('master-upload').onchange=action(async()=>{const file=$('master-upload').files[0];if(!file)return;if(file.size>20*1024*1024)throw new Error('Utiliza un PNG de menos de 20 MB.');const data=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(new Error('No se pudo leer el PNG.'));reader.readAsDataURL(file);});await loadMasterImage(data);state.masterId=null;state.masterBase64=data.split(',')[1];$('master-select').value='';});
     $('clear-mask').onclick=()=>$('mask-canvas').getContext('2d').clearRect(0,0,$('mask-canvas').width,$('mask-canvas').height);
     document.addEventListener('click',action(async event=>{
-      const button=event.target.closest('[data-review],[data-master],[data-open-image],[data-edit-piece],[data-use-piece],[data-favorite],[data-load-config],[data-load-style]');if(!button)return;
+      const button=event.target.closest('[data-review],[data-master],[data-open-image],[data-edit-piece],[data-use-piece],[data-favorite],[data-load-config],[data-load-style],[data-delete-image],[data-delete-resource],[data-use-recipe]');if(!button)return;
+      if(button.dataset.deleteImage)return deleteImage(button.dataset.deleteImage);
+      if(button.dataset.deleteResource)return deleteResource(button.dataset.deleteResource,button.dataset.id);
+      if(button.dataset.useRecipe){loadRecipe(button.dataset.useRecipe);setTab('production');return;}
       if(button.dataset.loadStyle){$('cal-style').value=button.dataset.loadStyle;loadStyle(button.dataset.loadStyle);renderStyles();return;}
       if(button.dataset.review)return reviewGeneration(button.dataset.id,button.dataset.review);
-      if(button.dataset.master){setTab('production');document.querySelector('[name="mode"][value="expression"]').checked=true;$('expression-controls').classList.remove('hidden');$('master-select').value=button.dataset.master;return selectMaster(button.dataset.master);}
+      if(button.dataset.master){
+        const master=state.generations.find(g=>g.id===button.dataset.master),category=productionCategories().find(c=>AnimaProduction.profile(c).expression&&sameCategory(c,master?.category));
+        if(!category)throw new Error('Este recurso no pertenece a una categoría compatible con expresiones. Abre Expresiones y carga un maestro de personaje.');
+        chooseProduction(optionValue(category),'expression');setTab('production');$('master-select').value=button.dataset.master;return selectMaster(button.dataset.master);
+      }
       if(button.dataset.openImage){const id=button.dataset.openImage;$('image-dialog-image').src=imageUrl(id);$('image-dialog-title').textContent=recordInfo(state.generations.find(g=>g.id===id)||{}).name;$('image-dialog').showModal();}
       if(button.dataset.editPiece)openPiece(state.pieces.find(p=>p.id===button.dataset.editPiece));
-      if(button.dataset.usePiece){const piece=state.pieces.find(p=>p.id===button.dataset.usePiece),picker=$('piece-pickers').querySelector(`[data-piece-kind="${piece.kind}"]`);if(picker){picker.value=piece.id;productionPieceChanged(picker);}setTab('production');}
+      if(button.dataset.usePiece){
+        const piece=state.pieces.find(p=>p.id===button.dataset.usePiece);if(!piece)return;
+        if(!state.productionCategory||!productionProfile().kinds.includes(piece.kind)){
+          const category=productionCategories().find(c=>AnimaProduction.profile(c).kinds.includes(piece.kind));
+          if(!category)throw new Error('Añade una categoría compatible con esta pieza desde Configurar.');
+          chooseProduction(optionValue(category));
+        }
+        const picker=$('piece-pickers').querySelector(`[data-piece-kind="${piece.kind}"]`);if(picker){picker.value=piece.id;productionPieceChanged(picker);}setTab('production');renderProductionMenu();
+      }
       if(button.dataset.favorite){const id=button.dataset.favorite;favorites.has(id)?favorites.delete(id):favorites.add(id);try{localStorage.setItem('anima-studio-favorites',JSON.stringify([...favorites]));}catch{}renderPieceLibrary();renderStyles();}
       if(button.dataset.loadConfig){const g=await api(`/generations/${encodeURIComponent(button.dataset.loadConfig)}`),info=recordInfo(g),calibration=g.calibration||g.metadata?.calibration;loadConfig(info.config);if(calibration){$('style-prompt').value=calibration.style_prompt||'';$('style-negative').value=calibration.style_negative||'';$('test-prompt').value=calibration.test_prompt||'';}else{$('style-prompt').value='';$('style-negative').value=g.negative||g.metadata?.negative||'';$('test-prompt').value=g.prompt||g.metadata?.prompt||'';}notice('Ajustes recuperados de la generación. Revisa el prompt antes de repetir.');}
     }));

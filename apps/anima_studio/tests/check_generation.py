@@ -1,5 +1,6 @@
 """CPU regression tests for Anima selection and expression continuity."""
 import asyncio
+import hashlib
 import io
 import json
 import struct
@@ -190,14 +191,20 @@ class TransportChecks(unittest.IsolatedAsyncioTestCase):
                         "text_encoders": ["encoder.safetensors"],
                         "vae": ["vae.safetensors"], "loras": []}[folder]
 
-            async def upload_image(self, data):
+            async def upload_image(self, data, name=None, *, subfolder="", on_artifact=None):
                 self.uploads.append(data)
-                return f"upload-{len(self.uploads)}.png"
+                on_artifact({"type": "input", "subfolder": subfolder, "filename": name,
+                             "sha256": hashlib.sha256(data).hexdigest(), "state": "created"})
+                return f"{subfolder}/{name}"
 
-            async def run_workflow(self, workflow, values, callback):
+            async def run_workflow(self, workflow, values, callback, *, on_artifact=None):
                 with Image.open(io.BytesIO(self.uploads[0])) as crop:
                     self.render_size = crop.size
-                return png_bytes(Image.new("RGB", self.render_size, "orange"))
+                result = png_bytes(Image.new("RGB", self.render_size, "orange"))
+                on_artifact({"type": "output", "subfolder": workflow["9"]["inputs"]["filename_prefix"].rsplit("/", 1)[0],
+                             "filename": "render_00001_.png", "sha256": hashlib.sha256(result).hexdigest(),
+                             "state": "created"})
+                return result
 
         master = Image.new("RGBA", (1000, 1500), (20, 40, 60, 180))
         mask = Image.new("L", master.size)
@@ -216,6 +223,11 @@ class TransportChecks(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(dimension % 16 == 0 for dimension in client.render_size))
         self.assertEqual(output.getpixel((0, 0)), master.getpixel((0, 0)))
         self.assertEqual(result["metadata"]["params"]["denoise"], .65)
+        artifacts = result["metadata"]["backend_artifacts"]
+        self.assertEqual(len(artifacts), 3)
+        self.assertEqual({item["type"] for item in artifacts}, {"input", "output"})
+        self.assertEqual({item["subfolder"] for item in artifacts},
+                         {f'anima_studio/{result["metadata"]["backend_run_id"]}'})
 
     async def test_ws_open_before_queue_and_cached_result_recovered(self):
         events = []
@@ -260,7 +272,7 @@ class TransportChecks(unittest.IsolatedAsyncioTestCase):
 
         async def history(prompt_id):
             events.append("history")
-            return {"images": [{"filename": "test.png"}]}
+            return {"images": [{"filename": "test.png", "subfolder": "anima_studio/" + "a" * 32}]}
 
         async def download(*args):
             return image
@@ -280,12 +292,146 @@ class TransportChecks(unittest.IsolatedAsyncioTestCase):
                            height=128, seed="18446744073709551615",
                            loras=[{"file": "Anima/style.safetensors", "strength": .5}])
         with patch("anima_studio.core.comfy_client.aiohttp.ClientSession", FakeSession):
-            result = await generate(client, params)
+            result = await generate(client, params, artifact_run_id="a" * 32)
         self.assertEqual(events, ["ws", "queue", "history"])
         self.assertEqual(result["image"], image)
         self.assertEqual(result["metadata"]["seed"], params.seed)
         self.assertEqual(result["metadata"]["params"]["model"], "anima\\base.safetensors")
         self.assertEqual(result["metadata"]["params"]["loras"][0]["file"], "Anima\\style.safetensors")
+        self.assertEqual(result["metadata"]["backend_artifacts"], [{
+            "type": "output", "subfolder": "anima_studio/" + "a" * 32,
+            "filename": "test.png", "sha256": hashlib.sha256(image).hexdigest()}])
+
+    async def test_same_seed_uses_unique_output_scope_without_invalidating_sampler_inputs(self):
+        class Client:
+            graphs = []
+
+            async def get_models(self, folder):
+                return {"diffusion_models": ["base.safetensors"],
+                        "text_encoders": ["encoder.safetensors"], "vae": ["vae.safetensors"],
+                        "loras": []}[folder]
+
+            async def run_workflow(self, workflow, values, callback, *, on_artifact=None):
+                self.graphs.append(workflow)
+                return png_bytes(Image.new("RGB", (128, 128), "green"))
+
+        client = Client()
+        params = GenParams(model="base.safetensors", text_encoder="encoder.safetensors",
+                           vae="vae.safetensors", prompt="A gem", width=128, height=128, seed="42")
+        first = await generate(client, params)
+        second = await generate(client, params)
+        self.assertNotEqual(first["metadata"]["backend_run_id"], second["metadata"]["backend_run_id"])
+        self.assertNotEqual(client.graphs[0]["9"], client.graphs[1]["9"])
+        self.assertEqual({key: value for key, value in client.graphs[0].items() if key != "9"},
+                         {key: value for key, value in client.graphs[1].items() if key != "9"})
+        self.assertTrue(client.graphs[0]["9"]["inputs"]["filename_prefix"].endswith("/render"))
+
+    async def test_image_node_does_not_release_files_before_terminal_success(self):
+        class WS:
+            async def __aiter__(self):
+                for kind, data in [
+                    ("executed", {"prompt_id": "run", "output": {"images": [{"filename": "render.png"}]}}),
+                    ("execution_error", {"prompt_id": "run", "exception_message": "late failure"}),
+                ]:
+                    yield type("Message", (), {"type": WSMsgType.TEXT,
+                                               "data": json.dumps({"type": kind, "data": data})})()
+        with self.assertRaisesRegex(ComfyError, "late failure"):
+            await ComfyClient()._consume_ws(WS(), "run")
+
+    async def test_upload_records_planned_file_before_connection_failure(self):
+        events = []
+        class Session:
+            def __init__(self, **kwargs):
+                pass
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                pass
+            def post(self, *args, **kwargs):
+                events.append("upload")
+                raise OSError("connection lost")
+        def record(artifact):
+            events.append(dict(artifact))
+        with patch("anima_studio.core.comfy_client.aiohttp.ClientSession", Session):
+            with self.assertRaisesRegex(OSError, "connection lost"):
+                await ComfyClient().upload_image(b"png", "master.png", subfolder="anima_studio/" + "b" * 32,
+                                                  on_artifact=record)
+        self.assertEqual(events[0], {"type": "input", "subfolder": "anima_studio/" + "b" * 32,
+                                     "filename": "master.png", "sha256": hashlib.sha256(b"png").hexdigest(),
+                                     "state": "planned"})
+        self.assertEqual(events[1], "upload")
+
+    async def test_upload_returns_scoped_name_and_records_actual_file_after_response(self):
+        namespace = "anima_studio/" + "c" * 32
+        events = []
+        class Response:
+            status = 200
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                pass
+            async def json(self):
+                return {"name": "master.png", "subfolder": namespace, "type": "input"}
+        class Session:
+            def __init__(self, **kwargs):
+                pass
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                pass
+            def post(self, *args, **kwargs):
+                events.append("upload")
+                return Response()
+        with patch("anima_studio.core.comfy_client.aiohttp.ClientSession", Session):
+            name = await ComfyClient().upload_image(b"png", "master.png", subfolder=namespace,
+                                                     on_artifact=lambda item: events.append(dict(item)))
+        self.assertEqual(name, namespace + "/master.png")
+        self.assertEqual([item["state"] if isinstance(item, dict) else item for item in events],
+                         ["planned", "upload", "created"])
+        self.assertEqual(events[0]["sha256"], events[2]["sha256"])
+
+    async def test_cancelled_pipeline_leaves_upload_ownership_available_for_idle_cleanup(self):
+        recorded = []
+        class Client:
+            async def get_models(self, folder):
+                return {"diffusion_models": ["base"], "text_encoders": ["encoder"],
+                        "vae": ["vae"], "loras": []}[folder]
+            async def upload_image(self, data, name, *, subfolder, on_artifact):
+                for state in ("planned", "created"):
+                    on_artifact({"type": "input", "subfolder": subfolder, "filename": name,
+                                 "sha256": hashlib.sha256(data).hexdigest(), "state": state})
+                return subfolder + "/" + name
+            async def run_workflow(self, *args, **kwargs):
+                raise asyncio.CancelledError()
+        master = Image.new("RGBA", (128, 128), "blue")
+        mask = Image.new("L", master.size)
+        ImageDraw.Draw(mask).ellipse((40, 20, 85, 65), fill=255)
+        params = GenParams(model="base", text_encoder="encoder", vae="vae", prompt="A smile", mode="expression")
+        with self.assertRaises(asyncio.CancelledError):
+            await generate(Client(), params, master_bytes=png_bytes(master), mask_bytes=png_bytes(mask),
+                           artifact_run_id="d" * 32, on_artifact=lambda item: recorded.append(dict(item)))
+        self.assertEqual([(item["filename"], item["state"]) for item in recorded],
+                         [("master.png", "planned"), ("master.png", "created"),
+                          ("mask.png", "planned"), ("mask.png", "created")])
+        self.assertTrue(all(item["subfolder"] == "anima_studio/" + "d" * 32 for item in recorded))
+
+    async def test_invalid_run_scope_is_rejected_before_model_or_upload_requests(self):
+        class Client:
+            async def get_models(self, folder):
+                self.fail("must not reach backend")
+        with self.assertRaisesRegex(ValueError, "Identificador"):
+            await generate(Client(), GenParams(prompt="A gem"), artifact_run_id="../../output")
+
+    async def test_unexpected_backend_output_is_not_accepted_as_owned_artifact(self):
+        class Client:
+            async def get_models(self, folder):
+                return {"diffusion_models": ["base"], "text_encoders": ["encoder"],
+                        "vae": ["vae"], "loras": []}[folder]
+            async def run_workflow(self, workflow, values, callback, *, on_artifact=None):
+                on_artifact({"type": "output", "subfolder": "another-module", "filename": "render.png"})
+        params = GenParams(model="base", text_encoder="encoder", vae="vae", prompt="A gem")
+        with self.assertRaisesRegex(PipelineError, "fuera de esta generación"):
+            await generate(Client(), params)
 
     async def test_stale_backend_filename_fails_before_queue(self):
         class Client:

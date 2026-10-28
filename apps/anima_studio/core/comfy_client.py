@@ -1,4 +1,5 @@
 """ComfyUI transport following the Ideogram client's proven queue/WS order."""
+import hashlib
 import json
 import re
 import uuid
@@ -91,6 +92,7 @@ class ComfyClient:
         return next((output for output in outputs.values() if output.get("images")), None)
 
     async def _consume_ws(self, ws, prompt_id, on_progress=None):
+        output = None
         async for message in ws:
             if message.type == aiohttp.WSMsgType.TEXT:
                 event = json.loads(message.data)
@@ -105,9 +107,11 @@ class ComfyClient:
                 elif kind == "execution_interrupted":
                     raise ComfyError("Generación cancelada")
                 elif kind == "executed" and (data.get("output") or {}).get("images"):
-                    return data["output"]
+                    # The image node can finish before the prompt. Keep the
+                    # connection until terminal success before releasing files.
+                    output = data["output"]
                 elif kind == "execution_success":
-                    output = await self.history_output(prompt_id)
+                    output = output or await self.history_output(prompt_id)
                     if output:
                         return output
                     raise ComfyError("ComfyUI terminó sin producir una imagen")
@@ -123,18 +127,34 @@ class ComfyClient:
                     raise ComfyError(f"No se pudo descargar la imagen: HTTP {response.status}")
                 return await response.read()
 
-    async def upload_image(self, image_bytes, name=None):
-        # Every upload has its own filename, including repeated expression jobs.
-        name = f"anima-studio-{uuid.uuid4().hex}.png"
+    async def upload_image(self, image_bytes, name=None, *, subfolder="", on_artifact=None):
+        name = name or f"anima-studio-{uuid.uuid4().hex}.png"
+        if not re.fullmatch(r"[A-Za-z0-9_-]+\.png", name):
+            raise ValueError("Nombre de imagen de entrada no válido")
+        subfolder = subfolder.replace("\\", "/").strip("/")
+        if subfolder and not re.fullmatch(r"anima_studio/[0-9a-f]{32}", subfolder):
+            raise ValueError("Carpeta de entrada no válida")
+        digest = hashlib.sha256(image_bytes).hexdigest()
+        if on_artifact:
+            on_artifact({"type": "input", "subfolder": subfolder, "filename": name,
+                         "sha256": digest, "state": "planned"})
         form = aiohttp.FormData()
         form.add_field("image", image_bytes, filename=name, content_type="image/png")
         form.add_field("type", "input")
         form.add_field("overwrite", "false")
+        if subfolder:
+            form.add_field("subfolder", subfolder)
         async with aiohttp.ClientSession(timeout=_HTTP_TIMEOUT) as session:
             async with session.post(self.base_url + "/upload/image", data=form) as response:
                 uploaded = await self._json(response)
-        subfolder = uploaded.get("subfolder", "")
-        return (subfolder.rstrip("/\\") + "/" if subfolder else "") + uploaded["name"]
+        actual_folder = uploaded.get("subfolder", "").replace("\\", "/").strip("/")
+        actual_name = uploaded.get("name", "")
+        if (actual_folder != subfolder or not re.fullmatch(r"[A-Za-z0-9_-]+\.png", actual_name)):
+            raise ComfyError("ComfyUI devolvió una ruta de entrada inesperada")
+        if on_artifact:
+            on_artifact({"type": "input", "subfolder": actual_folder, "filename": actual_name,
+                         "sha256": digest, "state": "created"})
+        return (actual_folder + "/" if actual_folder else "") + actual_name
 
     @staticmethod
     def build_workflow(template, params):
@@ -151,7 +171,7 @@ class ComfyClient:
                 return params[match[1]]
         return template
 
-    async def run_workflow(self, workflow, params=None, on_progress=None):
+    async def run_workflow(self, workflow, params=None, on_progress=None, *, on_artifact=None):
         built = self.build_workflow(workflow, params or {})
         client_id = uuid.uuid4().hex
         timeout = aiohttp.ClientTimeout(total=None, sock_connect=30)
@@ -160,5 +180,12 @@ class ComfyClient:
                 prompt_id, _ = await self.queue_prompt(built, client_id)
                 output = await self._consume_ws(ws, prompt_id, on_progress)
         info = output["images"][0]
-        return await self.get_image_bytes(info["filename"], info.get("subfolder", ""),
-                                          info.get("type", "output"))
+        artifact = {"type": info.get("type", "output"),
+                    "subfolder": info.get("subfolder", "").replace("\\", "/"),
+                    "filename": info["filename"], "state": "created"}
+        if on_artifact:
+            on_artifact(dict(artifact))
+        image = await self.get_image_bytes(artifact["filename"], artifact["subfolder"], artifact["type"])
+        if on_artifact:
+            on_artifact({**artifact, "sha256": hashlib.sha256(image).hexdigest()})
+        return image

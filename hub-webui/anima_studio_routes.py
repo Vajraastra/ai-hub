@@ -24,7 +24,8 @@ sys.path.insert(0, str(_ROOT / "apps"))
 from anima_studio.core.catalog import Catalog
 from anima_studio.core.catalog_assets import CatalogAssets
 from anima_studio.core.comfy_client import ComfyClient
-from anima_studio.core.library import Library
+from anima_studio.core.library import Library, LibraryConflict
+from anima_studio.core.storage import StorageLifecycle
 from anima_studio.core import pipeline
 
 anima_studio_router = APIRouter(prefix="/api/anima-studio", tags=["anima-studio"])
@@ -41,6 +42,7 @@ _sessions = BackendSessions(_comfy, _backend_bridge)
 _jobs: dict[str, dict] = {}
 _tasks: set[asyncio.Task] = set()
 _active_masters: set[str] = set()
+_active_projects: dict[str, int] = {}
 _catalog = None
 _catalog_path = None
 _catalog_result = None
@@ -49,6 +51,45 @@ _catalog_time = 0.0
 _catalog_lock = asyncio.Lock()
 _KINDS = ("projects", "styles", "pieces", "recipes")
 _PIECE_KINDS = ("character", "personality", "outfit", "pose", "expression", "scene", "style")
+
+
+def _storage() -> StorageLifecycle:
+    config_path = Path(os.environ.get("AI_HUB_CONFIG", _ROOT / "hub/hub_config.json"))
+    root = _ROOT / "apps/comfyui"
+    if config_path.is_file():
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        root = Path(config.get("installed_apps", {}).get("comfyui", {}).get("dir") or root)
+    return StorageLifecycle(_library, root)
+
+
+async def _maintain_storage(*, include_orphans=False):
+    try:
+        storage = _storage()
+        if not storage.has_pending():
+            return {"cleanup_pending": False, "removed_files": 0, "deleted_images": [], "errors": []}
+    except (ValueError, OSError) as exc:
+        return {"cleanup_pending": True, "errors": [str(exc)]}
+    try:
+        queue = await _comfy._get("/queue")
+    except Exception:
+        return {"cleanup_pending": True, "deferred": True,
+                "errors": ["La limpieza se reintentará cuando ComfyUI permita comprobar que está libre."]}
+    if (not isinstance(queue, dict) or any(not isinstance(queue.get(key), list)
+                                          for key in ("queue_running", "queue_pending"))):
+        return {"cleanup_pending": True, "deferred": True,
+                "errors": ["ComfyUI no devolvió un estado de cola válido; no se limpiaron archivos."]}
+    if queue.get("queue_running") or queue.get("queue_pending"):
+        return {"cleanup_pending": True, "deferred": True,
+                "errors": ["La limpieza se reintentará al terminar los trabajos de ComfyUI."]}
+    try:
+        return await asyncio.to_thread(storage.maintain, include_orphans=include_orphans)
+    except (ValueError, OSError) as exc:
+        return {"cleanup_pending": True, "errors": [str(exc)]}
+
+
+@comfy_jobs.exclusive("Anima Studio")
+async def _automatic_storage_cleanup():
+    return await _maintain_storage()
 
 
 def _models_root() -> Path:
@@ -189,8 +230,19 @@ def _register(kind):
         return _library.list(kind, project_id=project_id)
     async def save_item(payload: dict = Body(...)):
         return _save(kind, payload)
+    async def delete_item(item_id: str):
+        try:
+            if kind == "projects" and _active_projects.get(item_id):
+                raise LibraryConflict("Este proyecto tiene una generación en curso. Espera a que termine.")
+            return _library.delete(kind, item_id)
+        except LibraryConflict as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except (ValueError, OSError) as exc:
+            raise HTTPException(400, str(exc)) from exc
     anima_studio_router.add_api_route(f"/{kind}", list_items, methods=["GET"], name=f"list_{kind}")
     anima_studio_router.add_api_route(f"/{kind}", save_item, methods=["POST"], name=f"save_{kind}")
+    anima_studio_router.add_api_route(f"/{kind}/{{item_id}}", delete_item,
+                                      methods=["DELETE"], name=f"delete_{kind}")
 
 
 for _kind in _KINDS:
@@ -199,16 +251,27 @@ for _kind in _KINDS:
 
 @anima_studio_router.get("/bootstrap")
 async def bootstrap():
-    if not _library.list("projects"):
+    await asyncio.to_thread(_library.recover_pending_metadata_deletions)
+    has_project_history = (any(_library._path("revisions", "projects").glob("*"))
+                           or any(_library._path(".trash", "projects").glob("*")))
+    if not _library.initialized and (_library.list("projects") or has_project_history):
+        _library.mark_initialized()
+    if not _library.list("projects") and not _library.initialized:
         for path in sorted((_ROOT / "apps/anima_studio/templates").glob("*.json")):
             _save("projects", json.loads(path.read_text(encoding="utf-8")))
     try:
         models, catalog_error = await catalog(), ""
     except HTTPException as exc:
         models, catalog_error = {"models": [], "loras": [], "text_encoders": [], "vaes": []}, exc.detail
+    try:
+        cleanup = await _automatic_storage_cleanup()
+    except HTTPException as exc:
+        if exc.status_code != 409:
+            raise
+        cleanup = {"cleanup_pending": True, "deferred": True, "errors": []}
     return {**{kind: _library.list(kind) for kind in _KINDS},
             "generations": _library.list_generations(), "catalog": models,
-            "catalog_error": catalog_error, "status": await status()}
+            "catalog_error": catalog_error, "status": await status(), "storage_cleanup": cleanup}
 
 
 @anima_studio_router.get("/projects/{project_id}/export")
@@ -430,6 +493,31 @@ def _image(value: str) -> bytes:
 @comfy_jobs.exclusive("Anima Studio")
 @_sessions.job
 async def generate(payload: dict = Body(...)):
+    release = _pin_project(payload.get("project_id", ""))
+    try:
+        return await _generate(payload)
+    finally:
+        release()
+
+
+def _pin_project(project_id: str):
+    project_id = project_id if isinstance(project_id, str) else ""
+    _active_projects[project_id] = _active_projects.get(project_id, 0) + 1
+    released = False
+
+    def release():
+        nonlocal released
+        if not released:
+            released = True
+            remaining = _active_projects[project_id] - 1
+            if remaining:
+                _active_projects[project_id] = remaining
+            else:
+                _active_projects.pop(project_id, None)
+    return release
+
+
+async def _generate(payload: dict):
     assembled = await compose(payload)
     if not assembled["prompt"].strip():
         raise HTTPException(400, "Escribe un prompt o selecciona piezas.")
@@ -494,8 +582,13 @@ async def generate(payload: dict = Body(...)):
                                          "max": detail.get("total", 1)}
 
     async def worker():
+        run_id = uuid.uuid4().hex
         try:
-            result = await pipeline.generate(_comfy, params, progress, master_bytes=master, mask_bytes=mask)
+            storage = _storage()
+            storage.artifacts.start_run(run_id)
+            result = await pipeline.generate(_comfy, params, progress, master_bytes=master, mask_bytes=mask,
+                artifact_run_id=run_id,
+                on_artifact=lambda item: storage.artifacts.record_artifact(run_id, item))
             project = assembled["snapshot"]["project"]
             pieces = assembled["snapshot"]["pieces"]
             names = {piece["kind"]: piece["name"] for piece in pieces}
@@ -518,6 +611,13 @@ async def generate(payload: dict = Body(...)):
             if master is not None:
                 extras["master"] = master
             record = await asyncio.to_thread(_library.save_generation, metadata, result["image"], extras)
+            try:
+                cleaned = await asyncio.to_thread(storage.complete_run, run_id,
+                                                  result["metadata"].get("backend_artifacts", []))
+                if cleaned["errors"]:
+                    _jobs[job_id]["warning"] = "El resultado está guardado; queda una limpieza pendiente que se reintentará al actualizar."
+            except (ValueError, OSError):
+                _jobs[job_id]["warning"] = "El resultado está guardado; queda una limpieza pendiente que se reintentará al actualizar."
             _jobs[job_id].update(status="done", progress=100, phase="Terminado", result=record)
         except asyncio.CancelledError:
             _jobs[job_id].update(status="error", error="Tarea cancelada; comprueba el estado de ComfyUI.")
@@ -527,15 +627,18 @@ async def generate(payload: dict = Body(...)):
 
     if master_record:
         _active_masters.add(master_record["id"])
+    release_project = _pin_project(payload["project_id"])
     try:
         task = comfy_jobs.spawn(worker())
     except BaseException:
+        release_project()
         if master_record:
             _active_masters.discard(master_record["id"])
         raise
     _tasks.add(task)
     _sessions.track_worker(task)
     task.add_done_callback(_tasks.discard)
+    task.add_done_callback(lambda _: release_project())
     if master_record:
         task.add_done_callback(lambda _: _active_masters.discard(master_record["id"]))
     return {"job_id": job_id}
@@ -585,7 +688,24 @@ async def review(asset_id: str, payload: dict = Body(...)):
         raise HTTPException(400, str(exc)) from exc
 
 
+@anima_studio_router.delete("/generations/{asset_id}")
+@comfy_jobs.exclusive("Anima Studio")
+async def delete_generation(asset_id: str):
+    try:
+        if asset_id in _active_masters:
+            raise LibraryConflict("Esta imagen se está utilizando como maestro en una generación en curso.")
+        result = _library.delete_generation(asset_id)
+        cleanup = await _maintain_storage()
+        return {**result, "cleanup_pending": cleanup.get("cleanup_pending", False),
+                "cleanup_errors": cleanup.get("errors", [])}
+    except LibraryConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except (ValueError, OSError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @anima_studio_router.post("/rejected/purge")
+@comfy_jobs.exclusive("Anima Studio")
 async def purge(payload: dict = Body(...)):
     try:
         ids = payload.get("ids", [])
@@ -595,6 +715,14 @@ async def purge(payload: dict = Body(...)):
         result = _library.purge_rejected([item for item in ids if item not in _active_masters],
                                         int(payload.get("min_age_days", 0)))
         result["protected"] = list(dict.fromkeys([*result["protected"], *pinned]))
-        return result
+        cleanup = await _maintain_storage()
+        return {**result, "cleanup_pending": cleanup.get("cleanup_pending", False),
+                "cleanup_errors": cleanup.get("errors", [])}
     except (ValueError, OSError) as exc:
         raise HTTPException(400, str(exc)) from exc
+
+
+@anima_studio_router.post("/storage/cleanup")
+@comfy_jobs.exclusive("Anima Studio")
+async def cleanup_storage(payload: dict = Body(default={})):
+    return await _maintain_storage(include_orphans=payload.get("include_orphans") is True)

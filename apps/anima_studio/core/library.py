@@ -7,6 +7,7 @@ not. This store intentionally never writes into a game's export directory.
 from __future__ import annotations
 
 import copy
+import base64
 import hashlib
 import json
 import os
@@ -22,6 +23,10 @@ from typing import Any
 
 class LibraryError(ValueError):
     pass
+
+
+class LibraryConflict(LibraryError):
+    """A saved dependency or running job prevents deletion."""
 
 
 _KINDS = {"projects", "styles", "pieces", "recipes"}
@@ -106,6 +111,16 @@ class Library:
             raise LibraryError("Los datos deben ser JSON válido y finito.") from exc
         self._atomic_bytes(path, raw)
 
+    @property
+    def initialized(self) -> bool:
+        return self._path(".initialized").is_file()
+
+    def mark_initialized(self):
+        """Remember intentional empty libraries after the final project is deleted."""
+        with self._lock:
+            if not self.initialized:
+                self._atomic_bytes(self._path(".initialized"), b"anima-studio-library-v1\n")
+
     def get(self, kind: str, entry_id: str, revision: int | None = None) -> dict:
         self._kind(kind)
         entry_id = _identifier(entry_id)
@@ -116,7 +131,22 @@ class Library:
                 if type(revision) is not int or revision < 1:
                     raise LibraryError("Revisión no válida.")
                 path = self._path("revisions", kind, entry_id, f"{revision:08d}.json")
-            return self._read(path)
+            value = self._read(path)
+            return self._style_view(value) if kind == "styles" and revision is None else value
+
+    def _style_view(self, value: dict) -> dict:
+        """Hide unavailable preview samples without rewriting saved revisions."""
+        result = _clone(value)
+        if "sample_ids" in result:
+            available = []
+            for sample_id in result["sample_ids"]:
+                try:
+                    self.image_path(sample_id)
+                except (LibraryError, OSError):
+                    continue
+                available.append(sample_id)
+            result["sample_ids"] = available
+        return result
 
     def list(self, kind: str, project_id: str | None = None) -> list[dict]:
         self._kind(kind)
@@ -133,7 +163,7 @@ class Library:
                         continue
                     if kind != "projects" and value.get("project_id") not in (None, project_id):
                         continue
-                entries.append(value)
+                entries.append(self._style_view(value) if kind == "styles" else value)
             return entries
 
     def _validate_project(self, value: dict):
@@ -184,8 +214,19 @@ class Library:
             if piece_kind not in _PIECES:
                 raise LibraryError("Tipo de pieza no válido.")
             value["kind"] = piece_kind
-        if kind == "styles" and not isinstance(value.get("config", {}), dict):
-            raise LibraryError("La configuración de estilo debe ser un objeto.")
+        if kind == "styles":
+            if not isinstance(value.get("config", {}), dict):
+                raise LibraryError("La configuración de estilo debe ser un objeto.")
+            samples = value.get("sample_ids", [])
+            if not isinstance(samples, list):
+                raise LibraryError("Las muestras del estilo deben ser una lista de imágenes.")
+            for sample_id in samples:
+                sample = self.get_generation(sample_id)
+                if sample.get("purged_at"):
+                    raise LibraryError("Una muestra del estilo ya fue borrada. Quita esa selección antes de guardar.")
+                if project_id is not None and sample.get("project_id") != project_id:
+                    raise LibraryError("Una muestra del estilo pertenece a otro proyecto.")
+                self.image_path(sample_id)
         if kind == "recipes":
             style_id = value.get("style_id")
             if style_id:
@@ -211,6 +252,8 @@ class Library:
             entry_id = _identifier(incoming.get("id") or uuid.uuid4().hex)
             path = self._path(kind, f"{entry_id}.json")
             old = self._read(path) if path.exists() else {}
+            if old and kind == "styles":
+                old = self._style_view(old)
             value = {**old, **incoming}
             if old and kind != "projects" and old.get("project_id") != value.get("project_id"):
                 raise LibraryError("No se puede cambiar el proyecto de un recurso existente; crea una copia.")
@@ -224,10 +267,321 @@ class Library:
             archive = self._path("revisions", kind, entry_id, f"{value['revision']:08d}.json")
             self._write(archive, value)
             self._write(path, value)
+            if kind == "projects":
+                self.mark_initialized()
             return _clone(value)
 
     def _generation_path(self, asset_id: str) -> Path:
         return self._path("history", f"{_identifier(asset_id)}.json")
+
+    def delete(self, kind: str, entry_id: str) -> dict:
+        """Remove a resource and its revisions without invalidating saved recipes.
+
+        Generation snapshots are self-contained. Saved recipes, including their
+        older revisions, still need their referenced style/piece to be available.
+        Metadata and all revisions are removed from disk after dependency checks.
+        """
+        self._kind(kind)
+        entry_id = _identifier(entry_id)
+        with self._lock:
+            record = self.get(kind, entry_id)
+            if kind == "projects":
+                for scoped_kind in _KINDS - {"projects"}:
+                    for dependent in self.list(scoped_kind):
+                        if dependent.get("project_id") == entry_id:
+                            raise LibraryConflict(
+                                f'Borra primero «{dependent["name"]}» y los demás recursos del proyecto.')
+                if self.list_generations(project_id=entry_id):
+                    raise LibraryConflict("Borra primero las imágenes del proyecto; todavía conserva resultados.")
+            for dependent_kind in _KINDS - {"projects"}:
+                paths = list(self._path(dependent_kind).glob("*.json"))
+                paths.extend(self._path("revisions", dependent_kind).rglob("*.json"))
+                for path in paths:
+                    dependent = self._read(self._path(str(path.relative_to(self.root))))
+                    if (kind != "projects" and (dependent_kind != kind or dependent.get("id") != entry_id)
+                            and self._contains_id(dependent, entry_id)):
+                        raise LibraryConflict(
+                            f'No se puede borrar «{record["name"]}»: lo utiliza '
+                            f'«{dependent.get("name", dependent["id"])}». Borra primero esa receta o recurso.')
+            current = self._path(kind, f"{entry_id}.json")
+            revisions = self._path("revisions", kind, entry_id)
+            if kind == "projects":
+                self.mark_initialized()
+            freed = self._erase_metadata([current, revisions])
+            return {"deleted": True, "id": entry_id, "kind": kind, "name": record["name"],
+                    "bytes_freed": freed}
+
+    def _metadata_snapshot(self, paths: list[Path]) -> dict[Path, bytes]:
+        snapshots = {}
+        for path in paths:
+            self._path(str(path.relative_to(self.root)))
+            if not path.exists():
+                continue
+            children = [path, *path.rglob("*")] if path.is_dir() else [path]
+            for child in children:
+                self._path(str(child.relative_to(self.root)))
+                if child.is_symlink() or child.is_junction():
+                    raise LibraryError("No se pueden borrar enlaces como metadatos del recurso.")
+                if child.is_file():
+                    if child.suffix.lower() != ".json":
+                        raise LibraryError("La carpeta del recurso contiene archivos ajenos a sus metadatos.")
+                    snapshots[child] = child.read_bytes()
+                elif not child.is_dir():
+                    raise LibraryError("La carpeta del recurso contiene un archivo no válido.")
+        return snapshots
+
+    def _metadata_journal(self, paths: list[Path], snapshots: dict[Path, bytes], transaction: str) -> dict:
+        return {"schema": "anima-metadata-delete-v1", "transaction": transaction,
+                "entries": [{"original": path.relative_to(self.root).as_posix(), "staged": str(index)}
+                            for index, path in enumerate(paths)],
+                "files": [{"original": path.relative_to(self.root).as_posix(),
+                           "content": base64.b64encode(content).decode("ascii")}
+                          for path, content in snapshots.items()]}
+
+    def _check_metadata_journal(self, destination: Path, journal: dict):
+        """Validate exact metadata ownership before using a persisted journal."""
+        if (not isinstance(journal, dict) or journal.get("schema") != "anima-metadata-delete-v1"
+                or journal.get("transaction") != destination.name
+                or not re.fullmatch(r"[0-9a-f]{32}", destination.name)
+                or not isinstance(journal.get("entries"), list)
+                or not isinstance(journal.get("files"), list)):
+            raise LibraryError("El registro de borrado no es válido.")
+        entries, originals = [], set()
+        for index, entry in enumerate(journal["entries"]):
+            relative = entry.get("original") if isinstance(entry, dict) else None
+            if (not isinstance(relative, str) or "\\" in relative or ":" in relative
+                    or any(part in ("", ".", "..") for part in relative.split("/"))
+                    or relative in originals or entry.get("staged") != str(index)):
+                raise LibraryError("La ruta del registro de borrado no es válida.")
+            parts = relative.split("/")
+            shape, identifier = None, None
+            if len(parts) == 2 and parts[0] in _KINDS | {"history"} and parts[1].endswith(".json"):
+                shape, identifier = "file", parts[1][:-5]
+            elif len(parts) == 3 and parts[0] == "revisions" and parts[1] in _KINDS:
+                shape, identifier = "revisions", parts[2]
+            elif len(parts) == 3 and parts[0] == ".trash" and parts[1] in _KINDS:
+                identifier, separator, suffix = parts[2].rpartition("-")
+                if separator and re.fullmatch(r"[0-9a-f]{32}", suffix):
+                    shape = "legacy"
+            if shape is None:
+                raise LibraryError("El registro contiene una ruta ajena a los metadatos del taller.")
+            _identifier(identifier)
+            original = self._path(relative)
+            entries.append({"original": original, "staged": destination / str(index),
+                            "relative": relative, "shape": shape, "id": identifier})
+            originals.add(relative)
+        if not entries:
+            raise LibraryError("El registro de borrado está vacío.")
+        snapshots, staged_files, seen_files = {}, set(), set()
+        for file in journal["files"]:
+            relative = file.get("original") if isinstance(file, dict) else None
+            if not isinstance(relative, str) or relative in seen_files:
+                raise LibraryError("El archivo del registro de borrado no es válido.")
+            seen_files.add(relative)
+            owner = next((entry for entry in entries if relative == entry["relative"]
+                          or relative.startswith(entry["relative"] + "/")), None)
+            if owner is None:
+                raise LibraryError("El registro contiene archivos ajenos al recurso.")
+            tail = relative[len(owner["relative"]):].lstrip("/")
+            valid = ((owner["shape"] == "file" and not tail)
+                     or (owner["shape"] == "revisions" and re.fullmatch(r"[0-9]{8}\.json", tail))
+                     or (owner["shape"] == "legacy" and
+                         (tail == owner["id"] + ".json"
+                          or re.fullmatch(re.escape(owner["id"]) + r"/[0-9]{8}\.json", tail))))
+            if not valid:
+                raise LibraryError("El registro contiene archivos que no pertenecen al recurso.")
+            try:
+                content = base64.b64decode(file["content"], validate=True)
+                payload = json.loads(content)
+            except (ValueError, TypeError, KeyError) as exc:
+                raise LibraryError("Los metadatos de recuperación están dañados.") from exc
+            if (not isinstance(payload, dict) or payload.get("id") != owner["id"]
+                    or (owner["relative"].startswith("history/") and not payload.get("purged_at"))):
+                raise LibraryError("El contenido del registro no corresponde al recurso retirado.")
+            path = self._path(relative)
+            snapshots[path] = content
+            staged_files.add(owner["staged"] / tail if tail else owner["staged"])
+        return entries, snapshots, staged_files
+
+    def _check_metadata_stage(self, destination: Path, journal: dict):
+        entries, snapshots, staged_files = self._check_metadata_journal(destination, journal)
+        allowed_dirs = {entry["staged"] for entry in entries if entry["shape"] != "file"}
+        for file in staged_files:
+            allowed_dirs.update(parent for parent in file.parents if parent.is_relative_to(destination) and parent != destination)
+        for child in destination.rglob("*"):
+            self._path(str(child.relative_to(self.root)))
+            if child.is_symlink() or child.is_junction():
+                raise LibraryError("La carpeta de borrado contiene un enlace no válido.")
+            if child == destination / "journal.json":
+                continue
+            if (not (child.is_file() or child.is_dir()) or (child.is_file() and child not in staged_files)
+                    or (child.is_dir() and child not in allowed_dirs)):
+                raise LibraryError("La carpeta de borrado contiene archivos ajenos al registro.")
+        return entries, snapshots
+
+    def _remove_metadata_stage(self, destination: Path, journal: dict):
+        self._check_metadata_stage(destination, journal)
+        manifest = destination / "journal.json"
+        children = sorted(destination.rglob("*"), key=lambda p: len(p.parts), reverse=True)
+        for child in children:
+            if child == manifest:
+                continue
+            self._path(str(child.relative_to(self.root)))
+            child.rmdir() if child.is_dir() else child.unlink()
+        # The durable snapshot is the final file removed. A process crash before
+        # this point can restore even metadata already unlinked from staging.
+        if manifest.exists():
+            manifest.unlink()
+        destination.rmdir()
+        try:
+            destination.parent.rmdir()
+        except OSError:
+            pass
+
+    def recover_pending_metadata_deletions(self) -> dict:
+        """Roll back unconfirmed metadata deletions after a process crash.
+
+        Journal data is limited to JSON owned by exact resource paths. Recovery
+        never overwrites a resource changed since the interrupted operation.
+        """
+        summary = {"recovered": [], "discarded_empty": [], "skipped": []}
+        with self._lock:
+            parent = self._path(".deleting")
+            for destination in sorted(parent.glob("*")):
+                try:
+                    self._path(str(destination.relative_to(self.root)))
+                    if (not re.fullmatch(r"[0-9a-f]{32}", destination.name)
+                            or not destination.is_dir() or destination.is_symlink() or destination.is_junction()):
+                        raise LibraryError("Carpeta de borrado de procedencia desconocida.")
+                    manifest = destination / "journal.json"
+                    if not manifest.exists():
+                        # Empty directories are the only residue possible after
+                        # a committed deletion. Before the first move, a crash
+                        # during the atomic journal write can also leave only
+                        # its strictly named temporary files; no source moved.
+                        children = list(destination.iterdir())
+                        for child in children:
+                            self._path(str(child.relative_to(self.root)))
+                            if (not re.fullmatch(r"\.journal\.json\.[0-9a-f]{32}\.tmp", child.name)
+                                    or not child.is_file() or child.is_symlink() or child.is_junction()):
+                                raise LibraryError("Falta el registro para recuperar el borrado interrumpido.")
+                        for child in children:
+                            self._path(str(child.relative_to(self.root)))
+                            child.unlink()
+                        destination.rmdir()
+                        summary["discarded_empty"].append(destination.name)
+                        continue
+                    self._path(str(manifest.relative_to(self.root)))
+                    journal = self._read(manifest)
+                    entries, snapshots = self._check_metadata_stage(destination, journal)
+                    existing = self._metadata_snapshot([entry["original"] for entry in entries])
+                    if any(path not in snapshots or snapshots[path] != content for path, content in existing.items()):
+                        raise LibraryConflict("El recurso cambió después del borrado interrumpido; no se sobrescribirá.")
+                    for path, content in snapshots.items():
+                        if path not in existing:
+                            self._atomic_bytes(path, content)
+                    self._remove_metadata_stage(destination, journal)
+                    summary["recovered"].append(destination.name)
+                except (LibraryError, OSError) as exc:
+                    summary["skipped"].append({"transaction": destination.name, "reason": str(exc)})
+            try:
+                parent.rmdir()
+            except OSError:
+                pass
+        return summary
+
+    def _erase_metadata(self, paths: list[Path]) -> int:
+        """Stage exact owned paths with durable recovery and ordinary rollback.
+
+        The staging directory is transient, never a hidden resource archive.
+        A failed unlink must not turn into a successful-but-invisible deletion.
+        """
+        snapshots = self._metadata_snapshot(paths)
+        destination = self._path(".deleting", uuid.uuid4().hex)
+        journal = self._metadata_journal(paths, snapshots, destination.name)
+        self._check_metadata_journal(destination, journal)
+        destination.mkdir(parents=True)
+        moved = []
+
+        try:
+            self._write(destination / "journal.json", journal)
+            for index, source in enumerate(paths):
+                self._path(str(source.relative_to(self.root)))
+                if source.exists():
+                    target = destination / str(index)
+                    os.replace(source, target)
+                    moved.append((source, target))
+            self._remove_metadata_stage(destination, journal)
+        except BaseException:
+            # Some staged files may already be gone. Restore all bytes, rather
+            # than assuming that moving the remaining directory is sufficient.
+            for source, target in reversed(moved):
+                if source.is_file() or not source.exists():
+                    if target.exists():
+                        os.replace(target, source)
+                elif target.exists():
+                    raise LibraryError("No se pudo restaurar el recurso tras un fallo de borrado.")
+            for original, content in snapshots.items():
+                self._atomic_bytes(original, content)
+            if destination.exists():
+                self._remove_metadata_stage(destination, journal)
+            raise
+        return sum(len(content) for content in snapshots.values())
+
+    def purge_legacy_trash(self) -> dict:
+        """Remove only recognized, inactive resource archives from old versions."""
+        summary = {"deleted": [], "skipped": [], "bytes_freed": 0}
+        with self._lock:
+            for kind in sorted(_KINDS):
+                parent = self._path(".trash", kind)
+                for archive in sorted(parent.glob("*")):
+                    identifier, separator, suffix = archive.name.rpartition("-")
+                    if (not separator or not re.fullmatch(r"[0-9a-f]{32}", suffix)
+                            or not _ID.fullmatch(identifier)):
+                        summary["skipped"].append({"path": str(archive.relative_to(self.root)),
+                                                   "reason": "Archivo de procedencia desconocida."})
+                        continue
+                    self._path(str(archive.relative_to(self.root)))
+                    current = archive / f"{identifier}.json"
+                    if (not archive.is_dir() or archive.is_symlink() or archive.is_junction()
+                            or not current.is_file() or self._read(current).get("id") != identifier):
+                        summary["skipped"].append({"id": identifier, "reason": "Respaldo no reconocido."})
+                        continue
+                    if self._path(kind, f"{identifier}.json").exists():
+                        summary["skipped"].append({"id": identifier, "reason": "El recurso sigue activo."})
+                        continue
+                    dependent = None
+                    for other in _KINDS - {"projects"}:
+                        paths = [*self._path(other).glob("*.json"),
+                                 *self._path("revisions", other).rglob("*.json")]
+                        for path in paths:
+                            record = self._read(self._path(str(path.relative_to(self.root))))
+                            if self._contains_id(record, identifier):
+                                dependent = record.get("name", record.get("id"))
+                                break
+                        if dependent:
+                            break
+                    if dependent:
+                        summary["skipped"].append({"id": identifier,
+                                                   "reason": f"Todavía lo utiliza «{dependent}»."})
+                        continue
+                    allowed = {current, archive / identifier}
+                    if any(child not in allowed for child in archive.iterdir()):
+                        summary["skipped"].append({"id": identifier, "reason": "El respaldo contiene archivos ajenos."})
+                        continue
+                    if kind == "projects":
+                        self.mark_initialized()
+                    summary["bytes_freed"] += self._erase_metadata([archive])
+                    summary["deleted"].append({"id": identifier, "kind": kind})
+                try:
+                    parent.rmdir()
+                except OSError:
+                    pass
+            try:
+                self._path(".trash").rmdir()
+            except OSError:
+                pass
+        return summary
 
     def get_generation(self, asset_id: str) -> dict:
         with self._lock:
@@ -420,23 +774,102 @@ class Library:
             return any(Library._contains_id(child, asset_id) for child in value)
         return False
 
-    def _used(self, asset_id: str) -> bool:
+    @staticmethod
+    def _image_reference(value: Any, asset_id: str, *, samples: bool) -> bool:
+        """Only live image roles are dependencies; provenance is metadata."""
+        if isinstance(value, dict):
+            for field, child in value.items():
+                if field in ("source_sample_ids", "imported_from"):
+                    continue
+                if field in ("master_id", "master_asset_id") and child == asset_id:
+                    return True
+                if field == "sample_ids":
+                    if samples and isinstance(child, list) and asset_id in child:
+                        return True
+                    continue
+                if Library._image_reference(child, asset_id, samples=samples):
+                    return True
+        elif isinstance(value, list):
+            return any(Library._image_reference(child, asset_id, samples=samples) for child in value)
+        return False
+
+    def _used(self, asset_id: str, *, samples: bool = True) -> bool:
         folders = [self._path("history"), *(self._path(kind) for kind in _KINDS)]
         for folder in folders:
             for path in folder.glob("*.json"):
                 record = self._read(self._path(str(path.relative_to(self.root))))
                 if record.get("id") != asset_id and not record.get("purged_at"):
-                    if self._contains_id(record, asset_id):
+                    if self._image_reference(record, asset_id, samples=samples):
                         return True
-        # Historical style/recipe revisions remain loadable, so their source
-        # images are dependencies too, even if the current revision changed.
+        # Accepted samples remain protected by saved revisions. Pending/rejected
+        # previews can be discarded while those revisions keep their settings.
         for path in self._path("revisions").rglob("*.json"):
             record = self._read(self._path(str(path.relative_to(self.root))))
-            if record.get("id") != asset_id and self._contains_id(record, asset_id):
+            if record.get("id") != asset_id and self._image_reference(record, asset_id, samples=samples):
                 return True
         return False
 
     def purge_rejected(self, ids: list[str], min_age_days: int = 0) -> dict:
+        return self._purge_generations(ids, min_age_days, rejected_only=True)
+
+    def delete_generation(self, asset_id: str) -> dict:
+        """Explicit deletion does not require rejecting an image or waiting days."""
+        with self._lock:
+            summary = self._purge_generations([asset_id], rejected_only=False)
+            if summary["protected"]:
+                if self.get_generation(asset_id).get("status") != "accepted":
+                    raise LibraryConflict(
+                        "Esta imagen se utiliza como maestro de otro resultado. "
+                        "Borra primero los resultados derivados que la utilizan.")
+                raise LibraryConflict(
+                    "Esta imagen aceptada es una muestra guardada o un maestro utilizado. "
+                    "Borra primero el estilo o los resultados que la utilizan.")
+            return {"deleted": True, "id": asset_id, "bytes_freed": summary["bytes_freed"]}
+
+    def finish_generation_deletion(self, ids: list[str]) -> dict:
+        """Forget deleted image records only after external cleanup succeeded.
+
+        Until this explicit finalization, tombstones retain the provenance needed
+        to retry cleanup of ComfyUI outputs and expression uploads.
+        """
+        if not isinstance(ids, list) or len(ids) > 1000:
+            raise LibraryError("Selecciona hasta 1000 imágenes para finalizar el borrado.")
+        summary = {"deleted": [], "bytes_freed": 0}
+        with self._lock:
+            identifiers = list(dict.fromkeys(_identifier(value) for value in ids))
+            records = []
+            for asset_id in identifiers:
+                index = self._generation_path(asset_id)
+                if not index.exists():
+                    continue
+                record = self.get_generation(asset_id)
+                if not record.get("purged_at"):
+                    raise LibraryConflict("No se puede retirar la ficha de una imagen que sigue disponible.")
+                records.append((asset_id, index, record))
+            cleanup = []
+            for asset_id, index, record in records:
+                # Generated IDs are appended to every library image filename.
+                # This also recovers interrupted old unlinks before finalizing.
+                owned_name = re.compile(rf"(?:^|_){re.escape(asset_id)}(?:\.[a-z][a-z0-9_]*)?\.(?:png|json)$")
+                for folder in ("history", "accepted", "rejected"):
+                    for path in self._path(folder).rglob(f"*{asset_id}*"):
+                        if path == index or not owned_name.search(path.name):
+                            continue
+                        self._path(str(path.relative_to(self.root)))
+                        if path.is_symlink() or path.is_junction() or not path.is_file():
+                            raise LibraryError("No se puede borrar un enlace como imagen del recurso.")
+                        cleanup.append(path)
+            for path in dict.fromkeys(cleanup):
+                self._path(str(path.relative_to(self.root)))
+                summary["bytes_freed"] += path.stat().st_size
+                path.unlink()
+            if records:
+                summary["bytes_freed"] += self._erase_metadata([index for _, index, _ in records])
+                summary["deleted"] = [asset_id for asset_id, _, _ in records]
+        return summary
+
+    def _purge_generations(self, ids: list[str], min_age_days: int = 0,
+                           *, rejected_only: bool) -> dict:
         if type(min_age_days) is not int or min_age_days < 0:
             raise LibraryError("Antigüedad mínima no válida.")
         if not isinstance(ids, list) or len(ids) > 1000:
@@ -448,20 +881,22 @@ class Library:
             unique_ids = list(dict.fromkeys(_identifier(asset_id) for asset_id in ids))
             records = [self.get_generation(asset_id) for asset_id in unique_ids]
             for asset_id, record in zip(unique_ids, records):
-                if record.get("status") != "rejected" or record.get("purged_at"):
+                if (rejected_only and record.get("status") != "rejected") or record.get("purged_at"):
                     summary["skipped"].append({"id": asset_id, "reason": "No es un rechazado disponible."})
                     continue
-                rejected_at = datetime.fromisoformat(record["rejected_at"])
-                if (datetime.now(timezone.utc) - rejected_at).total_seconds() < min_age_days * 86400:
+                rejected_at = datetime.fromisoformat(record.get("rejected_at") or record["created_at"])
+                if rejected_only and (datetime.now(timezone.utc) - rejected_at).total_seconds() < min_age_days * 86400:
                     summary["skipped"].append({"id": asset_id, "reason": "Todavía no alcanza la antigüedad elegida."})
                     continue
-                if self._used(asset_id):
+                if self._used(asset_id, samples=record.get("status") == "accepted"):
                     summary["protected"].append(asset_id)
                     continue
                 paths = [self._path(record["file"]),
                          *(self._path(relative) for relative in record.get("variants", {}).values())]
                 # No external paths, directories or authoritative history JSON may be removed.
                 for path in paths:
+                    if path.suffix.lower() != ".png" or path == self._generation_path(asset_id):
+                        raise LibraryError("Solo se pueden eliminar los archivos PNG del recurso.")
                     if path.exists() and not path.is_file():
                         raise LibraryError("No se puede eliminar una carpeta como imagen.")
                 freed = sum(path.stat().st_size for path in paths if path.exists())
@@ -470,7 +905,9 @@ class Library:
                 self._write(self._generation_path(asset_id), tombstone)
                 for path in paths:
                     path.unlink(missing_ok=True)
-                self._path(record["file"]).with_suffix(".json").unlink(missing_ok=True)
+                sidecar = self._path(record["file"]).with_suffix(".json")
+                if sidecar != self._generation_path(asset_id):
+                    sidecar.unlink(missing_ok=True)
                 summary["purged"].append(asset_id)
                 summary["bytes_freed"] += freed
             return summary

@@ -3,8 +3,10 @@ import asyncio
 import hashlib
 import json
 import math
+import re
 import secrets
 import time
+import uuid
 from dataclasses import asdict, dataclass, field, replace
 
 from .comfy_client import ComfyClient, load_workflow
@@ -142,8 +144,28 @@ async def resolve_backend_names(client, params):
                           for item in params.loras])
 
 
-async def generate(client, params, on_progress=None, master_bytes=None, mask_bytes=None):
+async def generate(client, params, on_progress=None, master_bytes=None, mask_bytes=None,
+                   *, artifact_run_id=None, on_artifact=None):
     params = validate_params(params)
+    run_id = artifact_run_id or uuid.uuid4().hex
+    if not isinstance(run_id, str) or not re.fullmatch(r"[0-9a-f]{32}", run_id):
+        raise ValueError("Identificador de archivos de generación no válido")
+    namespace = f"anima_studio/{run_id}"
+    artifacts = {}
+
+    def record_artifact(artifact):
+        descriptor = {key: artifact[key] for key in ("type", "subfolder", "filename", "sha256")
+                      if key in artifact}
+        if (descriptor.get("type") not in ("input", "output")
+                or descriptor.get("subfolder", "").replace("\\", "/") != namespace
+                or not re.fullmatch(r"[A-Za-z0-9_-]+\.png", descriptor.get("filename", ""))):
+            raise PipelineError("ComfyUI devolvió archivos fuera de esta generación")
+        if on_artifact:
+            on_artifact(dict(artifact))
+        if artifact.get("state") != "planned":
+            key = (descriptor["type"], descriptor["subfolder"], descriptor["filename"])
+            artifacts[key] = {**artifacts.get(key, {}), **descriptor}
+
     started = time.monotonic()
 
     def report(phase, **details):
@@ -153,7 +175,7 @@ async def generate(client, params, on_progress=None, master_bytes=None, mask_byt
     report("prepare", seed=params.seed)
     params = await resolve_backend_names(client, params)
     metadata = {"schema_version": 1, "params": asdict(params), "seed": params.seed,
-                "mode": params.mode}
+                "mode": params.mode, "backend_run_id": run_id}
     crop = None
     effective = params
     image_name = mask_name = ""
@@ -168,18 +190,24 @@ async def generate(client, params, on_progress=None, master_bytes=None, mask_byt
         params = replace(params, width=crop.master.width, height=crop.master.height)
         metadata["params"] = asdict(params)
         effective = replace(params, width=crop.render_size[0], height=crop.render_size[1])
-        image_name = await client.upload_image(crop.image)
-        mask_name = await client.upload_image(crop.mask)
+        image_name = await client.upload_image(crop.image, "master.png", subfolder=namespace,
+                                               on_artifact=record_artifact)
+        mask_name = await client.upload_image(crop.mask, "mask.png", subfolder=namespace,
+                                              on_artifact=record_artifact)
         metadata.update(master_sha256=hashlib.sha256(master_bytes).hexdigest(),
                         master_seed=params.master_seed, edit_seed=params.seed,
                         input_mask_sha256=hashlib.sha256(mask_bytes).hexdigest())
     workflow = build_workflow(effective, image_name, mask_name)
+    # Only the output node changes for identical seeds: model/sampler caches
+    # remain usable, while SaveImage never points to a previous deleted file.
+    workflow["9"]["inputs"]["filename_prefix"] = f"{namespace}/render"
     serialized = json.dumps(workflow, sort_keys=True, ensure_ascii=False).encode("utf-8")
     metadata["workflow_sha256"] = hashlib.sha256(serialized).hexdigest()
     metadata["workflow"] = workflow
     report("render", step=0, total=params.steps)
     image = await client.run_workflow(
-        workflow, {}, lambda step, total: report("render", step=step, total=total))
+        workflow, {}, lambda step, total: report("render", step=step, total=total),
+        on_artifact=record_artifact)
     result = {"image": image}
     if crop:
         report("compose")
@@ -191,6 +219,7 @@ async def generate(client, params, on_progress=None, master_bytes=None, mask_byt
         if rendered.size != (params.width, params.height):
             raise PipelineError("ComfyUI devolvió dimensiones inesperadas")
     metadata["elapsed_seconds"] = round(time.monotonic() - started, 3)
+    metadata["backend_artifacts"] = list(artifacts.values())
     result["metadata"] = metadata
     report("done", elapsed_seconds=metadata["elapsed_seconds"])
     return result
