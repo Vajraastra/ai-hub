@@ -39,12 +39,17 @@ TagGUI, LoRA Merger, Forge Lab — the last two were superseded by Forge Fusion.
 
 Set your models directory in Settings, then open Model Vault.
 
-- **Update library** checks local files without contacting Civitai. Models remain visible even
-  when Civitai does not recognize them. Missing files retain their personal notes and tags.
+- **Update library** discovers local files, then obtains Civitai metadata, JSON sidecars and
+  preview images for pending models. Models remain visible when Civitai is unavailable or
+  does not recognize them. Missing files retain their personal notes and tags.
 - **Architecture** searches across physical folders. Search also accepts filenames and full
   Windows paths; **Clear filters** restores the whole library.
-- **Civitai data** completes missing metadata. **Advanced** can refresh metadata for every
-  registered model while preserving personal notes and tags.
+- **Civitai data** retries missing information and images. **Advanced** can refresh data for
+  every registered model while preserving personal notes, tags, existing previews and custom
+  JSON fields. Interrupted or invalid downloads remain pending for retry.
+- **Thumbnails** filters cards with or without images. Separate states identify pending work,
+  models not found on Civitai and confirmed absence of an image; these are not successful downloads.
+  Cards with images appear first by default; **Most recent** remains available as a sort order.
 - Drag models between folders of the same type, then choose **Apply moves** or **Discard moves**.
   Existing destination files are rejected, and failed moves remain pending for retry.
 - Identical files share one entry; its details list all known locations. Moves affect the

@@ -12,7 +12,8 @@ let expandedCat    = null;     // qué categoría tiene su lista de subfolders v
 let subfolderMap   = {};       // { "lora": { "personajes": 5, "": 2 }, ... }
 let currentSearch  = "";
 let currentArch    = "";
-let currentSort    = "recent";
+let currentImageFilter = "all";
+let currentSort    = "visual";
 let selectedHash   = null;
 let _notesTimer    = null;
 let pendingMoves   = {};   // { hash: { targetSub, targetCat, label } }
@@ -130,6 +131,41 @@ function refresh() {
   loadModels();
 }
 
+function thumbnailUrl(model) {
+  if (!model.has_thumbnail) return null;
+  return model.thumbnail_url || `/api/vault/thumbnail?path=${encodeURIComponent(model.file_path)}`;
+}
+
+function previewState(model) {
+  if (model.missing) return "vault.file_missing";
+  const status = model.civitai_assets_status || model.preview_status;
+  if (status === "not_found") return "vault.preview_not_found";
+  if (status === "unavailable") return "vault.preview_unavailable";
+  if (status === "error") return "vault.preview_error";
+  return "vault.preview_pending";
+}
+
+function previewPlaceholder(model) {
+  const state = previewState(model);
+  return `<div class="model-thumb-placeholder"><span class="preview-placeholder-icon" aria-hidden="true">▧</span>
+    <span class="preview-placeholder-status">${escapeHtml(t(state))}</span></div>`;
+}
+
+function showOperationResult(message, warning = false) {
+  const result = $("operation-result");
+  result.hidden = false;
+  result.textContent = message;
+  result.classList.toggle("warning", warning);
+}
+
+function civitaiResultMessage(stats) {
+  return t("vault.civitai_done", {
+    synced: stats.synced ?? 0, skipped: stats.skipped ?? 0,
+    previews: stats.previews_downloaded ?? 0, no_preview: stats.no_preview ?? 0,
+    not_found: stats.not_found ?? 0, errors: stats.errors ?? 0
+  });
+}
+
 // ════════════════════════════════════════════════════════════════
 // Renderizado del grid
 // ════════════════════════════════════════════════════════════════
@@ -158,9 +194,7 @@ function renderGrid() {
     const displayName = m.display_name || m.name || "Sin nombre";
     const modelType   = m.model_type   || "";
     const baseModel   = m.base_model   || "";
-    const thumbUrl    = m.has_thumbnail
-      ? `/api/vault/thumbnail?path=${encodeURIComponent(m.file_path)}`
-      : null;
+    const thumbUrl    = thumbnailUrl(m);
 
     const copyStr = getCopyString(m, 1);
 
@@ -175,8 +209,8 @@ function renderGrid() {
 
     card.innerHTML = `
       ${thumbUrl
-        ? `<img class="model-thumb" src="${thumbUrl}" alt="${escapeHtml(displayName)}" loading="lazy">`
-        : `<div class="model-thumb-placeholder">📦</div>`}
+        ? `<img class="model-thumb" src="${escapeHtml(thumbUrl)}" alt="${escapeHtml(displayName)}" loading="lazy">`
+        : previewPlaceholder(m)}
       <div class="model-card-body">
         <div class="model-card-name" title="${escapeHtml(m.file_path || displayName)}">${escapeHtml(displayName)}</div>
         <div class="model-card-meta">
@@ -226,7 +260,7 @@ function renderGrid() {
 // ════════════════════════════════════════════════════════════════
 function computeSubfolderMap() {
   subfolderMap = Object.create(null);
-  architectureModels().forEach(m => {
+  libraryFilterModels().forEach(m => {
     const cat = (m.model_type || "unknown").toLowerCase();
     const sub = modelFolder(m);
     if (!subfolderMap[cat]) subfolderMap[cat] = Object.create(null);
@@ -263,7 +297,7 @@ function selectSubfolder(catId, sub) {
 
 function renderSidebar() {
   computeSubfolderMap();
-  const visibleModels = architectureModels();
+  const visibleModels = libraryFilterModels();
   const nav = $("sidebar");
   nav.innerHTML = "";
 
@@ -400,9 +434,7 @@ function closeDetails() {
 
 function renderDetails(m) {
   const displayName = m.display_name || m.name || "Sin nombre";
-  const thumbUrl = m.has_thumbnail
-    ? `/api/vault/thumbnail?path=${encodeURIComponent(m.file_path)}`
-    : null;
+  const thumbUrl = thumbnailUrl(m);
 
   const triggers = (m.triggers || "").split(",").map(s => s.trim()).filter(Boolean);
   const triggerHtml = triggers.length
@@ -417,8 +449,8 @@ function renderDetails(m) {
 
   $("details-content").innerHTML = `
     ${thumbUrl
-      ? `<img class="detail-thumb" src="${thumbUrl}" alt="${escapeHtml(displayName)}">`
-      : ""}
+      ? `<img class="detail-thumb" src="${escapeHtml(thumbUrl)}" alt="${escapeHtml(displayName)}">`
+      : `<p class="detail-preview-status">${escapeHtml(t(previewState(m)))}</p>`}
     <div class="detail-name">${escapeHtml(displayName)}</div>
     ${m.missing ? `<p class="missing-badge">${t("vault.file_missing")}</p>` : ""}
 
@@ -552,6 +584,7 @@ async function checkedJson(url, options) {
 
 async function runLibraryJob(url, kind) {
   const local = kind === "scan";
+  $("operation-result").hidden = true;
   $("scan-kind").dataset.kind = local ? "vault.scanning_local" : "vault.downloading_civitai";
   $("scan-kind").textContent = t(local ? "vault.scanning_local" : "vault.downloading_civitai");
   $("scan-progress").classList.add("visible");
@@ -568,6 +601,10 @@ async function runLibraryJob(url, kind) {
       try { ev = JSON.parse(e.data); }
       catch (_) { fail(t("vault.invalid_progress")); return; }
       if (ev.type === "progress") {
+        const phaseKey = ev.phase === "civitai" || (!local && ev.phase !== "local")
+          ? "vault.downloading_civitai" : "vault.scanning_local";
+        $("scan-kind").dataset.kind = phaseKey;
+        $("scan-kind").textContent = t(phaseKey);
         const pct = ev.total ? Math.round(ev.current / ev.total * 100) : 0;
         $("scan-bar-fill").style.width = `${pct}%`;
         $("scan-label").textContent = ev.name || "";
@@ -586,8 +623,13 @@ async function runLibraryJob(url, kind) {
 async function startScan() {
   await withLibraryOperation(async () => {
     const ev = await runLibraryJob("/api/vault/scan?deep=false", "scan");
-    showToast((ev.errors ? "⚠ " : "✅ ") + t("vault.scan_complete", { total: ev.total })
-      + (ev.errors ? " " + t("vault.scan_partial_errors", { count: ev.errors }) : ""));
+    const warnings = Boolean(ev.errors || ev.civitai?.errors || ev.civitai_error);
+    let message = t("vault.scan_complete", { total: ev.total })
+      + (ev.errors ? " " + t("vault.scan_partial_errors", { count: ev.errors }) : "");
+    if (ev.civitai) message += " " + civitaiResultMessage(ev.civitai);
+    if (ev.civitai_error) message += " " + t("vault.civitai_partial_error", { error: ev.civitai_error });
+    showOperationResult(message, warnings);
+    showToast((warnings ? "⚠ " : "✅ ") + message);
     await loadModels();
   });
 }
@@ -616,10 +658,9 @@ async function forceSyncCivitai() {
 
 async function runCivitaiSync(force) {
   const ev = await runLibraryJob(`/api/vault/civitai-sync?force=${force}`, "civitai");
-  showToast("☁ " + t("vault.civitai_done", {
-    synced: ev.synced ?? 0, skipped: ev.skipped ?? 0,
-    not_found: ev.not_found ?? 0, errors: ev.errors ?? 0
-  }));
+  const message = civitaiResultMessage(ev);
+  showOperationResult(message, Boolean(ev.errors));
+  showToast("☁ " + message);
   await loadModels();
 }
 
@@ -642,6 +683,13 @@ function architectureModels() {
   return currentArch ? allModels.filter(m => modelArchitecture(m).toLowerCase() === currentArch.toLowerCase()) : allModels;
 }
 
+function libraryFilterModels() {
+  const models = architectureModels();
+  if (currentImageFilter === "with") return models.filter(m => Boolean(m.has_thumbnail));
+  if (currentImageFilter === "without") return models.filter(m => !m.has_thumbnail);
+  return models;
+}
+
 function renderArchitectureOptions() {
   const architectureNames = new Map();
   allModels.forEach(m => {
@@ -662,7 +710,9 @@ function renderFilterContext() {
   const location = currentCat === "all" ? t("vault.all_types") : category?.label() || currentCat;
   const folder = currentSubfolder === null ? t("vault.all_folders") : currentSubfolder || t("vault.subfolder_root");
   $("filter-context").textContent = `${t("vault.location")}: ${location} · ${folder}`;
-  $("btn-clear-filters").hidden = !currentSearch && !currentArch && currentCat === "all" && currentSubfolder === null;
+  const withImage = allModels.filter(m => m.has_thumbnail).length;
+  $("preview-summary").textContent = t("vault.preview_summary", { with: withImage, without: allModels.length - withImage });
+  $("btn-clear-filters").hidden = !currentSearch && !currentArch && currentImageFilter === "all" && currentCat === "all" && currentSubfolder === null;
 }
 
 function clearFilters() {
@@ -671,14 +721,16 @@ function clearFilters() {
   expandedCat = null;
   currentSearch = "";
   currentArch = "";
+  currentImageFilter = "all";
   $("search-box").value = "";
   $("arch-select").value = "";
+  $("image-select").value = "all";
   renderSidebar();
   applyFilters();
 }
 
 function applyFilters() {
-  let result = architectureModels();
+  let result = libraryFilterModels();
 
   if (currentCat !== "all") {
     result = result.filter(m =>
@@ -697,7 +749,9 @@ function applyFilters() {
     );
   }
 
-  if (currentSort === "name") {
+  if (currentSort === "visual") {
+    result = [...result].sort((a, b) => Number(Boolean(b.has_thumbnail)) - Number(Boolean(a.has_thumbnail)));
+  } else if (currentSort === "name") {
     result = [...result].sort((a, b) =>
       (a.display_name || a.name || "").localeCompare(b.display_name || b.name || "")
     );
@@ -856,6 +910,11 @@ document.addEventListener("DOMContentLoaded", () => {
     applyFilters();
   });
   $("btn-clear-filters").addEventListener("click", clearFilters);
+  $("image-select").addEventListener("change", e => {
+    currentImageFilter = e.target.value;
+    renderSidebar();
+    applyFilters();
+  });
 
   // Re-render sidebar al cambiar idioma (locale.js solo actualiza data-i18n estático)
   document.querySelectorAll("[data-i18n-lang-btn]").forEach(btn => {

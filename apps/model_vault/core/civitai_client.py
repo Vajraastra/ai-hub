@@ -3,6 +3,7 @@ import time
 import os
 import tempfile
 from urllib.parse import urlsplit
+from PIL import Image, UnidentifiedImageError
 
 
 class CivitaiError(RuntimeError):
@@ -155,19 +156,25 @@ class CivitaiClient:
             "description": version_data.get("description") or model_data.get("description", "")
         }
 
-    def download_image(self, url, save_path):
+    def download_image(self, url, save_path, *, raise_errors=False):
         """Downloads a preview image, filtering for real images only."""
         # Visual check for common video extensions
-        if any(url.lower().endswith(ext) for ext in [".mp4", ".webm", ".mov"]):
+        if any(urlsplit(url).path.lower().endswith(ext) for ext in [".mp4", ".webm", ".mov"]):
             return False
 
         response = None
         temporary_path = None
         try:
             response = self._request("GET", url, stream=True)
-            if response is None or response.status_code != 200:
+            if response is None:
+                raise CivitaiError("No se recibió la imagen de Civitai")
+            if response.status_code == 404:
                 return False
+            if response.status_code != 200:
+                raise CivitaiError(f"No se pudo descargar la imagen (HTTP {response.status_code})", response.status_code)
             if "image" not in response.headers.get("Content-Type", "").lower():
+                if raise_errors:
+                    raise CivitaiError("El proveedor devolvió una respuesta que no es una imagen")
                 return False
             directory = os.path.dirname(os.path.abspath(save_path))
             with tempfile.NamedTemporaryFile(mode="wb", dir=directory, prefix=".vault-preview-",
@@ -178,11 +185,24 @@ class CivitaiClient:
                     if chunk:
                         written += stream.write(chunk)
             if not written:
+                if raise_errors:
+                    raise CivitaiError("El proveedor devolvió una imagen vacía")
+                return False
+            try:
+                with Image.open(temporary_path) as downloaded:
+                    downloaded.verify()
+            except (UnidentifiedImageError, OSError, ValueError):
+                if raise_errors:
+                    raise CivitaiError("La imagen recibida no es válida o está incompleta")
                 return False
             os.replace(temporary_path, save_path)
             temporary_path = None
             return True
-        except (CivitaiError, requests.exceptions.RequestException, OSError):
+        except (CivitaiError, requests.exceptions.RequestException, OSError) as exc:
+            if raise_errors:
+                if isinstance(exc, CivitaiError):
+                    raise
+                raise CivitaiError(f"No se pudo completar la imagen: {exc}") from exc
             return False
         finally:
             if response is not None:

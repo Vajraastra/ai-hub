@@ -1,6 +1,8 @@
 """Regresiones de búsqueda y exclusión de actualizaciones, sin GPU ni red."""
 import asyncio
+import base64
 import hashlib
+import json
 from pathlib import Path
 import queue
 import sys
@@ -14,6 +16,7 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import vault_routes as routes
 from fastapi import HTTPException
+from fastapi import FastAPI
 
 
 WAI = {
@@ -65,12 +68,114 @@ class SearchChecks(unittest.IsolatedAsyncioTestCase):
         )
         with patch.object(routes, "_get_service", return_value=svc), \
                 patch.object(routes, "_get_models_root", return_value=str(Path(__file__).parent)):
-            response = await routes.start_scan()
+            response = await routes.start_scan(enrich=False)
             events = await routes.scan_progress(response["session_id"])
             payload = "".join([part async for part in events.body_iterator])
         self.assertIn('"errors": 1', payload)
         self.assertIn('"type": "done"', payload)
         self.assertFalse(routes._operation_lock.locked())
+
+    async def test_default_update_runs_discovery_then_civitai_assets(self):
+        phases = []
+        def scan(*args, **kwargs):
+            phases.append("local")
+            return {"indexed": 1, "added": 1, "errors": 0}
+        def sync(**kwargs):
+            phases.append("civitai")
+            kwargs["progress_cb"](1, 1, "model")
+            return {"synced": 1, "previews_downloaded": 1, "sidecars_updated": 2,
+                    "no_preview": 0, "errors": 0}
+        svc = SimpleNamespace(scan_and_index=scan, sync_all=sync,
+                              db=SimpleNamespace(get_all_models=lambda: [WAI]))
+        with patch.object(routes, "_get_service", return_value=svc), \
+                patch.object(routes, "_get_models_root", return_value=str(Path(__file__).parent)):
+            response = await routes.start_scan()
+            stream = await routes.scan_progress(response["session_id"])
+            events = [json.loads(part.removeprefix("data: ")) async for part in stream.body_iterator]
+        self.assertEqual(phases, ["local", "civitai"])
+        self.assertEqual(events[-1]["civitai"]["previews_downloaded"], 1)
+        self.assertEqual(events[-1]["civitai"]["sidecars_updated"], 2)
+        self.assertEqual(events[-1]["type"], "done")
+
+    async def test_civitai_failure_keeps_discovered_library_and_reports_partial_result(self):
+        svc = SimpleNamespace(
+            scan_and_index=Mock(return_value={"indexed": 1, "added": 1, "errors": 0}),
+            sync_all=Mock(side_effect=RuntimeError("provider unavailable")),
+            db=SimpleNamespace(get_all_models=lambda: [WAI]),
+        )
+        with patch.object(routes, "_get_service", return_value=svc), \
+                patch.object(routes, "_get_models_root", return_value=str(Path(__file__).parent)):
+            response = await routes.start_scan()
+            stream = await routes.scan_progress(response["session_id"])
+            events = [json.loads(part.removeprefix("data: ")) async for part in stream.body_iterator]
+        self.assertEqual(events[-1]["type"], "done")
+        self.assertEqual(events[-1]["indexed"], 1)
+        self.assertEqual(events[-1]["civitai_error"], "provider unavailable")
+        self.assertFalse(routes._operation_lock.locked())
+
+    async def test_confirmed_absent_provider_image_is_not_reported_as_ready_or_pending(self):
+        from model_vault.core.vault_service import VaultService
+        temporary_root = Path(__file__).resolve().parents[2] / ".cache" / "test-tmp"
+        temporary_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=temporary_root) as temporary:
+            root = Path(temporary)
+            model = root / "model.safetensors"
+            model.write_bytes(b"local model")
+            svc = VaultService(str(root / "vault.db"))
+            self.addCleanup(svc.executor.shutdown)
+            svc.scan_and_index(str(root))
+            with patch.object(svc.client, "get_model_version_by_hash", return_value=None), \
+                    patch("model_vault.core.vault_service.time.sleep"):
+                self.assertEqual(svc.sync_all()["not_found"], 1)
+            result = routes._enrich(svc.db.get_all_models()[0], str(root))
+            self.assertEqual(result["civitai_assets_status"], "not_found")
+            self.assertFalse(result["has_thumbnail"])
+            self.assertIsNone(result["thumbnail_url"])
+
+    async def test_thumbnail_http_uses_alias_image_and_real_content_type_after_scan(self):
+        from model_vault.core.vault_service import VaultService
+        temporary_root = Path(__file__).resolve().parents[2] / ".cache" / "test-tmp"
+        temporary_root.mkdir(parents=True, exist_ok=True)
+        png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aTvoAAAAASUVORK5CYII=")
+        with tempfile.TemporaryDirectory(dir=temporary_root) as temporary:
+            root = Path(temporary)
+            (root / "models" / "loras").mkdir(parents=True)
+            model_dir = root / "models" / "loras"
+            primary = model_dir / "primary.safetensors"
+            alias = model_dir / "alias.safetensors"
+            primary.write_bytes(b"same model")
+            alias.write_bytes(b"same model")
+            preview = alias.with_suffix(".preview.jpeg")
+            preview.write_bytes(png)
+            svc = VaultService(str(root / "vault.db"))
+            self.addCleanup(svc.executor.shutdown)
+            with patch.object(svc.client, "_request", side_effect=AssertionError("offline scan")):
+                svc.scan_and_index(str(root / "models"))
+                svc.scan_and_index(str(root / "models"))
+            row = svc.db.get_all_models()[0]
+            # Forzar una principal sin preview para cubrir fallback a la otra ubicación.
+            svc.db.update_file_path(row["hash"], str(primary), old_path=str(primary))
+            app = FastAPI()
+            app.include_router(routes.vault_router)
+            with patch.object(routes, "_get_service", return_value=svc), \
+                    patch.object(routes, "_get_models_root", return_value=str(root / "models")):
+                listed = await routes.get_models()
+                item = listed["models"][0]
+                self.assertTrue(item["has_thumbnail"])
+                messages = []
+                async def receive():
+                    return {"type": "http.request", "body": b"", "more_body": False}
+                async def send(message):
+                    messages.append(message)
+                await app({"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
+                           "method": "GET", "scheme": "http", "path": item["thumbnail_url"],
+                           "raw_path": item["thumbnail_url"].encode(), "query_string": b"",
+                           "root_path": "", "headers": [], "server": ("test", 80),
+                           "client": ("test", 1)}, receive, send)
+            self.assertEqual(messages[0]["status"], 200)
+            self.assertEqual(dict(messages[0]["headers"])[b"content-type"], b"image/png")
+            self.assertEqual(b"".join(m.get("body", b"") for m in messages[1:]), png)
+            self.assertEqual(preview.read_bytes(), png)
 
     async def test_moves_rejected_while_scanning(self):
         routes._operation_lock.acquire()

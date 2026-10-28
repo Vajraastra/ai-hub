@@ -1,5 +1,6 @@
 """Civitai error accounting, credentials and offline sync eligibility checks."""
 import json
+import io
 import sys
 import tempfile
 import unittest
@@ -7,6 +8,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import requests
+from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "apps"))
 from model_vault.core.civitai_client import CivitaiClient, CivitaiError
@@ -18,6 +20,12 @@ def response(status=200, data=None):
     result.status_code = status
     result._content = json.dumps(data or {}).encode()
     return result
+
+
+def image_bytes(format="PNG"):
+    stream = io.BytesIO()
+    Image.new("RGB", (2, 2), (40, 90, 160)).save(stream, format=format)
+    return stream.getvalue()
 
 
 class CivitaiClientTests(unittest.TestCase):
@@ -32,12 +40,13 @@ class CivitaiClientTests(unittest.TestCase):
         directory = self.preview_directory()
         destination = directory / "model.preview.jpeg"
         destination.write_bytes(b"previous image")
+        content = image_bytes()
         remote = Mock(status_code=200, headers={"Content-Type": "image/jpeg"})
-        remote.iter_content.return_value = iter([b"new ", b"", b"image"])
+        remote.iter_content.return_value = iter([content[:12], b"", content[12:]])
         client = CivitaiClient()
         with patch.object(client, "_request", return_value=remote):
             self.assertTrue(client.download_image("https://image.civitai.com/image.jpeg", str(destination)))
-        self.assertEqual(destination.read_bytes(), b"new image")
+        self.assertEqual(destination.read_bytes(), content)
         self.assertEqual(list(directory.iterdir()), [destination])
         remote.close.assert_called_once()
 
@@ -141,8 +150,9 @@ class CivitaiSyncTests(unittest.TestCase):
              patch("model_vault.core.vault_service.time.sleep"):
             stats = self.service.sync_all()
         self.assertEqual((stats["not_found"], stats["errors"]), (1, 0))
+        self.assertEqual(self.service.pending_models(), [])
         with patch.object(self.service.client, "get_model_version_by_hash", side_effect=CivitaiError("offline")):
-            stats = self.service.sync_all()
+            stats = self.service.sync_all(force=True)
         self.assertEqual((stats["not_found"], stats["errors"]), (0, 1))
         self.assertEqual(stats["error_detail"][0]["path"], str(self.file))
 
@@ -152,8 +162,7 @@ class CivitaiSyncTests(unittest.TestCase):
                 self.service.sync_all(force=True)
 
     def test_direct_sync_keeps_personal_tags(self):
-        with patch.object(self.service.client, "get_model_info", return_value={}), \
-             patch.object(self.service, "_update_local_sidecars"):
+        with patch.object(self.service.client, "get_model_info", return_value={}):
             self.service.sync_model(str(self.file), self.row["hash"], self.version)
         after = self.service.db.get_model_by_hash(self.row["hash"])
         self.assertEqual((after["custom_tags"], after["user_notes"]), ("my tags", "my notes"))

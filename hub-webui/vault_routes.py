@@ -10,6 +10,7 @@ import queue
 import asyncio
 import threading
 import time
+from urllib.parse import quote
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor
 
@@ -115,15 +116,9 @@ def _get_service():
         api_key = cfg.get("civitai_key") or None
     return VaultService(_DB_PATH, api_key=api_key)
 
-def _find_thumbnail(file_path: str) -> Optional[str]:
-    if not file_path:
-        return None
-    base = os.path.splitext(file_path)[0]
-    for ext in (".preview.jpeg", ".preview.jpg", ".preview.png", ".preview.webp"):
-        candidate = base + ext
-        if os.path.isfile(candidate):
-            return candidate
-    return None
+def _find_thumbnail(file_path: str, file_paths=()) -> Optional[str]:
+    from model_vault.core.model_assets import find_preview
+    return find_preview(file_path, file_paths)
 
 def _get_models_root() -> str:
     return _load_config().get("paths", {}).get("models", "")
@@ -131,7 +126,20 @@ def _get_models_root() -> str:
 def _enrich(m: dict, models_root: str = "") -> dict:
     """Añade has_thumbnail y subfolder al dict de un modelo."""
     m = dict(m)
-    m["has_thumbnail"] = bool(_find_thumbnail(m.get("file_path", "")))
+    last_preview_status = m.get("preview_status")
+    from model_vault.core.model_assets import assets_status
+    assets = assets_status(m)
+    m.update(assets)
+    preview_status = assets["preview_status"]
+    m["civitai_assets_status"] = (
+        preview_status if not assets["has_thumbnail"] and preview_status in ("unavailable", "not_found") else
+        "ready" if assets["assets_complete"] else
+        "error" if last_preview_status == "error" else "pending"
+    )
+    m["thumbnail_url"] = (
+        f"/api/vault/models/{quote(m['hash'], safe='')}/thumbnail"
+        if m["has_thumbnail"] else None
+    )
 
     subfolder = ""
     folder = ""
@@ -214,10 +222,31 @@ async def get_models(q: str = "", cat: str = "", sort: str = "recent", arch: str
 @vault_router.get("/thumbnail")
 async def get_thumbnail(path: str):
     """Sirve el thumbnail de un modelo dado su file_path."""
+    from model_vault.core.model_assets import image_media_type
     thumb = _find_thumbnail(path)
     if not thumb:
+        def _resolve():
+            model = _get_service().db.get_model_by_path(path)
+            return _find_thumbnail(path, model.get("file_paths", ())) if model else None
+        thumb = await asyncio.get_running_loop().run_in_executor(_pool, _resolve)
+    if not thumb:
         return Response(status_code=404)
-    return FileResponse(thumb)
+    return FileResponse(thumb, media_type=image_media_type(thumb))
+
+
+@vault_router.get("/models/{model_hash}/thumbnail")
+async def get_model_thumbnail(model_hash: str):
+    """Resuelve la imagen por identidad, incluyendo ubicaciones alternativas."""
+    from model_vault.core.model_assets import image_media_type
+
+    def _resolve():
+        model = _get_service().db.get_model_by_hash(model_hash)
+        return _find_thumbnail(model.get("file_path", ""), model.get("file_paths", ())) if model else None
+
+    thumb = await asyncio.get_running_loop().run_in_executor(_pool, _resolve)
+    if not thumb:
+        return Response(status_code=404)
+    return FileResponse(thumb, media_type=image_media_type(thumb))
 
 
 @vault_router.get("/models/{model_hash}")
@@ -256,8 +285,8 @@ async def update_model(model_hash: str, payload: UpdateModelPayload):
 
 
 @vault_router.post("/scan")
-async def start_scan(deep: bool = False):
-    """Actualiza el inventario local sin depender de Civitai."""
+async def start_scan(deep: bool = False, enrich: bool = True):
+    """Descubre archivos y completa datos, JSON e imágenes con Civitai."""
     def _run(q):
         models_dir = _get_models_root()
         if not models_dir or not os.path.isdir(models_dir):
@@ -266,11 +295,25 @@ async def start_scan(deep: bool = False):
 
         def _cb(current, total, name):
             q.put({"type": "progress", "current": current,
-                   "total": total, "name": name})
+                   "total": total, "name": name, "phase": "local"})
 
         stats = svc.scan_and_index(models_dir, deep_scan=deep, progress_callback=_cb)
+        result = dict(stats or {})
+        if enrich:
+            q.put({"type": "progress", "current": 0, "total": 0,
+                   "name": "Civitai", "phase": "civitai"})
+
+            def _civitai_cb(current, total, name):
+                q.put({"type": "progress", "current": current,
+                       "total": total, "name": name, "phase": "civitai"})
+
+            try:
+                result["civitai"] = svc.sync_all(progress_cb=_civitai_cb)
+            except Exception as exc:
+                # La biblioteca descubierta sigue disponible aunque falle el proveedor.
+                result["civitai_error"] = str(exc)
         count = len(svc.db.get_all_models())
-        q.put({"type": "done", "total": count, **(stats or {})})
+        q.put({"type": "done", "total": count, **result})
 
     session_id = _start_operation(_scan_sessions, _scan_lock, _run)
     return {"session_id": session_id}
@@ -311,7 +354,7 @@ async def scan_progress(session_id: str):
 
 @vault_router.get("/civitai-pending")
 async def get_civitai_pending():
-    """Retorna cuántos modelos no tienen civitai_tags aún, sin iniciar sync."""
+    """Cuenta modelos pendientes de datos, JSON o miniatura, sin iniciar trabajo."""
     loop = asyncio.get_event_loop()
 
     def _count():
@@ -324,7 +367,7 @@ async def get_civitai_pending():
 
 @vault_router.post("/civitai-sync")
 async def start_civitai_sync(force: bool = False):
-    """Inicia sync de tags Civitai para todos los modelos en DB. Devuelve session_id y pending count."""
+    """Completa datos, JSON y miniaturas; devuelve session_id y cantidad pendiente."""
     loop = asyncio.get_event_loop()
 
     def _prepare():

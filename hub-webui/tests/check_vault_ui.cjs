@@ -94,7 +94,7 @@ test('all registered types can appear in sidebar, including future types', () =>
   assert.equal(h.run("modelCategories().some(c => c.id === 'futuretype')"), true);
 });
 
-test('local update does not apply staged moves or start Civitai and concurrent clicks cannot submit twice', async () => {
+test('library update keeps staged moves separate and concurrent clicks cannot submit twice', async () => {
   const h = setup();
   const requests = [];
   h.context.fetch = async url => { requests.push(url); return { ok: true, json: async () => ({ session_id: 'scan-1' }) }; };
@@ -289,4 +289,108 @@ test('late library responses cannot replace a newer inventory and reload failure
   await h.run('loadModels()');
   assert.equal(h.run('allModels[0].hash'), 'anima');
   assert.match(h.element('toast').textContent, /vault.load_error/);
+});
+
+test('missing previews distinguish pending checks, no provider image, absent model and download errors', () => {
+  const h = setup();
+  for (const [state, label] of [
+    ['pending', 'preview_pending'], ['unavailable', 'preview_unavailable'],
+    ['not_found', 'preview_not_found'], ['error', 'preview_error'],
+  ]) {
+    const html = h.run(`previewPlaceholder({civitai_assets_status:${JSON.stringify(state)}})`);
+    assert.match(html, new RegExp(`vault.${label}`));
+    assert.doesNotMatch(html, /<img\b/);
+  }
+  assert.match(h.run('previewPlaceholder({missing:true})'), /vault.file_missing/);
+});
+
+test('image filter defaults to all, exposes library image counts and survives inventory refresh', async () => {
+  const h = setup();
+  h.init();
+  const inventory = [
+    { ...models[0], has_thumbnail: true },
+    { ...models[1], has_thumbnail: false, civitai_assets_status: 'unavailable' },
+  ];
+  h.run(`allModels = ${JSON.stringify(inventory)}; applyFilters();`);
+  assert.equal(h.run('currentImageFilter'), 'all');
+  assert.equal(h.run('filteredModels.length'), 2);
+  assert.match(h.element('preview-summary').textContent, /"with":1,"without":1/);
+  h.element('image-select').listeners.change({ target: { value: 'with' } });
+  assert.equal(h.run('filteredModels[0].hash'), 'wai');
+  assert.equal(h.element('btn-clear-filters').hidden, false);
+  h.restore('loadModels');
+  h.context.fetch = async () => ({ ok: true, json: async () => ({ models: inventory }) });
+  await h.run('loadModels()');
+  assert.equal(h.run('currentImageFilter'), 'with');
+  assert.equal(h.run('filteredModels.length'), 1);
+  h.run('clearFilters()');
+  assert.equal(h.run('filteredModels.length'), 2);
+  assert.equal(h.element('image-select').value, 'all');
+});
+
+test('Civitai success refreshes cards and detail with the resolved thumbnail URL', async () => {
+  const h = setup();
+  h.restore('renderGrid');
+  h.restore('loadModels');
+  const refreshed = { ...models[0], has_thumbnail: true, civitai_assets_status: 'ready',
+    thumbnail_url: '/api/vault/thumbnail?path=resolved-alias&v=2' };
+  h.run(`allModels=[${JSON.stringify({ ...models[0], has_thumbnail: false, civitai_assets_status: 'pending' })}]; applyFilters();`);
+  assert.match(h.element('model-grid').children.at(-1).innerHTML, /vault.preview_pending/);
+  h.context.fetch = async url => ({ ok: true, json: async () =>
+    url === '/api/vault/models' ? { models: [refreshed] } : { session_id: 'images' } });
+  const sync = h.run('runCivitaiSync(false)');
+  await nextTick();
+  h.streams[0].send({ type: 'done', synced: 1, previews_downloaded: 1, no_preview: 0, errors: 0 });
+  await sync;
+  const cardHtml = h.element('model-grid').children.at(-1).innerHTML;
+  assert.match(cardHtml, /<img class="model-thumb"/);
+  assert.match(cardHtml, /src="\/api\/vault\/thumbnail\?path=resolved-alias&amp;v=2"/);
+  assert.doesNotMatch(cardHtml, /vault.preview_pending/);
+  h.run('renderDetails(allModels[0])');
+  assert.match(h.element('details-content').innerHTML, /src="\/api\/vault\/thumbnail\?path=resolved-alias&amp;v=2"/);
+  assert.match(h.element('operation-result').textContent, /"previews":1/);
+  assert.equal(h.element('operation-result').hidden, false);
+});
+
+test('combined library update reports Civitai phase and partial completion without hiding local models', async () => {
+  const h = setup();
+  h.context.fetch = async () => ({ ok: true, json: async () => ({ session_id: 'scan' }) });
+  const scan = h.run('startScan()');
+  await nextTick();
+  h.streams[0].send({ type: 'progress', phase: 'local', current: 1, total: 2, name: 'local model' });
+  assert.equal(h.element('scan-kind').dataset.kind, 'vault.scanning_local');
+  h.streams[0].send({ type: 'progress', phase: 'civitai', current: 1, total: 1, name: 'remote metadata' });
+  assert.equal(h.element('scan-kind').dataset.kind, 'vault.downloading_civitai');
+  h.streams[0].send({ type: 'done', total: 2, errors: 0,
+    civitai: { synced: 1, previews_downloaded: 0, no_preview: 1, errors: 1 },
+    civitai_error: 'Civitai temporalmente inaccesible' });
+  await scan;
+  assert.match(h.element('operation-result').textContent, /"no_preview":1/);
+  assert.match(h.element('operation-result').textContent, /civitai_partial_error/);
+  assert.match(h.element('toast').textContent, /^⚠/);
+  assert.equal(h.context.loads, 1);
+  assert.equal(h.element('btn-scan').disabled, false);
+});
+
+test('default images-first view keeps known visual models ahead of 223 new unknowns without hiding records', () => {
+  const h = setup();
+  h.init();
+  const unknowns = Array.from({ length: 223 }, (_, i) => ({
+    hash: `new-${i}`, name: `new-${i}.safetensors`, has_thumbnail: false,
+    civitai_assets_status: 'not_found', model_type: 'lora',
+  }));
+  const withImages = [
+    { ...models[0], has_thumbnail: true },
+    { ...models[1], has_thumbnail: true },
+  ];
+  h.run(`allModels=${JSON.stringify([...unknowns, ...withImages])}; applyFilters();`);
+  assert.equal(h.run('currentSort'), 'visual');
+  assert.equal(h.run('filteredModels.length'), 225);
+  assert.equal(h.run('JSON.stringify(filteredModels.slice(0, 2).map(m => m.hash))'), '["wai","anima"]');
+  assert.equal(h.run('filteredModels[2].hash'), 'new-0');
+  assert.equal(h.run('filteredModels.at(-1).hash'), 'new-222');
+  h.element('sort-select').listeners.change({ target: { value: 'recent' } });
+  assert.equal(h.run('filteredModels[0].hash'), 'new-0');
+  assert.equal(h.run('filteredModels[223].hash'), 'wai');
+  assert.equal(h.run('filteredModels[224].hash'), 'anima');
 });

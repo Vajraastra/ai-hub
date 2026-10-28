@@ -8,6 +8,7 @@ from .civitai_client import CivitaiClient, CivitaiError
 from .database import VaultDatabase
 from .metadata_processor import MetadataProcessor
 from .header_classifier import classify
+from .model_assets import assets_status, find_preview, sidecar_status, update_sidecars
 
 class VaultService:
     """
@@ -138,29 +139,24 @@ class VaultService:
         return record
 
     def sync_model(self, file_path, file_hash, version_data=None):
-        """
-        Fetches metadata from Civitai using hash and updates local sidecars + DB.
-        If version_data is provided, it skips the first API call.
-        """
-        # 1. Try to find in Civitai if not provided
-        if not version_data:
+        """Synchronize metadata and real files through the same flow as batch sync."""
+        if version_data is None:
             version_data = self.client.get_model_version_by_hash(file_hash)
-        
         if not version_data:
-            # Not found or error
-            return
-
-        # 2. Extract and clean metadata
+            self.db.mark_civitai_assets(file_hash, "not_found")
+            return {"not_found": 1, "synced": 0, "metadata_updated": 0,
+                    "previews_downloaded": 0, "sidecars_updated": 0, "sidecars_protected": 0,
+                    "no_preview": 0, "asset_errors": []}
+        existing = self.db.get_model_by_hash(file_hash) or {}
         meta = self.client.extract_metadata(version_data)
-        
-        # 2.5 Fetch full model data to get the creator's name (by-hash usually omits this)
         model_id = version_data.get("modelId")
-        if model_id:
-            full_model_info = self.client.get_model_info(model_id)
-            if full_model_info and "creator" in full_model_info:
-                meta["creator"] = full_model_info["creator"].get("username", "Unknown")
-
-        # 3. Update DB
+        if model_id and (not meta.get("tags") or not meta.get("creator") or meta.get("creator") == "Unknown"):
+            full_info = self.client.get_model_info(model_id)
+            if full_info:
+                if not meta.get("tags"):
+                    meta["tags"] = full_info.get("tags", [])
+                if (not meta.get("creator") or meta.get("creator") == "Unknown") and full_info.get("creator"):
+                    meta["creator"] = full_info["creator"].get("username", "Unknown")
         model_record = {
             "hash": file_hash,
             "file_path": file_path,
@@ -174,8 +170,14 @@ class VaultService:
             "version_name": meta["versionName"],
             "triggers": self.processor.format_triggers(meta["triggers"]),
             "civitai_tags": ", ".join(meta.get("tags", [])) if meta.get("tags") else "",
-            "description": meta["description"]
+            "description": self.processor.clean_html(meta.get("description", ""))
         }
+        for key, value in list(model_record.items()):
+            if value in (None, "", [], {}) or (isinstance(value, str) and value.strip().casefold() == "unknown"):
+                if existing.get(key) not in (None, "", [], {}):
+                    model_record[key] = existing[key]
+                else:
+                    model_record.pop(key)
         info = os.stat(file_path)
         self.db.index_local_model(model_record, file_info={
             "file_size": info.st_size, "file_mtime_ns": info.st_mtime_ns,
@@ -183,57 +185,59 @@ class VaultService:
         })
         self.db.update_civitai_data(file_hash, model_record)
         self.db.mark_civitai_synced(file_hash)
-
-        # 4. Save local JSON sidecars (Stability Matrix compatibility)
-        self._update_local_sidecars(file_path, version_data, model_record)
+        current = self.db.get_model_by_hash(file_hash)
+        changed = any(existing.get(key) != current.get(key) for key in model_record
+                      if key not in ("hash", "file_path", "name"))
+        return {"synced": 1, "not_found": 0, "metadata_updated": int(changed),
+                **self._complete_real_assets(current, version_data)}
 
     def _update_local_sidecars(self, file_path, civitai_data, db_record):
-        base_name = os.path.splitext(file_path)[0]
-        
-        # .cm-info.json
-        cm_info_path = base_name + ".cm-info.json"
-        cm_data = {
-            "ModelId": db_record["model_id"],
-            "ModelName": civitai_data.get("model", {}).get("name", ""),
-            "ModelType": civitai_data.get("model", {}).get("type", ""),
-            "VersionId": db_record["version_id"],
-            "VersionName": db_record["version_name"],
-            "BaseModel": db_record["base_model"],
-            "Hashes": {"SHA256": db_record["hash"]},
-            "TrainedWords": db_record["triggers"].split(", ") if db_record["triggers"] else []
-        }
-        with open(cm_info_path, "w", encoding="utf-8") as f:
-            json.dump(cm_data, f, indent=2)
+        return update_sidecars({**db_record, "file_path": file_path}, civitai_data)
 
-        # .metadata.json
-        meta_path = base_name + ".metadata.json"
-        meta_data = {
-            "file_name": os.path.basename(file_path),
-            "sha256": db_record["hash"],
-            "base_model": db_record["base_model"],
-            "from_civitai": True,
-            "civitai": civitai_data
-        }
-        with open(meta_path, "w", encoding="utf-8") as f:
-            json.dump(meta_data, f, indent=2)
-            
-        # Preview image
-        preview_path = base_name + ".preview.jpeg"
-        if not os.path.exists(preview_path):
-            images = civitai_data.get("images", [])
-            for img in images:
-                image_url = img.get("url")
-                if image_url:
-                    # Attempt to download, download_image already filters for videos/formats
-                    if self.client.download_image(image_url, preview_path):
-                        break # Found a valid one
+    def _complete_real_assets(self, model, version_data):
+        """A model is ready only after its JSON and preview checks have completed."""
+        result = {"previews_downloaded": 0, "sidecars_updated": 0, "sidecars_protected": 0,
+                  "no_preview": 0, "asset_errors": []}
+        try:
+            result.update(self._update_local_sidecars(model["file_path"], version_data, model))
+        except (OSError, ValueError, TypeError) as exc:
+            result["asset_errors"].append(f"JSON: {exc}")
+        if sidecar_status(model["file_path"], model.get("file_paths", ()), model["hash"]) != "complete":
+            result["asset_errors"].append("Los JSON del modelo están incompletos o protegidos y requieren revisión")
+        preview = find_preview(model["file_path"], model.get("file_paths", ()))
+        if not preview:
+            preview_path = os.path.splitext(model["file_path"])[0] + ".preview.jpeg"
+            image_errors = []
+            for image in version_data.get("images") or []:
+                if not isinstance(image, dict) or image.get("type") == "video" or not image.get("url"):
+                    continue
+                try:
+                    if self.client.download_image(image["url"], preview_path, raise_errors=True):
+                        result["previews_downloaded"] = 1
+                        preview = preview_path
+                        break
+                except (CivitaiError, OSError) as exc:
+                    image_errors.append(str(exc))
+            if not preview:
+                result["asset_errors"].extend(image_errors)
+                if not image_errors:
+                    result["no_preview"] = 1
+        if result["asset_errors"]:
+            self.db.mark_civitai_assets(model["hash"], "error", complete=False)
+        else:
+            self.db.mark_civitai_assets(model["hash"], "available" if preview else "unavailable")
+        return result
+
     @staticmethod
     def needs_civitai_sync(model):
-        """An empty tag list is valid; successful metadata retrieval is tracked explicitly."""
+        """Metadata alone does not finish a model whose previews/JSON are still missing."""
+        if model.get("civitai_assets_synced_at") and model.get("preview_status") == "not_found":
+            return False
         required = ("model_id", "version_id", "display_name", "base_model", "model_type")
         complete = all(str(model.get(key) or "").strip().lower() not in ("", "unknown") for key in required)
         legacy_synced = bool((model.get("civitai_tags") or "").strip())
-        return not (complete and (model.get("civitai_synced_at") or legacy_synced))
+        metadata_done = bool(model.get("civitai_synced_at")) or (complete and legacy_synced)
+        return not (metadata_done and assets_status(model)["assets_complete"])
 
     def pending_models(self, force=False):
         return [model for model in self.db.get_all_models()
@@ -248,8 +252,9 @@ class VaultService:
         """
         available = [model for model in self.db.get_all_models() if not model.get("missing")]
         models = [model for model in available if force or self.needs_civitai_sync(model)]
-        stats = {"synced": 0, "skipped": len(available) - len(models), "not_found": 0,
-                 "errors": 0, "error_detail": []}
+        stats = {"synced": 0, "metadata_updated": 0, "previews_downloaded": 0,
+                 "sidecars_updated": 0, "sidecars_protected": 0, "no_preview": 0,
+                 "skipped": len(available) - len(models), "not_found": 0, "errors": 0, "error_detail": []}
         total = len(models)
 
         for i, model in enumerate(models):
@@ -257,41 +262,13 @@ class VaultService:
                 progress_cb(i + 1, total, model.get("display_name") or model.get("name", ""))
 
             try:
-                version_data = self.client.get_model_version_by_hash(model["hash"])
-                if not version_data:
-                    stats["not_found"] += 1
-                    time.sleep(0.7)
-                    continue
-
-                meta = self.client.extract_metadata(version_data)
-
-                # Tags y creador requieren la llamada completa al modelo
-                model_id = version_data.get("modelId")
-                if model_id and (not meta.get("tags") or meta.get("creator") == "Unknown"):
-                    full_info = self.client.get_model_info(model_id)
-                    if full_info:
-                        if not meta.get("tags"):
-                            meta["tags"] = full_info.get("tags", [])
-                        if meta.get("creator") == "Unknown" and full_info.get("creator"):
-                            meta["creator"] = full_info["creator"].get("username", "Unknown")
-                    time.sleep(0.4)
-
-                civitai_data = {
-                    "name": os.path.basename(model["file_path"]),
-                    "display_name": meta.get("modelName") or model.get("display_name"),
-                    "base_model": meta["baseModel"],
-                    "model_type": meta["modelType"],
-                    "version_id": meta["modelVersionId"],
-                    "model_id": version_data.get("modelId"),
-                    "version_name": meta["versionName"],
-                    "triggers": self.processor.format_triggers(meta["triggers"]),
-                    "description": self.processor.clean_html(meta.get("description", "")),
-                    "creator_name": meta.get("creator", "Unknown"),
-                    "civitai_tags": ", ".join(meta.get("tags", [])) if meta.get("tags") else "",
-                }
-                self.db.update_civitai_data(model["hash"], civitai_data)
-                self.db.mark_civitai_synced(model["hash"])
-                stats["synced"] += 1
+                result = self.sync_model(model["file_path"], model["hash"])
+                for key in ("synced", "metadata_updated", "previews_downloaded", "sidecars_updated",
+                            "sidecars_protected", "no_preview", "not_found"):
+                    stats[key] += result[key]
+                if result["asset_errors"]:
+                    stats["errors"] += 1
+                    stats["error_detail"].append({"path": model["file_path"], "error": "; ".join(result["asset_errors"])})
                 time.sleep(0.7)
 
             except Exception as e:

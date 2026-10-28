@@ -82,6 +82,9 @@ class VaultDatabase:
                 conn.execute("ALTER TABLE models ADD COLUMN civitai_tags TEXT")
             if "civitai_synced_at" not in columns:
                 conn.execute("ALTER TABLE models ADD COLUMN civitai_synced_at TEXT")
+            for column in ("civitai_assets_synced_at", "preview_status"):
+                if column not in columns:
+                    conn.execute(f"ALTER TABLE models ADD COLUMN {column} TEXT")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS model_files (
                     path_key TEXT PRIMARY KEY, file_path TEXT NOT NULL, hash TEXT NOT NULL,
@@ -208,7 +211,10 @@ class VaultDatabase:
             "version_id", "model_id", "version_name", "triggers",
             "description", "creator_name", "civitai_tags",
         }
-        updates = {k: v for k, v in data.items() if k in fields}
+        # An incomplete provider response must never erase useful local information.
+        updates = {k: v for k, v in data.items() if k in fields
+                   and v not in (None, "", [], {})
+                   and not (isinstance(v, str) and v.strip().casefold() == "unknown")}
         if not updates:
             return
         set_clause = ", ".join(f"{k}=:{k}" for k in updates)
@@ -222,6 +228,12 @@ class VaultDatabase:
     def mark_civitai_synced(self, model_hash):
         with self._get_conn() as conn:
             conn.execute("UPDATE models SET civitai_synced_at=CURRENT_TIMESTAMP WHERE hash=?", (model_hash,))
+
+    def mark_civitai_assets(self, model_hash, preview_status, complete=True):
+        with self._get_conn() as conn:
+            timestamp = "CURRENT_TIMESTAMP" if complete else "NULL"
+            conn.execute(f"UPDATE models SET civitai_assets_synced_at={timestamp}, preview_status=? WHERE hash=?",
+                         (preview_status, model_hash))
 
     def update_custom_tags(self, model_hash, tags):
         with self._get_conn() as conn:

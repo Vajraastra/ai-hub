@@ -39,7 +39,7 @@
     }
     #search-box:focus { outline:none; border-color:var(--accent-purple); }
 
-    #sort-select, #arch-select {
+    #sort-select, #arch-select, #image-select {
       background:var(--bg-input); border:1px solid var(--border);
       color:var(--text-secondary); border-radius:6px; padding:5px 9px;
       font-size:12px; font-family:inherit;
@@ -49,6 +49,9 @@
     #tool-header .spacer { flex:1; }
     .vault-actions { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
     #library-help { padding:6px 16px; font-size:11px; color:var(--text-dim); flex-shrink:0; }
+    #operation-result { padding:6px 16px; font-size:12px; color:var(--accent-cyan); flex-shrink:0; }
+    #operation-result.warning { color:var(--accent-amber); }
+    #preview-summary { font-size:11px; color:var(--text-secondary); }
     #filter-bar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:6px 16px 10px; flex-shrink:0; border-bottom:1px solid var(--border); }
     #filter-bar label { font-size:12px; color:var(--text-secondary); }
     #filter-context { font-size:11px; color:var(--text-dim); flex:1; overflow-wrap:anywhere; }
@@ -150,9 +153,12 @@
     .model-thumb-placeholder {
       width:100%; aspect-ratio:4/5;
       background:linear-gradient(135deg, rgba(96,13,181,.15), rgba(84,239,234,.08));
-      display:flex; align-items:center; justify-content:center;
-      font-size:28px; color:rgba(255,255,255,.12);
+      display:flex; flex-direction:column; align-items:center; justify-content:center;
+      gap:10px; padding:12px; box-sizing:border-box; text-align:center;
     }
+    .preview-placeholder-icon { font-size:28px; color:rgba(255,255,255,.2); }
+    .preview-placeholder-status { font-size:11px; line-height:1.5; color:var(--text-secondary); }
+    .detail-preview-status { font-size:12px; line-height:1.5; color:var(--text-secondary); margin:0 0 12px; }
     .model-card-body { padding:8px; }
     .model-card-name {
       font-size:12px; font-weight:500; color:var(--text-primary);
@@ -316,6 +322,7 @@
     <h1>📦 Model Vault</h1>
     <input type="text" id="search-box" data-i18n-placeholder="vault.search_placeholder" placeholder="Buscar por nombre, arch, creador, tags...">
     <select id="sort-select">
+      <option value="visual" data-i18n="vault.sort_visual">Con imagen primero</option>
       <option value="recent" data-i18n="vault.sort_recent">Más recientes</option>
       <option value="name" data-i18n="vault.sort_name">A–Z</option>
       <option value="arch" data-i18n="vault.sort_arch">Arquitectura</option>
@@ -330,8 +337,8 @@
     </div>
     <button class="btn btn-outline" data-i18n-lang-btn style="font-size:11px;padding:3px 9px">EN</button>
     <div id="civitai-menu" hidden>
-      <p data-i18n="vault.civitai_help">Descarga nombres, etiquetas y descripciones para modelos ya registrados. No busca archivos nuevos.</p>
-      <button class="btn btn-outline" id="btn-civitai-sync" data-i18n="vault.btn_sync_civitai">Completar datos faltantes</button>
+      <p data-i18n="vault.civitai_help">Completa información, imágenes y archivos JSON de los modelos ya registrados.</p>
+      <button class="btn btn-outline" id="btn-civitai-sync" data-i18n="vault.btn_sync_civitai">Completar datos e imágenes</button>
       <details>
         <summary data-i18n="vault.advanced">Avanzado</summary>
         <p data-i18n="vault.civitai_force_help">Vuelve a consultar todos los modelos, incluidos los que ya tienen datos. Úsalo para actualizar información de Civitai.</p>
@@ -339,10 +346,18 @@
       </details>
     </div>
   </header>
-  <div id="library-help" data-i18n="vault.library_help">La biblioteca se revisa en el disco. Civitai solo completa sus datos.</div>
+  <div id="library-help" data-i18n="vault.library_help">Actualizar biblioteca busca archivos y completa sus datos, imágenes y JSON con Civitai.</div>
+  <div id="operation-result" role="status" hidden></div>
   <div id="filter-bar">
     <label for="arch-select" data-i18n="vault.architecture">Arquitectura</label>
     <select id="arch-select" data-i18n-title="vault.arch_help" title="Busca la arquitectura en todas las carpetas."></select>
+    <label for="image-select" data-i18n="vault.previews">Miniaturas</label>
+    <select id="image-select">
+      <option value="all" data-i18n="vault.previews_all">Todas</option>
+      <option value="with" data-i18n="vault.previews_with">Con imagen</option>
+      <option value="without" data-i18n="vault.previews_without">Sin imagen</option>
+    </select>
+    <span id="preview-summary"></span>
     <span id="filter-context"></span>
     <button class="btn btn-outline" id="btn-clear-filters" data-i18n="vault.clear_filters" hidden>Limpiar filtros</button>
   </div>
