@@ -108,7 +108,7 @@ class BackendChecks(unittest.TestCase):
         self.assertNotIn("comfyui", self.bridge._backend_release_timers)
         self.bridge.release_backend("comfyui", "page-two")
         self.timer().fire()
-        self.stop.assert_called_once_with("comfyui")
+        self.stop.assert_called_once_with("comfyui", recover_external=False)
 
     def test_manual_or_external_backend_is_never_stopped_by_release(self):
         self.up.return_value = True
@@ -117,6 +117,33 @@ class BackendChecks(unittest.TestCase):
         self.assertTrue(self.bridge.release_backend("comfyui", "page"))
         self.stop.assert_not_called()
         self.assertFalse(self.bridge._backend_release_timers)
+
+    def test_dashboard_exposes_external_listener_without_claiming_process_ownership(self):
+        self.bridge._state.registry_utilities = {}
+        self.bridge._state.cleanup_stale = lambda: []
+        self.bridge._state.get_app_status = lambda app_id: "installed"
+        self.up.return_value = True
+        payload = self.bridge.get_apps_payload()
+        self.assertEqual(payload[0]["status"], "running")
+        self.assertIsNone(payload[0]["pid"])
+        self.assertTrue(payload[0]["any_running"])
+        self.assertFalse(self.bridge._backend_autostarted)
+        self.assertFalse(self.bridge._backend_owners)
+
+    def test_automatic_release_never_recovers_an_external_port_after_own_process_is_lost(self):
+        for exited in (False, True):
+            with self.subTest(exited=exited):
+                proc = self.running()
+                if exited:
+                    proc.poll.return_value = 0
+                else:
+                    self.bridge._state.running_apps.pop("comfyui")
+                self.up.return_value = True
+                self.bridge.release_backend("comfyui", "page-one")
+                with patch.object(hub_bridge, "_kill_processes_on_port") as kill:
+                    self.timer().fire()
+                self.stop.assert_not_called()
+                kill.assert_not_called()
 
     def test_reload_cancels_even_a_stale_timer_callback(self):
         self.running()
@@ -134,10 +161,12 @@ class BackendChecks(unittest.TestCase):
         self.bridge.release_backend("comfyui", "page", grace=1)
         self.timer().fire()
         self.stop.assert_not_called()
-        self.bridge._state.running_apps["comfyui"] = MagicMock(spec=subprocess.Popen)
+        proc = MagicMock(spec=subprocess.Popen)
+        proc.poll.return_value = None
+        self.bridge._state.running_apps["comfyui"] = proc
         self.bridge._backend_process_started("comfyui")
         self.timer().fire()
-        self.stop.assert_called_once_with("comfyui")
+        self.stop.assert_called_once_with("comfyui", recover_external=False)
 
     def test_failed_launch_releases_all_ownership_and_timers(self):
         with patch.object(self.bridge, "launch", return_value=False):
@@ -187,7 +216,7 @@ class BackendChecks(unittest.TestCase):
         self.stop.assert_not_called()
         self.bridge.set_backend_idle_guard("comfyui", lambda: True)
         self.timer().fire()
-        self.stop.assert_called_once_with("comfyui")
+        self.stop.assert_called_once_with("comfyui", recover_external=False)
 
     def test_guard_reacquisition_prevents_stop(self):
         self.running()
@@ -346,7 +375,7 @@ class BackendChecks(unittest.TestCase):
                 patch.object(app_launcher, "resolve_python_runtime", return_value=runtime), \
                 patch.object(app_launcher, "apply_python_runtime_env"), \
                 patch.object(app_launcher, "_get_launch_command", return_value=["python", "main.py"]), \
-                patch.object(app_launcher.subprocess, "Popen", return_value=proc) as popen:
+                patch.object(app_launcher, "launch_guarded_process", return_value=proc) as popen:
             result = app_launcher.launch_app({}, str(self.folder), {}, async_mode=True,
                                             capture_output=True, headless=True)
             self.assertIs(result, proc)
@@ -355,6 +384,108 @@ class BackendChecks(unittest.TestCase):
             self.assertTrue(flags & subprocess.CREATE_NEW_PROCESS_GROUP)
             app_launcher.launch_app({}, str(self.folder), {}, async_mode=True, capture_output=True)
             self.assertFalse(popen.call_args.kwargs["creationflags"] & subprocess.CREATE_NO_WINDOW)
+
+
+class StopChecks(unittest.TestCase):
+    def test_port_recovery_kills_only_listeners_in_any_windows_language(self):
+        rows = "\n".join([
+            "TCP  127.0.0.1:8188  0.0.0.0:0  ESCUCHANDO  101",
+            "TCP  [::]:8188  [::]:0  LISTENING  101",
+            "TCP  127.0.0.1:8188  127.0.0.1:5000  ESTABLECIDO  202",
+            "TCP  127.0.0.1:8189  0.0.0.0:0  LISTENING  303",
+        ])
+        with patch.object(hub_bridge.subprocess, "run", side_effect=[
+                SimpleNamespace(stdout=rows), SimpleNamespace(returncode=0)]) as run:
+            self.assertEqual(hub_bridge._kill_processes_on_port(8188), [101])
+        self.assertEqual(run.call_args.args[0], ["taskkill", "/PID", "101", "/T", "/F"])
+
+    """Explicit stop must remain retryable after Windows rejects termination."""
+
+    def setUp(self):
+        parent = ROOT / ".cache" / "backend-tests"
+        parent.mkdir(parents=True, exist_ok=True)
+        self.temp = tempfile.TemporaryDirectory(dir=parent)
+        with patch.object(hub_bridge.HubBridge, "_run_startup_sync"):
+            self.bridge = hub_bridge.HubBridge()
+        self.bridge._state = State(Path(self.temp.name))
+        self.proc = MagicMock(spec=subprocess.Popen)
+        self.proc.pid = 12347
+        self.proc.poll.return_value = None
+        self.bridge._state.running_apps["comfyui"] = self.proc
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def test_failed_interrupt_keeps_live_process_available_for_retry(self):
+        with patch.object(hub_bridge, "_interrupt_tree", side_effect=PermissionError("denied")):
+            self.bridge._stop_thread("comfyui", self.proc)
+        self.assertIs(self.bridge._state.running_apps.get("comfyui"), self.proc)
+        self.assertNotIn("comfyui", self.bridge._state.busy_apps)
+        with patch.object(hub_bridge.threading, "Thread") as thread:
+            self.assertTrue(self.bridge.stop("comfyui"))
+            thread.return_value.start.assert_called_once()
+
+    def test_process_surviving_timeout_is_not_removed_from_state(self):
+        self.proc.wait.side_effect = subprocess.TimeoutExpired("fixture", 0)
+        with patch.object(hub_bridge, "_interrupt_tree"), patch.object(hub_bridge, "_kill_tree"):
+            self.bridge._stop_thread("comfyui", self.proc)
+        self.assertIs(self.bridge._state.running_apps.get("comfyui"), self.proc)
+        self.assertNotIn("comfyui", self.bridge._state.busy_apps)
+
+    def test_successful_stop_removes_only_the_exited_process(self):
+        self.proc.poll.return_value = 0
+        with patch.object(hub_bridge, "_interrupt_tree"):
+            self.bridge._stop_thread("comfyui", self.proc)
+        self.assertNotIn("comfyui", self.bridge._state.running_apps)
+        self.assertNotIn("comfyui", self.bridge._state.busy_apps)
+
+    def test_repeated_stop_while_stopping_is_idempotent(self):
+        self.bridge._state.busy_apps["comfyui"] = "stopping"
+        with patch.object(hub_bridge.threading, "Thread") as thread:
+            self.assertTrue(self.bridge.stop("comfyui"))
+        thread.assert_not_called()
+
+    def test_thread_start_failure_preserves_process_and_clears_busy(self):
+        with patch.object(hub_bridge.threading, "Thread") as thread:
+            thread.return_value.start.side_effect = RuntimeError("thread unavailable")
+            self.assertFalse(self.bridge.stop("comfyui"))
+        self.assertIs(self.bridge._state.running_apps.get("comfyui"), self.proc)
+        self.assertNotIn("comfyui", self.bridge._state.busy_apps)
+
+    def test_dashboard_stop_recovers_external_listener_without_popen(self):
+        self.bridge._state.running_apps.clear()
+        with patch.object(hub_bridge, "_is_port_in_use", return_value=True), \
+                patch.object(hub_bridge, "_kill_processes_on_port", return_value=[12348]) as kill, \
+                patch.object(hub_bridge, "_wait_port_free", return_value=True):
+            self.assertTrue(self.bridge.stop("comfyui"))
+        kill.assert_called_once_with(8188)
+
+    def test_explicit_stop_does_not_report_success_if_external_listener_survives(self):
+        self.bridge._state.running_apps.clear()
+        for killed in ([], [12348]):
+            with self.subTest(killed=killed), \
+                    patch.object(hub_bridge, "_is_port_in_use", return_value=True), \
+                    patch.object(hub_bridge, "_kill_processes_on_port", return_value=killed), \
+                    patch.object(hub_bridge, "_wait_port_free", return_value=False):
+                self.assertFalse(self.bridge.stop_backend("comfyui"))
+
+    def test_stop_without_process_or_listener_reports_unavailable(self):
+        self.bridge._state.running_apps.clear()
+        with patch.object(hub_bridge, "_is_port_in_use", return_value=False), \
+                patch.object(hub_bridge, "_kill_processes_on_port") as kill:
+            self.assertFalse(self.bridge.stop("comfyui"))
+        kill.assert_not_called()
+
+    def test_automatic_release_cannot_kill_external_port_if_process_exits_during_stop(self):
+        self.bridge._backend_autostarted.add("comfyui")
+        self.bridge._backend_owners["comfyui"] = {"page"}
+        self.proc.poll.side_effect = [None, 0]
+        with patch.object(hub_bridge.threading, "Timer", Timer), \
+                patch.object(hub_bridge, "_is_port_in_use", return_value=True), \
+                patch.object(hub_bridge, "_kill_processes_on_port") as kill:
+            self.bridge.release_backend("comfyui", "page")
+            self.bridge._backend_release_timers["comfyui"].fire()
+        kill.assert_not_called()
 
 
 if __name__ == "__main__":

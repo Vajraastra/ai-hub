@@ -13,7 +13,12 @@ Al abrir una pestaña del taller, ComfyUI se inicia automáticamente en segundo 
 consola ni navegador. La interfaz indica cuándo está listo. Al cerrar la última pestaña que lo
 arrancó, se cierra tras una breve gracia para tolerar recargas; espera los trabajos en curso.
 Una instancia que ya estaba abierta manualmente o que usa otro propietario no se cierra.
-Si se pierde el aviso de cierre, los latidos de sesión permiten recuperar el backend huérfano.
+Si se pierde el aviso de cierre y el Hub sigue abierto, la sesión vence y libera el backend.
+Si el Hub termina inesperadamente, Windows cierra las apps que este inició y sus descendientes.
+
+Para cargar una actualización, cerrar el Hub y volver a abrir `run.bat`. Si ComfyUI quedó abierto
+de una ejecución anterior, **Aplicaciones → ComfyUI → Detener** permite cerrarlo aunque el Hub
+actual no lo haya iniciado; después, volver a abrir el taller.
 
 Lee `paths.models` de `hub/hub_config.json`. Para una copia de desarrollo puede definirse
 `AI_HUB_CONFIG` con la ruta al archivo de configuración de la instalación. No copia ni cambia
@@ -80,6 +85,10 @@ requiere conexión.
 5. Aceptar y rechazar muestras; comprobar su organización y sus fichas de configuración.
 6. Cerrar la última pestaña del taller. El ComfyUI iniciado automáticamente debe terminar
    tras sus trabajos y la breve gracia de cierre; una instancia manual o compartida se conserva.
+7. Volver a abrir el taller y esperar **ComfyUI disponible**. Sin trabajos en curso, usar
+   **Aplicaciones → ComfyUI → Detener**. Comprobar que ComfyUI termina y el Hub sigue respondiendo.
+8. Esperar a que el taller indique que el backend se detuvo y pulsar **Reintentar**. Debe volver
+   a quedar disponible; cerrar la última pestaña y comprobar otra vez su cierre automático.
 
 Las pruebas y estilos del laboratorio de desarrollo no constituyen arte aprobado para un juego.
 
@@ -94,5 +103,12 @@ hub-webui/.venv/Scripts/python.exe apps/anima_studio/tests/check_api.py
 hub-webui/.venv/Scripts/python.exe apps/anima_studio/tests/check_catalog_assets.py
 hub-webui/.venv/Scripts/python.exe hub-webui/tests/check_backend_sessions.py
 hub-webui/.venv/Scripts/python.exe hub/tests/check_backend_lifecycle.py
+hub-webui/.venv/Scripts/python.exe hub/tests/check_process_guard.py
+hub-webui/.venv/Scripts/python.exe hub/tests/check_backend_stop_windows.py
+hub-webui/.venv/Scripts/python.exe hub/tests/check_backend_http_windows.py
 hub-webui/.venv/Scripts/python.exe hub-webui/tests/test_comfy_jobs.py -v
 ```
+
+Las integraciones Windows usan procesos de prueba y puertos libres, sin GPU ni instancias
+existentes de ComfyUI. Incluyen el cierre inesperado del Hub y la respuesta HTTP tras detener
+el backend. Las pruebas offline de arte anteriores siguen requiriendo revisión visual.

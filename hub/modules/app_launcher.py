@@ -16,6 +16,7 @@ import shutil
 import sys
 
 from modules.runtime_env import build_runtime_env
+from modules.process_guard import launch_guarded_process
 from modules.python_runtime import apply_python_runtime_env, resolve_python_runtime
 
 
@@ -428,7 +429,7 @@ def launch_app(app_config: dict, app_dir: str, cuda_env: dict,
         if headless and os.name == "nt":
             kwargs["creationflags"] = kwargs.get("creationflags", 0) | subprocess.CREATE_NO_WINDOW
 
-        proc = subprocess.Popen(cmd, **kwargs)
+        proc = launch_guarded_process(cmd, **kwargs)
 
         if logger:
             logger.info("launch", f"App started (PID: {proc.pid})")

@@ -256,7 +256,7 @@ async def launch_app(app_id: str):
 
 @api.post("/api/apps/{app_id}/stop")
 async def stop_app(app_id: str):
-    ok = bridge.stop(app_id)
+    ok = await asyncio.to_thread(bridge.stop, app_id)
     return {"ok": ok}
 
 
@@ -269,7 +269,7 @@ async def launch_backend(app_id: str, owner: str = "hub"):
 
 @api.post("/api/apps/{app_id}/stop-backend")
 async def stop_backend(app_id: str, owner: str = "hub"):
-    return {"ok": bridge.stop_backend(app_id, owner)}
+    return {"ok": await asyncio.to_thread(bridge.stop_backend, app_id, owner)}
 
 
 @api.post("/api/apps/{app_id}/release-backend")

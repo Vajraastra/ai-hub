@@ -70,6 +70,7 @@ def _kill_processes_on_port(port: int) -> list[int]:
             parts = line.split()
             # TCP  127.0.0.1:8188  0.0.0.0:0  LISTENING  4424
             if (len(parts) >= 5 and parts[0] == "TCP"
+                    and parts[2] in ("0.0.0.0:0", "[::]:0")
                     and parts[1].endswith(f":{port}")
                     and parts[4].isdigit() and int(parts[4]) != 0):
                 pids.add(int(parts[4]))
@@ -181,16 +182,24 @@ class HubBridge:
             if cfg.get("is_utility") or cfg.get("is_internal"):
                 continue
             proc = self._state.running_apps.get(app_id)
+            status = self._state.get_app_status(app_id)
+            # A backend can outlive an older Hub. Keep its explicit stop
+            # available without claiming ownership for automatic page cleanup.
+            if status == "installed" and self.is_backend_up(app_id):
+                status = "running"
+                any_running = True
             result.append({
                 "id":          app_id,
                 "name":        cfg.get("name", app_id),
                 "description": cfg.get("description", ""),
                 "port":        cfg.get("default_port"),
-                "status":      self._state.get_app_status(app_id),
+                "status":      status,
                 "pid":         proc.pid if proc else None,
                 "any_running": any_running,
                 "busy_label":  self._state.busy_apps.get(app_id),
             })
+        for app in result:
+            app["any_running"] = any_running
         return result
 
     def get_sysinfo(self) -> dict:
@@ -606,13 +615,38 @@ class HubBridge:
             return False
         return True
 
-    def stop(self, app_id: str) -> bool:
-        proc = self._state.running_apps.get(app_id)
-        if not proc:
-            return False
-        self._state.set_busy(app_id, "stopping")
+    def stop(self, app_id: str, *, recover_external: bool = True) -> bool:
+        with self._backend_lock:
+            if self._state.busy_apps.get(app_id) == "stopping":
+                return True
+            proc = self._state.running_apps.get(app_id)
+            if proc is None or proc.poll() is not None:
+                if not recover_external:
+                    return False
+                port = self._effective_port(app_id)
+                if not port or not _is_port_in_use(int(port)):
+                    return False
+                # Explicit user stop may recover a process that an earlier Hub
+                # left behind. Automatic release never comes through this path
+                # unless this Hub marked the backend as autostarted.
+                killed = _kill_processes_on_port(int(port))
+                ok = bool(killed) and _wait_port_free(int(port))
+                if not ok:
+                    self._emit_log(app_id, f"No se pudo liberar el puerto {port}; el backend sigue activo.")
+                self._emit_state(app_id)
+                return ok
+            self._cancel_backend_release(app_id)
+            self._backend_owners.pop(app_id, None)
+            self._backend_autostarted.discard(app_id)
+            self._state.set_busy(app_id, "stopping")
         self._emit_state(app_id)
-        threading.Thread(target=self._stop_thread, args=(app_id, proc), daemon=True).start()
+        try:
+            threading.Thread(target=self._stop_thread, args=(app_id, proc), daemon=True).start()
+        except Exception as exc:
+            self._state.clear_busy(app_id)
+            self._emit_log(app_id, f"No se pudo iniciar el cierre: {exc}")
+            self._emit_state(app_id)
+            return False
         return True
 
     # ── Backend headless (patrón reutilizable por cualquier módulo) ──────
@@ -656,17 +690,7 @@ class HubBridge:
         """Cierre explícito del backend (botón del usuario). Olvida el lease.
         Mata tanto la instancia gestionada por el hub como una externa atada
         al puerto."""
-        with self._backend_lock:
-            self._cancel_backend_release(app_id)
-            self._backend_owners.pop(app_id, None)
-            self._backend_autostarted.discard(app_id)
-        if app_id in self._state.running_apps:
-            return self.stop(app_id)
-        port = self._effective_port(app_id)
-        if port and _is_port_in_use(int(port)):
-            _kill_processes_on_port(int(port))
-            return True
-        return False
+        return self.stop(app_id)
 
     def release_backend(self, app_id: str, owner: str,
                         grace: float = 8.0) -> bool:
@@ -722,7 +746,9 @@ class HubBridge:
                     self._schedule_backend_release(app_id, 2.0)
                     return
                 self._backend_autostarted.discard(app_id)
-                self.stop(app_id)
+                proc = self._state.running_apps.get(app_id)
+                if proc is not None and proc.poll() is None:
+                    self.stop(app_id, recover_external=False)
 
         timer = threading.Timer(max(0.0, grace), _fire)
         timer.daemon = True
@@ -931,11 +957,16 @@ class HubBridge:
                     proc.wait(timeout=5)
                 except (subprocess.TimeoutExpired, OSError):
                     pass
-            self._state.log_event("STOP", app_id, "Detenida por usuario")
+            if proc.poll() is not None:
+                self._state.log_event("STOP", app_id, "Detenida por usuario")
         except Exception as e:
             self._emit_log(app_id, f"Error deteniendo {app_id}: {e}")
         finally:
-            self._state.clear_running(app_id)
+            # Failed termination must remain visible and retryable.
+            if proc.poll() is None:
+                self._emit_log(app_id, "No se pudo detener la app; sigue activa. Puedes reintentar Detener.")
+            elif self._state.running_apps.get(app_id) is proc:
+                self._state.clear_running(app_id)
             self._state.clear_busy(app_id)
             self._emit_state(app_id)
 
