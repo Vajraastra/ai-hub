@@ -58,6 +58,17 @@ Set your models directory in Settings, then open Model Vault.
 
 ---
 
+### Using Anima Studio
+
+Open **Applications → Taller Anima**. The workshop starts ComfyUI in the background and
+waits for active jobs before closing it after the last workshop tab exits. Manually started
+or shared backends remain available.
+
+Models and LoRAs are selected through searchable thumbnail galleries. Compatibility comes
+from model headers, including Anima files stored in `checkpoints`; previews and display names
+come from the local library. See [the workshop guide](apps/anima_studio/README.md) for styles,
+reusable prompt pieces, facial expressions and offline testing.
+
 ## Architecture
 
 - **Backend**: FastAPI — app launcher and every built-in utility served from a single hub

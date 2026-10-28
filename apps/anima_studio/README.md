@@ -64,6 +64,25 @@ automáticamente dentro del repositorio de un juego.
   fuera de esa coordinación; no ejecutar simultáneamente el Hub completo y el servidor PoC.
 - El plazo de retención es un filtro configurable para limpieza manual; no hay borrado por reloj.
 
+## Pruebas offline
+
+Con el entorno y los modelos ya instalados, la biblioteca y la generación funcionan sin
+conexión. Las miniaturas existentes se reutilizan localmente; actualizar datos de Civitai
+requiere conexión.
+
+1. Abrir el Hub habitual y **Aplicaciones → Taller Anima**. Esperar **ComfyUI disponible**.
+2. Abrir la galería de modelos y localizar WAI Anima. En LoRAs, buscar por nombre, archivo
+   o etiqueta; comprobar miniatura, selección y peso independiente de cada LoRA.
+3. Calibrar con seed fija, guardar un estilo y volver a cargarlo. Revisar que modelo, LoRAs,
+   pesos, dimensiones, prompts y seed se recuperen antes de generar otra prueba.
+4. Combinar piezas de personaje y outfit. Probar expresiones sobre el mismo maestro,
+   revisar el rostro y verificar que el exterior de la máscara conserve su posición.
+5. Aceptar y rechazar muestras; comprobar su organización y sus fichas de configuración.
+6. Cerrar la última pestaña del taller. El ComfyUI iniciado automáticamente debe terminar
+   tras sus trabajos y la breve gracia de cierre; una instancia manual o compartida se conserva.
+
+Las pruebas y estilos del laboratorio de desarrollo no constituyen arte aprobado para un juego.
+
 ## Verificación sin GPU
 
 Desde la raíz y con el Python del entorno del Hub:
@@ -72,5 +91,8 @@ Desde la raíz y con el Python del entorno del Hub:
 hub-webui/.venv/Scripts/python.exe apps/anima_studio/tests/check_library.py
 hub-webui/.venv/Scripts/python.exe apps/anima_studio/tests/check_generation.py
 hub-webui/.venv/Scripts/python.exe apps/anima_studio/tests/check_api.py
+hub-webui/.venv/Scripts/python.exe apps/anima_studio/tests/check_catalog_assets.py
+hub-webui/.venv/Scripts/python.exe hub-webui/tests/check_backend_sessions.py
+hub-webui/.venv/Scripts/python.exe hub/tests/check_backend_lifecycle.py
 hub-webui/.venv/Scripts/python.exe hub-webui/tests/test_comfy_jobs.py -v
 ```
