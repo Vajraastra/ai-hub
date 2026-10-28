@@ -28,6 +28,34 @@ def safetensors(path, header):
 
 
 class CatalogueChecks(unittest.TestCase):
+    def test_checkpoint_architecture_and_loader_identity_do_not_depend_on_name(self):
+        temp_root = Path(__file__).resolve().parents[3] / ".cache" / "anima-tests"
+        temp_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=temp_root) as directory:
+            root = Path(directory)
+            # The container used by WAI Anima: its encoder and VAE live in
+            # separate files despite the model residing under checkpoints/.
+            anima = {"model.diffusion_model.llm_adapter.out_proj.weight": {"shape": [1024, 1024]},
+                     "model.diffusion_model.blocks.0.self_attn.q_proj.weight": {"shape": [2048, 2048]}}
+            safetensors(root / "checkpoints" / "unrelated-name.safetensors", anima)
+            safetensors(root / "diffusion_models" / "checkpoints" / "unrelated-name.safetensors", anima)
+            safetensors(root / "checkpoints" / "waiANIMA-false.safetensors", {
+                "model.diffusion_model.input_blocks.0.weight": {"shape": [320, 4, 3, 3]}})
+            safetensors(root / "Diffusers" / "converted.sft", {
+                "llm_adapter.out_proj.weight": {"shape": [1024, 1024]},
+                "blocks.0.self_attn.q_proj.weight": {"shape": [2048, 2048]}})
+            result = Catalog(root).scan()["models"]
+            entries = {entry["file"]: entry for entry in result}
+            self.assertEqual(set(entries), {"checkpoints::unrelated-name.safetensors",
+                                           "checkpoints/unrelated-name.safetensors", "converted.sft"})
+            checkpoint = entries["checkpoints::unrelated-name.safetensors"]
+            self.assertEqual(checkpoint["folder"], "checkpoints")
+            self.assertEqual(checkpoint["backend_file"], "unrelated-name.safetensors")
+            self.assertEqual(checkpoint["relative_path"], "checkpoints/unrelated-name.safetensors")
+            self.assertEqual(Catalog._select(result, checkpoint["file"], "model"), checkpoint)
+            with self.assertRaisesRegex(ValueError, "Ruta"):
+                Catalog._select(result, "checkpoints::../unrelated-name.safetensors", "model")
+
     def test_only_anima_signatures_and_reject_untrusted_paths(self):
         temp_root = Path(__file__).resolve().parents[3] / ".cache" / "anima-tests"
         temp_root.mkdir(parents=True, exist_ok=True)
@@ -128,6 +156,30 @@ class ExpressionChecks(unittest.TestCase):
 
 
 class TransportChecks(unittest.IsolatedAsyncioTestCase):
+    async def test_checkpoint_names_and_external_encoder_vae_in_both_modes(self):
+        class Client:
+            async def get_models(self, folder):
+                return {"checkpoints": ["community\\wai.safetensors"],
+                        "text_encoders": ["anima\\encoder.safetensors"],
+                        "vae": ["qwen\\vae.safetensors"], "loras": ["Anima\\style.safetensors"]}[folder]
+
+        for mode in ("txt2img", "expression"):
+            with self.subTest(mode=mode):
+                params = await resolve_backend_names(Client(), GenParams(
+                    model="checkpoints::community/wai.safetensors", text_encoder="anima/encoder.safetensors",
+                    vae="qwen/vae.safetensors", mode=mode, loras=[{"file": "Anima/style.safetensors"}]))
+                graph = build_workflow(params, image_name="master.png", mask_name="mask.png")
+                self.assertEqual(params.model, "checkpoints::community\\wai.safetensors")
+                self.assertEqual(graph["1"], {"class_type": "CheckpointLoaderSimple", "inputs": {
+                    "ckpt_name": "community\\wai.safetensors"}})
+                self.assertEqual(graph["100"]["inputs"]["model"], ["1", 0])
+                self.assertEqual(graph["4"]["inputs"]["clip"], ["2", 0])
+                self.assertEqual(graph["8"]["inputs"]["vae"], ["3", 0])
+                self.assertEqual(graph["2"]["inputs"]["clip_name"], "anima\\encoder.safetensors")
+                self.assertEqual(graph["3"]["inputs"]["vae_name"], "qwen\\vae.safetensors")
+                if mode == "expression":
+                    self.assertEqual(graph["13"]["inputs"]["vae"], ["3", 0])
+
     async def test_expression_keeps_free_canvas_and_metadata_without_resizing_master(self):
         class Client:
             def __init__(self):

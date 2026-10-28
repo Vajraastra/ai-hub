@@ -7,6 +7,7 @@
   const STATES = {pending:'Pendiente', accepted:'Aceptado', rejected:'Rechazado'};
   const state = {projects:[], styles:[], pieces:[], recipes:[], generations:[], catalog:{models:[],loras:[],text_encoders:[],vaes:[]}, projectId:'', sampleIds:new Set(), purgeIds:new Set(), activeJob:null, masterId:null, masterBase64:null, masterReady:false, masterToken:0, currentStyle:null, recipeStyleRevision:null, recipePieceRevisions:{}, recipeFormatSnapshot:null};
   const session={id:null,active:false,status:'starting',error:'',timer:null,inFlight:null,controller:null,socket:null,epoch:0,generationPending:false};
+  const catalogPicker={kind:'models',row:null,limit:48};
   let favorites;
   try { favorites = new Set(JSON.parse(localStorage.getItem('anima-studio-favorites') || '[]')); } catch { favorites = new Set(); }
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -103,11 +104,87 @@
     $('style-count').textContent = `${allStyles.length} estilo${allStyles.length === 1 ? '' : 's'} disponible${allStyles.length === 1 ? '' : 's'}`;
   }
   function renderCatalog() {
-    selectOptions($('model-select'),state.catalog.models || [],state.catalog.models?.length ? undefined : 'No hay modelos Anima compatibles');
+    const previousModel=$('model-select').value;
+    selectOptions($('model-select'),state.catalog.models || [],state.catalog.models?.length ? undefined : 'No hay modelos Anima compatibles',previousModel||undefined);
     selectOptions($('encoder-select'),state.catalog.text_encoders || [],state.catalog.text_encoders?.length ? undefined : 'Encoder no disponible');
     selectOptions($('vae-select'),state.catalog.vaes || [],state.catalog.vaes?.length ? undefined : 'VAE no disponible');
-    for (const row of $('lora-list').children) selectOptions(row.querySelector('select'),state.catalog.loras || [],'Selecciona un LoRA');
+    renderModelChoice();
+    for (const row of $('lora-list').children) {
+      const select=row.querySelector('select'), previous=select.value;
+      selectOptions(select,state.catalog.loras || [],'Selecciona un LoRA',previous);
+      renderLoraChoice(row);
+    }
     $('catalog-note').textContent = `${state.catalog.models?.length || 0} modelos y ${state.catalog.loras?.length || 0} LoRAs Anima en la biblioteca del Hub. Los pesos no se copian al taller.`;
+    if($('catalog-dialog').open)renderCatalogPicker();
+  }
+  const catalogName = item => item?.display_name || item?.name || item?.file || '';
+  const catalogFilename = item => item?.relative_path || item?.backend_file || item?.file || '';
+  const normalizeCatalogText = value => String(value??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLocaleLowerCase();
+  const catalogTags = item => Array.isArray(item?.tags)?item.tags.map(String):[];
+  function catalogThumbnail(item) {
+    const url=item?.thumbnail_url;
+    return typeof url==='string'&&/^\/api\/(?:anima-studio|vault)\//.test(url)?url:'';
+  }
+  function catalogEntry(kind,value) {
+    const normalized=String(value||'').replace(/\\/g,'/');
+    return (state.catalog[kind]||[]).find(item=>String(optionValue(item)).replace(/\\/g,'/')===normalized);
+  }
+  function catalogPreview(item) {
+    const url=catalogThumbnail(item);
+    return `<span class="catalog-preview${url?' has-image':''}">${url?`<img src="${esc(url)}" alt="Vista previa de ${esc(catalogName(item))}" loading="lazy" decoding="async">`:''}<span class="catalog-no-image"><span aria-hidden="true">▧</span>Sin miniatura</span></span>`;
+  }
+  function markBrokenCatalogImage(event) {
+    const image=event.target;
+    if(image.tagName==='IMG'&&image.closest('.catalog-preview'))image.parentElement.classList.remove('has-image');
+  }
+  function renderCatalogChoice(button,kind,value) {
+    const item=catalogEntry(kind,value),label=kind==='models'?'modelo':'LoRA';
+    button.classList.toggle('unavailable',!!value&&!item);
+    button.innerHTML=catalogPreview(item)+`<span class="catalog-choice-info"><strong>${esc(item?catalogName(item):value?'Archivo no disponible':`Escoge un ${label}`)}</strong><small>${esc(catalogFilename(item)||value||'Explora la galería de Anima')}</small><span class="catalog-choice-action">${value?'Cambiar':'Explorar'} ${label}</span></span>`;
+    button.setAttribute('aria-label',`${value?'Cambiar':'Escoger'} ${label}${item?`: ${catalogName(item)}`:''}`);
+  }
+  function renderModelChoice() {renderCatalogChoice($('choose-model'),'models',$('model-select').value);}
+  function renderLoraChoice(row) {renderCatalogChoice(row.querySelector('.choose-lora'),'loras',row.querySelector('select').value);}
+  function openCatalogPicker(kind,row=null) {
+    catalogPicker.kind=kind;catalogPicker.row=row;catalogPicker.limit=48;
+    $('catalog-title').textContent=kind==='models'?'Modelos Anima':'LoRAs Anima';
+    $('catalog-description').textContent=kind==='models'?'Escoge el modelo que dará forma al estilo.':'Combina LoRAs de estilo, personaje u outfit; después ajusta su peso.';
+    $('catalog-search').value='';$('catalog-images-only').checked=false;
+    renderCatalogPicker();$('catalog-dialog').showModal();$('catalog-search').focus();
+  }
+  function matchingCatalogEntries(kind,query,imagesOnly=false) {
+    const terms=normalizeCatalogText(query).trim().split(/\s+/).filter(Boolean);
+    return (state.catalog[kind]||[]).filter(item=>{
+      if(imagesOnly&&!catalogThumbnail(item))return false;
+      const text=normalizeCatalogText([catalogName(item),catalogFilename(item),item.file,item.name,...catalogTags(item)].join(' '));
+      return terms.every(term=>text.includes(term));
+    });
+  }
+  function pickerValue() {return catalogPicker.kind==='models'?$('model-select').value:catalogPicker.row?.querySelector('select').value||'';}
+  function renderCatalogPicker() {
+    const kind=catalogPicker.kind,selected=pickerValue();
+    const used=new Set(kind==='loras'?[...$('lora-list').children].filter(row=>row!==catalogPicker.row).map(row=>row.querySelector('select').value):[]);
+    const matches=matchingCatalogEntries(kind,$('catalog-search').value,$('catalog-images-only').checked).sort((a,b)=>
+      Number(optionValue(b)===selected)-Number(optionValue(a)===selected)||Number(!!catalogThumbnail(b))-Number(!!catalogThumbnail(a))||catalogName(a).localeCompare(catalogName(b),'es'));
+    const visible=matches.slice(0,catalogPicker.limit);
+    $('catalog-results').textContent=`${matches.length} ${kind==='models'?'modelos':'LoRAs'}${visible.length<matches.length?` · mostrando ${visible.length}`:''}`;
+    $('catalog-grid').innerHTML=visible.length?visible.map(item=>{
+      const file=optionValue(item),isSelected=file===selected,alreadyUsed=used.has(file),tags=catalogTags(item);
+      return `<button type="button" class="catalog-card${isSelected?' selected':''}" data-catalog-file="${esc(file)}" aria-pressed="${isSelected}" aria-label="${esc(`${alreadyUsed?'Ya añadido':isSelected?'Seleccionado':'Elegir'}: ${catalogName(item)}`)}" ${alreadyUsed?'disabled':''}>${catalogPreview(item)}<span class="catalog-card-info"><span class="catalog-card-type">${kind==='models'?'Modelo':'LoRA'} Anima${isSelected?' · Seleccionado':alreadyUsed?' · Ya añadido':''}</span><strong>${esc(catalogName(item))}</strong><small title="${esc(catalogFilename(item))}">${esc(catalogFilename(item))}</small>${tags.length?`<span class="catalog-tags">${tags.slice(0,4).map(tag=>`<span>${esc(tag)}</span>`).join('')}</span>`:''}</span></button>`;
+    }).join(''):empty('No hay coincidencias','Prueba otro nombre, archivo o etiqueta, o desactiva el filtro de miniaturas.');
+    $('catalog-more').classList.toggle('hidden',visible.length>=matches.length);
+  }
+  function chooseCatalogFile(file) {
+    const kind=catalogPicker.kind,item=(state.catalog[kind]||[]).find(entry=>optionValue(entry)===file);
+    if(!item)return;
+    if(kind==='models'){$('model-select').value=file;renderModelChoice();}
+    else {
+      const used=[...$('lora-list').children].some(row=>row!==catalogPicker.row&&row.querySelector('select').value===file);
+      if(used)return;
+      if(catalogPicker.row){catalogPicker.row.querySelector('select').value=file;renderLoraChoice(catalogPicker.row);}
+      else addLora(file);
+    }
+    $('catalog-dialog').close();
   }
   function renderPieces() {
     const previous = selectedPieces();
@@ -280,10 +357,14 @@
   async function refreshGenerations() { state.generations=list(await api(`/generations?project_id=${encodeURIComponent(state.projectId)}`)); renderGalleries(); }
   function addLora(file='',strength=1) {
     const row=document.createElement('div'); row.className='lora-row';
-    row.innerHTML='<label>LoRA<select></select></label><label>Peso<input type="number" min="-3" max="3" step="0.05" value="1"></label><button class="subtle" title="Quitar LoRA" aria-label="Quitar LoRA">✕</button>';
+    row.innerHTML='<select hidden aria-hidden="true" tabindex="-1"></select><button type="button" class="catalog-choice choose-lora" aria-haspopup="dialog" aria-controls="catalog-dialog"></button><label>Peso<input type="number" min="-3" max="3" step="0.05" value="1"></label><button type="button" class="subtle remove-lora" title="Quitar LoRA" aria-label="Quitar LoRA">✕</button>';
     selectOptions(row.querySelector('select'),state.catalog.loras || [],'Selecciona un LoRA',file);
-    row.querySelector('input').value=strength; row.querySelector('button').onclick=()=>{row.remove();$('empty-loras').classList.toggle('hidden',$('lora-list').children.length>0);};
+    row.querySelector('input').value=strength;
+    row.querySelector('.choose-lora').onclick=()=>openCatalogPicker('loras',row);
+    row.querySelector('.remove-lora').onclick=()=>{row.remove();$('empty-loras').classList.toggle('hidden',$('lora-list').children.length>0);};
+    row.querySelector('.choose-lora').addEventListener('error',markBrokenCatalogImage,true);renderLoraChoice(row);
     $('lora-list').append(row); $('empty-loras').classList.add('hidden');
+    return row;
   }
   function calibrationConfig() {
     if (!$('model-select').value) throw new Error('No hay un modelo Anima seleccionado. Actualiza el catálogo del Hub.');
@@ -294,6 +375,7 @@
   }
   function loadConfig(config) {
     selectOptions($('model-select'),state.catalog.models||[],undefined,config.model);
+    renderModelChoice();
     selectOptions($('encoder-select'),state.catalog.text_encoders||[],undefined,config.text_encoder);
     selectOptions($('vae-select'),state.catalog.vaes||[],undefined,config.vae);
     for(const [key,id] of Object.entries({steps:'steps',cfg:'cfg',width:'width',height:'height',seed:'cal-seed'})) if(config[key]!==undefined) $(id).value=String(config[key]);
@@ -485,7 +567,15 @@
     $('interrupt-job').onclick=action(async()=>{await api('/interrupt','POST',{session_id:session.id});$('interrupt-job').disabled=true;$('job-phase').textContent='Interrupción solicitada; esperando al backend…';});
     $('style-search').oninput=renderStyles;
     $('favorite-style').onclick=()=>{const id=$('cal-style').value;if(!id)return;favorites.has(id)?favorites.delete(id):favorites.add(id);try{localStorage.setItem('anima-studio-favorites',JSON.stringify([...favorites]));}catch{}renderStyles();};
-    $('add-lora').onclick=()=>addLora();$('cal-style').onchange=()=>{loadStyle($('cal-style').value);renderStyles();};$('save-style').onclick=action(()=>saveStyle());$('duplicate-style').onclick=action(()=>saveStyle(true));$('generate-test').onclick=action(generateTest);
+    $('choose-model').onclick=()=>openCatalogPicker('models');
+    $('choose-model').addEventListener('error',markBrokenCatalogImage,true);
+    $('catalog-grid').addEventListener('error',markBrokenCatalogImage,true);
+    $('catalog-grid').onclick=event=>{const button=event.target.closest('[data-catalog-file]');if(button&&!button.disabled)chooseCatalogFile(button.dataset.catalogFile);};
+    const filterCatalog=()=>{catalogPicker.limit=48;renderCatalogPicker();};
+    $('catalog-search').oninput=filterCatalog;$('catalog-images-only').onchange=filterCatalog;
+    $('catalog-more').onclick=()=>{catalogPicker.limit+=48;renderCatalogPicker();};
+    $('catalog-dialog').onclose=()=>{catalogPicker.row=null;};
+    $('add-lora').onclick=()=>openCatalogPicker('loras');$('cal-style').onchange=()=>{loadStyle($('cal-style').value);renderStyles();};$('save-style').onclick=action(()=>saveStyle());$('duplicate-style').onclick=action(()=>saveStyle(true));$('generate-test').onclick=action(generateTest);
     $('reset-style').onclick=()=>{state.currentStyle=null;state.sampleIds.clear();$('cal-style').value='';$('style-name').value='';$('style-prompt').value='';$('style-negative').value='';$('style-shared').checked=false;$('save-style').textContent='Guardar estilo';renderGalleries();};
     $('prod-style').onchange=productionStyleChanged;
     $('format-select').onchange=()=>{state.recipeFormatSnapshot=null;renderFormatOptions();};

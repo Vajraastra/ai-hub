@@ -93,6 +93,12 @@ def build_workflow(params, image_name="", mask_name=""):
     values = asdict(params)
     values.update(seed=int(params.seed), image_name=image_name, mask_name=mask_name)
     workflow = ComfyClient.build_workflow(template, values)
+    if params.model.startswith("checkpoints::"):
+        # A community Anima DiT can be stored in ComfyUI's checkpoint
+        # namespace without embedding CLIP/VAE. Only its MODEL output is used;
+        # the selected standalone encoder/VAE continue to drive those branches.
+        workflow["1"] = {"class_type": "CheckpointLoaderSimple", "inputs": {
+            "ckpt_name": params.model.removeprefix("checkpoints::")}}
     model = ["1", 0]
     for index, lora in enumerate(params.loras):
         node = str(100 + index)
@@ -111,7 +117,9 @@ async def resolve_backend_names(client, params):
     backend's enum values contain backslashes, and ComfyUI validates those
     strings literally before executing any node.
     """
-    folders = ("diffusion_models", "text_encoders", "vae", "loras")
+    checkpoint = params.model.startswith("checkpoints::")
+    model_folder = "checkpoints" if checkpoint else "diffusion_models"
+    folders = (model_folder, "text_encoders", "vae", "loras")
     catalogues = dict(zip(folders, await asyncio.gather(
         *(client.get_models(folder) for folder in folders))))
 
@@ -126,7 +134,8 @@ async def resolve_backend_names(client, params):
         raise PipelineError(f"ComfyUI no ofrece este archivo en {folder}: {value}")
 
     return replace(params,
-                   model=exact_name(params.model, "diffusion_models"),
+                   model=("checkpoints::" + exact_name(params.model.removeprefix("checkpoints::"), model_folder)
+                          if checkpoint else exact_name(params.model, model_folder)),
                    text_encoder=exact_name(params.text_encoder, "text_encoders"),
                    vae=exact_name(params.vae, "vae"),
                    loras=[{**item, "file": exact_name(item["file"], "loras")}

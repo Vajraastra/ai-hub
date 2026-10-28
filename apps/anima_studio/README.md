@@ -18,6 +18,9 @@ Si se pierde el aviso de cierre, los latidos de sesión permiten recuperar el ba
 Lee `paths.models` de `hub/hub_config.json`. Para una copia de desarrollo puede definirse
 `AI_HUB_CONFIG` con la ruta al archivo de configuración de la instalación. No copia ni cambia
 pesos: muestra modelos y LoRAs/LoKr compatibles con Anima por sus encabezados safetensors.
+También reconoce modelos Anima guardados en `checkpoints`, sin moverlos ni duplicarlos.
+Los selectores de modelos y LoRAs abren una galería con miniaturas grandes, nombre y búsqueda
+por archivo o etiquetas. Reutiliza previews y metadatos locales, incluido Model Vault en lectura.
 El encoder Qwen3-0.6B y el VAE Qwen-Image se seleccionan de esa misma biblioteca.
 
 ## Recorrido

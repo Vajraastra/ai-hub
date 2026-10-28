@@ -22,6 +22,7 @@ from backend_sessions import BackendSessions
 _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT / "apps"))
 from anima_studio.core.catalog import Catalog
+from anima_studio.core.catalog_assets import CatalogAssets
 from anima_studio.core.comfy_client import ComfyClient
 from anima_studio.core.library import Library
 from anima_studio.core import pipeline
@@ -43,6 +44,7 @@ _active_masters: set[str] = set()
 _catalog = None
 _catalog_path = None
 _catalog_result = None
+_catalog_assets = None
 _catalog_time = 0.0
 _catalog_lock = asyncio.Lock()
 _KINDS = ("projects", "styles", "pieces", "recipes")
@@ -87,16 +89,33 @@ def _seed(value) -> str:
 
 @anima_studio_router.get("/catalog")
 async def catalog(refresh: bool = False):
-    global _catalog, _catalog_path, _catalog_result, _catalog_time
+    global _catalog, _catalog_path, _catalog_result, _catalog_time, _catalog_assets
     root = _models_root()
     async with _catalog_lock:
         if _catalog is None or _catalog_path != root:
             _catalog, _catalog_path = Catalog(root), root
             _catalog_result = None
         if refresh or _catalog_result is None or time.monotonic() - _catalog_time > 60:
-            _catalog_result = await asyncio.to_thread(_catalog.scan)
+            config_path = Path(os.environ.get("AI_HUB_CONFIG", _ROOT / "hub/hub_config.json"))
+            assets = CatalogAssets(root, config_path.resolve().parent / ".cache/model_vault.db")
+            def scan_display():
+                return assets.enrich(_catalog.scan())
+            _catalog_result = await asyncio.to_thread(scan_display)
+            _catalog_assets = assets
             _catalog_time = time.monotonic()
         return copy.deepcopy(_catalog_result)
+
+
+@anima_studio_router.get("/catalog/thumbnail/{identifier}")
+async def catalog_thumbnail(identifier: str):
+    await catalog()
+    if _catalog_assets is None:
+        raise HTTPException(404, "Miniatura no disponible")
+    try:
+        path, media_type = await asyncio.to_thread(_catalog_assets.thumbnail, identifier)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return FileResponse(path, media_type=media_type, headers={"Cache-Control": "private, max-age=3600"})
 
 
 @anima_studio_router.get("/status")

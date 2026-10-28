@@ -19,7 +19,6 @@ class Catalog:
 
     def _header(self, path):
         stat = path.stat()
-        stamp = (stat.st_mtime_ns, stat.st_size)
         with path.open("rb") as stream:
             prefix = stream.read(8)
             if len(prefix) != 8:
@@ -64,10 +63,10 @@ class Catalog:
     def _kind(cls, header):
         keys = [key for key, value in header.items()
                 if key != "__metadata__" and isinstance(value, dict)]
-        # Both official Anima containers; Cosmos without llm_adapter is excluded.
-        if any(key.startswith(("net.llm_adapter.",
-                               "model.diffusion_model.llm_adapter.")) for key in keys):
-            if any("blocks.0.self_attn.q_proj.weight" in key and
+        # Detect the architecture, independent of the file's container prefix
+        # or folder. Plain Cosmos without Anima's LLM adapter is excluded.
+        if any(key.startswith("llm_adapter.") or ".llm_adapter." in key for key in keys):
+            if any(key.endswith("blocks.0.self_attn.q_proj.weight") and
                    cls._shape(header, key) == [2048, 2048] for key in keys):
                 return "models"
         for key in keys:
@@ -107,13 +106,15 @@ class Catalog:
         result = {key: [] for key in ("models", "loras", "text_encoders", "vaes")}
         candidates = []
         for folder, allowed in (("diffusion_models", "models"), ("unet", "models"),
+                                ("Diffusers", "models"), ("checkpoints", "models"),
                                 ("loras", "loras"), ("text_encoders", "text_encoders"),
                                 ("clip", "text_encoders"), ("vae", "vaes")):
             base = self.root / folder
             if not base.is_dir():
                 continue
             try:
-                paths = sorted(base.rglob("*.safetensors"))
+                paths = sorted(path for path in base.rglob("*")
+                               if path.suffix.lower() in (".safetensors", ".sft") and path.is_file())
             except OSError:
                 continue
             for path in paths:
@@ -129,13 +130,19 @@ class Catalog:
                     if kind != allowed:
                         continue
                     stat = path.stat()
-                    file = path.relative_to(base).as_posix()
+                    backend_file = path.relative_to(base).as_posix()
+                    # Keep existing portable IDs. Checkpoints belong to a
+                    # distinct ComfyUI loader namespace, so they must not
+                    # collide with a diffusion model of the same basename.
+                    file = f"checkpoints::{backend_file}" if folder == "checkpoints" else backend_file
                     # ComfyUI's combined folder lists pick the first name. Avoid
                     # presenting a second, ambiguous choice with identical name.
                     if any(entry["file"] == file for entry in result[allowed]):
                         continue
                     result[allowed].append({
                         "file": file, "name": path.stem, "folder": folder,
+                        "backend_file": backend_file,
+                        "relative_path": path.relative_to(self.root).as_posix(),
                         "size_bytes": stat.st_size,
                         "fingerprint": f"{stat.st_size}:{stat.st_mtime_ns}",
                     })
@@ -175,7 +182,8 @@ class Catalog:
         if not isinstance(value, str) or not value or "\x00" in value:
             raise ValueError(f"Selecciona un {label} compatible con Anima")
         value = value.replace("\\", "/")
-        if value.startswith("/") or ":" in value or ".." in value.split("/"):
+        path_value = value.removeprefix("checkpoints::")
+        if path_value.startswith("/") or ":" in path_value or ".." in path_value.split("/"):
             raise ValueError(f"Ruta de {label} inválida")
         for entry in entries:
             if entry["file"] == value:
