@@ -6,6 +6,7 @@
   <title>Painter — AI Hub</title>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/tag_autocomplete.css">
   <style>
     body { overflow: hidden; }
 
@@ -577,27 +578,6 @@
       border-radius: 8px; padding: 8px 12px; font-size: 12px; cursor: pointer;
     }
     .tdm-btn-skip:hover { border-color: var(--accent-red); color: var(--accent-red); }
-
-    /* ── Autocomplete dropdown ─────────────────────────────────── */
-    #tag-ac-drop {
-      position: fixed; z-index: 9000;
-      background: var(--bg-card);
-      border: 1px solid var(--accent-purple);
-      border-radius: 8px;
-      box-shadow: 0 8px 32px rgba(0,0,0,.65), 0 0 0 1px rgba(96,13,181,.25);
-      overflow: hidden; min-width: 220px; max-width: 380px;
-    }
-    .ac-item {
-      padding: 5px 10px; cursor: pointer;
-      border-bottom: 1px solid rgba(255,255,255,.04);
-    }
-    .ac-item:last-child { border-bottom: none; }
-    .ac-item.selected, .ac-item:hover { background: rgba(96,13,181,.28); }
-    .ac-main { display: flex; align-items: center; gap: 7px; }
-    .ac-dot  { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
-    .ac-name { flex: 1; font-size: 12px; font-family: var(--font-mono); color: var(--text-primary); }
-    .ac-count { font-size: 10px; color: var(--text-dim); font-family: var(--font-mono); }
-    .ac-alias { font-size: 10px; color: var(--text-dim); padding-left: 14px; margin-top: 1px; }
 
     /* ── Profile / tags controls ────────────────────────────────── */
     #profile-wrap { gap: 4px; }
@@ -1420,6 +1400,7 @@
 </div>
 
 <script src="/static/locale.js"></script>
+<script src="/static/tag_autocomplete.js"></script>
 <script src="/static/painter.js"></script>
 </body>
 </html>

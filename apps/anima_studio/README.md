@@ -26,7 +26,33 @@ pesos: muestra modelos y LoRAs/LoKr compatibles con Anima por sus encabezados sa
 También reconoce modelos Anima guardados en `checkpoints`, sin moverlos ni duplicarlos.
 Los selectores de modelos y LoRAs abren una galería con miniaturas grandes, nombre y búsqueda
 por archivo o etiquetas. Reutiliza previews y metadatos locales, incluido Model Vault en lectura.
+Las pestañas de LoRAs corresponden a sus subcarpetas e incluyen una vista **Todos**.
 El encoder Qwen3-0.6B y el VAE Qwen-Image se seleccionan de esa misma biblioteca.
+
+Los prompts y negativos ofrecen las mismas sugerencias de tags que Painter: nombre, alias,
+categoría y frecuencia. Escribir un tag separado por comas y elegir con ratón, flechas y
+**Enter** o **Tab**; **Esc** cierra las sugerencias. También funcionan al editar piezas.
+El autocompletado conserva el resto del texto y los pesos como `(blue hair:1.2)`.
+Se puede combinar con texto libre o desactivar **Sugerencias de tags** desde Estilos.
+En Anima inserta minúsculas y espacios en lugar de guiones bajos, conservando `score_*`;
+Painter mantiene su formato habitual.
+
+La base se comparte con Painter y se prepara bajo demanda. **Recargar** relee la base local;
+si falta, **Descargar base de tags** la instala desde el taller. Solo esa descarga requiere
+conexión. No cambia el modelo ni los ajustes de generación del estilo.
+
+**Calidad y estructura para Anima** muestra una guía según el modelo elegido. Sus botones
+añaden calidad o negativos al estilo de forma explícita y sin duplicados; elegir otro modelo
+actualiza la recomendación, sin reescribir los prompts. Anima Base y WAI Anima 1.0 recomiendan
+`masterpiece, best quality, score_7`; `safe` es una clasificación de contenido separada.
+En Aesthetic, `masterpiece, best quality` es opcional y deben evitarse `score_*` en ambos prompts.
+Son puntos de partida publicados por los autores, no una comparación de calidad medida aquí.
+
+Orden de referencia: calidad/metadatos/época/clasificación, sujetos, personaje/serie/artista y
+detalles de apariencia, acción, composición y entorno. Los artistas usan `@`. En texto natural,
+la ficha oficial recomienda dos o más oraciones y describir la apariencia además del nombre.
+Fuentes: [Anima — CircleStone Labs](https://huggingface.co/circlestone-labs/Anima/blob/main/README.md)
+y [WAI Anima 1.0 — WAI0731](https://tensor.art/models/1003360262834670526).
 
 ## Recorrido
 
@@ -71,15 +97,28 @@ automáticamente dentro del repositorio de un juego.
 
 ## Pruebas offline
 
-Con el entorno y los modelos ya instalados, la biblioteca y la generación funcionan sin
-conexión. Las miniaturas existentes se reutilizan localmente; actualizar datos de Civitai
-requiere conexión.
+Antes de desconectarse, comprobar que estén instalados el entorno, los modelos y la base
+de tags: en Estilos debe aparecer **tags disponibles**. Si falta la base, descargarla desde
+el taller mientras haya conexión. Después, biblioteca, sugerencias y generación funcionan
+localmente. Las miniaturas existentes se reutilizan; actualizar datos de Civitai requiere red.
+
+Tras actualizar el código, reiniciar el Hub o el taller independiente y recargar con **Ctrl+F5**.
+Usar la biblioteca `apps/anima_studio/data` de la instalación habitual, no una copia de pruebas.
 
 1. Abrir el Hub habitual y **Aplicaciones → Taller Anima**. Esperar **ComfyUI disponible**.
 2. Abrir la galería de modelos y localizar WAI Anima. En LoRAs, buscar por nombre, archivo
    o etiqueta; comprobar miniatura, selección y peso independiente de cada LoRA.
+   Comprobar las pestañas por carpeta. Escribir `blue_hair` en un prompt y elegir una sugerencia;
+   repetir en negativos y en el diálogo de piezas, también dentro de un tag con peso.
+   Verificar que Anima inserta `blue hair`, conserva `(blue hair:1.2)` y añade `@` a artistas.
+   Revisar la guía de calidad del modelo y comprobar que añadirla dos veces no duplica tags.
+   Al cambiar de modelo, la guía se actualiza y el prompt existente se conserva: revisar los
+   scores al pasar a Aesthetic, donde el autor desaconseja `score_*`.
 3. Calibrar con seed fija, guardar un estilo y volver a cargarlo. Revisar que modelo, LoRAs,
    pesos, dimensiones, prompts y seed se recuperen antes de generar otra prueba.
+   Para comparar calidad, hacer una prueba sin los tags de calidad y otra con el preset del
+   autor. Mantener iguales modelo, LoRAs/pesos, prompt restante, negativo, seed y sampling.
+   Registrar cuál se prefiere por modelo/estilo: la guía no sustituye esta comparación visual.
 4. Combinar piezas de personaje y outfit. Probar expresiones sobre el mismo maestro,
    revisar el rostro y verificar que el exterior de la máscara conserve su posición.
 5. Aceptar y rechazar muestras; comprobar su organización y sus fichas de configuración.
@@ -107,6 +146,9 @@ hub-webui/.venv/Scripts/python.exe hub/tests/check_process_guard.py
 hub-webui/.venv/Scripts/python.exe hub/tests/check_backend_stop_windows.py
 hub-webui/.venv/Scripts/python.exe hub/tests/check_backend_http_windows.py
 hub-webui/.venv/Scripts/python.exe hub-webui/tests/test_comfy_jobs.py -v
+hub-webui/.venv/Scripts/python.exe hub-webui/tests/check_tag_engine.py
+hub-webui/.venv/Scripts/python.exe hub-webui/tests/check_tag_routes.py
+node --test hub-webui/tests/check_anima_catalog_ui.cjs hub-webui/tests/check_anima_tags.cjs hub-webui/tests/check_tag_autocomplete.cjs hub-webui/tests/check_anima_prompt_guide.cjs
 ```
 
 Las integraciones Windows usan procesos de prueba y puertos libres, sin GPU ni instancias

@@ -2656,182 +2656,24 @@ function initStyles() {
   loadStyles();
 }
 
-// ── Autocomplete de tags Danbooru ─────────────────────────────────────────
-
-const _acDrop = (() => {
-  const el = document.createElement('div');
-  el.id = 'tag-ac-drop';
-  el.style.display = 'none';
-  document.body.appendChild(el);
-  return el;
-})();
-
-let _acResults    = [];
-let _acSelIdx     = 0;
-let _acActiveTA   = null;
-let _acTimer      = null;
+// ── Autocomplete compartido de tags ────────────────────────────────────────
 let _acTagsLoaded = false;
-
-const _AC_DOT_COLORS = {
-    0: '#4a9eff', 1: '#ff4d4d', 3: '#b04dff', 4: '#44dd77', 5: '#ff9900',  // danbooru
-    7: '#5bb8ff', 8: '#ff6666', 9: '#ffd700', 10: '#cc77ff', 11: '#66ee99', 12: '#ff7755', 14: '#ffbb44', 15: '#44bb88',  // e621
-};
-
-function _acFmtCount(n) {
-  if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
-  if (n >= 1e3) return Math.round(n / 1e3) + 'k';
-  return String(n);
-}
-
-function _acShow(results, ta) {
-  _acResults = results;
-  _acSelIdx  = 0;
-  if (!results.length) { _acHide(); return; }
-
-  const rect = ta.getBoundingClientRect();
-  _acDrop.style.left    = rect.left + 'px';
-  _acDrop.style.top     = (rect.bottom + 2) + 'px';
-  _acDrop.style.width   = Math.max(rect.width, 220) + 'px';
-  _acDrop.style.display = '';
-
-  _acDrop.innerHTML = results.map((r, i) => {
-    const dot      = `<span class="ac-dot" style="background:${_AC_DOT_COLORS[r.category] || '#888'}"></span>`;
-    const name     = r.name.replace(/_/g, ' ');
-    const alias    = r.matched_alias
-      ? `<div class="ac-alias">→ ${r.matched_alias.replace(/_/g, ' ')}</div>` : '';
-    return `<div class="ac-item${i === 0 ? ' selected' : ''}" data-idx="${i}">
-      <div class="ac-main">${dot}<span class="ac-name">${name}</span>
-        <span class="ac-count">${_acFmtCount(r.post_count)}</span>
-      </div>${alias}
-    </div>`;
-  }).join('');
-
-  _acDrop.querySelectorAll('.ac-item').forEach(el => {
-    el.addEventListener('mousedown', e => {
-      e.preventDefault();
-      _acInsert(_acResults[+el.dataset.idx], _acActiveTA);
-    });
-    el.addEventListener('mouseover', () => {
-      _acSelIdx = +el.dataset.idx;
-      _acUpdateSel();
-    });
-  });
-}
-
-function _acHide() {
-  _acDrop.style.display = 'none';
-  _acResults = [];
-}
-
-function _acUpdateSel() {
-  _acDrop.querySelectorAll('.ac-item').forEach((el, i) =>
-    el.classList.toggle('selected', i === _acSelIdx));
-}
-
-function _acInsert(result, ta) {
-  if (!result || !ta) return;
-  const pos    = ta.selectionStart;
-  const before = ta.value.slice(0, pos);
-  const after  = ta.value.slice(pos);
-
-  // Inicio del token parcial (después del último separador: coma, newline, <, >, (, ))
-  let sepIdx = -1;
-  for (let i = before.length - 1; i >= 0; i--) {
-    if (',\n<>()'.includes(before[i])) { sepIdx = i; break; }
-  }
-  const prefix     = before.slice(0, sepIdx + 1);
-  const lead       = prefix.endsWith(',') ? ' ' : '';
-  // Escapar paréntesis literales del nombre del tag
-  const escaped    = result.name.replace(/([()])/g, '\\$1');
-  // Auto-coma al final salvo que el siguiente char ya sea coma
-  const suffix     = after.trimStart().startsWith(',') ? '' : ', ';
-
-  ta.value = prefix + lead + escaped + suffix + after;
-  ta.selectionStart = ta.selectionEnd = (prefix + lead + escaped + suffix).length;
-
-  _balanceParens(ta);
-  _acHide();
-  ta.dispatchEvent(new Event('input'));
-  ta.focus();
-}
-
-function _balanceParens(ta) {
-  const pos        = ta.selectionStart;
-  const text       = ta.value;
-  const chunkStart = Math.max(text.lastIndexOf(',', pos - 1), -1) + 1;
-  const nextComma  = text.indexOf(',', pos);
-  const chunkEnd   = nextComma === -1 ? text.length : nextComma;
-  const chunk      = text.slice(chunkStart, chunkEnd);
-
-  let open = 0;
-  for (let i = 0; i < chunk.length; i++) {
-    if (chunk[i] === '\\') { i++; continue; }
-    if (chunk[i] === '(')  open++;
-    else if (chunk[i] === ')') open = Math.max(0, open - 1);
-  }
-  if (open > 0) {
-    ta.value = text.slice(0, chunkEnd) + ')'.repeat(open) + text.slice(chunkEnd);
-    ta.selectionStart = ta.selectionEnd = pos;
-  }
-}
-
-function _acGetToken(ta) {
-  const before = ta.value.slice(0, ta.selectionStart);
-  let sep = -1;
-  for (let i = before.length - 1; i >= 0; i--) {
-    if (',\n<>()'.includes(before[i])) { sep = i; break; }
-  }
-  return before.slice(sep + 1).trim();
-}
-
-// csv_name activo (corresponde al perfil seleccionado)
 let _acCsvName = '';
-
-async function _acSearch(token) {
-  if (!token || !_acCsvName) { _acHide(); return; }
-  // No se bloquea por _acTagsLoaded — si el CSV aún no cargó, el backend devuelve []
-  try {
-    const { results } = await apiGet(
-      `/tags/search?q=${encodeURIComponent(token)}&csv=${encodeURIComponent(_acCsvName)}&limit=8`
-    );
-    if (_acActiveTA && document.activeElement === _acActiveTA) {
-      _acShow(results, _acActiveTA);
-    }
-  } catch (_) {}
-}
-
-function initAutocomplete(ta) {
-  ta.addEventListener('input', () => {
-    clearTimeout(_acTimer);
-    const token = _acGetToken(ta);
-    if (!token) { _acHide(); return; }
-    _acActiveTA = ta;
-    _acTimer = setTimeout(() => _acSearch(token), 50);
-  });
-
-  ta.addEventListener('keydown', e => {
-    if (_acDrop.style.display === 'none') return;
-    if (e.key === 'ArrowDown') {
-      e.preventDefault();
-      _acSelIdx = Math.min(_acSelIdx + 1, _acResults.length - 1);
-      _acUpdateSel();
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault();
-      _acSelIdx = Math.max(_acSelIdx - 1, 0);
-      _acUpdateSel();
-    } else if (e.key === 'Tab' || e.key === 'Enter') {
-      if (_acResults.length) { e.preventDefault(); _acInsert(_acResults[_acSelIdx], ta); }
-    } else if (e.key === 'Escape') {
-      e.preventDefault(); _acHide();
-    } else if (e.key === ',') {
-      setTimeout(() => _balanceParens(ta), 0);
-    }
-  });
-
-  ta.addEventListener('blur',  () => setTimeout(_acHide, 150));
-  ta.addEventListener('focus', () => { _acActiveTA = ta; });
-}
-
+let _tagProfileEpoch = 0;
+const _tagAutocomplete = window.HubTagAutocomplete.create({
+  getCsv: () => _acCsvName,
+  search: async (query, csv, {signal}) => {
+    const response = await fetch(`${API}/tags/search?q=${encodeURIComponent(query)}&csv=${encodeURIComponent(csv)}&limit=8`, {signal});
+    const data = await response.json();
+    if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : `Error ${response.status}`);
+    return data.results;
+  },
+  onError: () => {
+    const label = document.getElementById('tag-count-label');
+    if (label) label.textContent = 'No se pudieron consultar sugerencias';
+  },
+});
+function initAutocomplete(ta) { _tagAutocomplete.attach(ta); }
 // ── Model profiles ────────────────────────────────────────────────────────
 
 let _profiles      = [];
@@ -2847,8 +2689,9 @@ async function loadProfiles() {
       `<option value="${p.id}">${p.name}</option>`
     ).join('');
     if (data.default) sel.value = data.default;
-    // Solo aplica UI inicial — no verifica CSV hasta que el usuario seleccione checkpoint
+    // El índice se prepara al abrir el módulo, sin trabajo en el arranque del Hub.
     _applyProfileUi();
+    await _updateActiveCsv();
   } catch (_) {}
 }
 
@@ -2856,6 +2699,8 @@ async function loadProfiles() {
 function _applyProfileUi() {
   const sel = document.getElementById('sel-profile');
   if (!sel) return;
+  _tagAutocomplete.close();
+  _hideTagsDownloadModal();
   _activeProfile = _profiles.find(p => p.id === sel.value) || null;
   // Setear CSV activo para que el autocomplete pueda disparar desde el inicio
   _acCsvName = _activeProfile?.tag_csv || '';
@@ -2968,7 +2813,9 @@ function _updateProfileBadge(profile) {
 }
 
 async function _updateActiveCsv() {
-  const csvName = _activeProfile?.tag_csv || null;
+  const profile = _activeProfile, stamp = ++_tagProfileEpoch;
+  const csvName = profile?.tag_csv || null;
+  _tagAutocomplete.close();
   _acCsvName    = csvName || '';
   _acTagsLoaded = false;
 
@@ -2985,6 +2832,7 @@ async function _updateActiveCsv() {
     const { loaded, count, csv_present } = await apiGet(
       `/tags/status?csv=${encodeURIComponent(csvName)}`
     );
+    if (stamp !== _tagProfileEpoch || profile !== _activeProfile) return;
     _acTagsLoaded = loaded;
 
     if (bar && label) {
@@ -2995,13 +2843,18 @@ async function _updateActiveCsv() {
         label.textContent = 'Tags no disponibles';
         bar.style.display = '';
         // Ofrecer descarga si no está suprimido para este perfil
-        const skipKey = `tags_skip_${_activeProfile.id}`;
-        if (!localStorage.getItem(skipKey)) {
-          _showTagsDownloadModal(_activeProfile);
-        }
+        const skipKey = `tags_skip_${profile.id}`;
+        let skipped = false;
+        try { skipped = !!localStorage.getItem(skipKey); } catch {}
+        if (!skipped) _showTagsDownloadModal(profile);
       }
     }
-  } catch (_) {}
+  } catch (error) {
+    if (stamp === _tagProfileEpoch && profile === _activeProfile && bar && label) {
+      label.textContent = `Tags no disponibles: ${error.message}`;
+      bar.style.display = '';
+    }
+  }
 }
 
 function initProfiles() {
@@ -3041,11 +2894,17 @@ function initProfiles() {
   document.getElementById('btn-tags-reload')
     ?.addEventListener('click', async () => {
       if (!_acCsvName) return;
+      const csvName = _acCsvName;
+      _tagAutocomplete.close();
       try {
-        const { count } = await fetch(
-          `${API}/tags/reload?csv=${encodeURIComponent(_acCsvName)}`,
+        const response = await fetch(
+          `${API}/tags/reload?csv=${encodeURIComponent(csvName)}`,
           { method: 'POST' }
-        ).then(r => r.json());
+        );
+        const data = await response.json();
+        if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : `Error ${response.status}`);
+        if (csvName !== _acCsvName) return;
+        const { count } = data;
         _acTagsLoaded = count > 0;
         const label = document.getElementById('tag-count-label');
         if (label) label.textContent = count.toLocaleString() + ' tags';
@@ -3084,17 +2943,22 @@ function initTagDownloadModal() {
 
   btnDl?.addEventListener('click', () => {
     if (!_activeProfile?.id) return;
+    const profile = _activeProfile;
+    _tdmEs?.close();
     btnDl.disabled = true;
     const progress = document.getElementById('tdm-progress');
     const fill     = document.getElementById('tdm-prog-fill');
     const label    = document.getElementById('tdm-prog-label');
     progress.classList.add('visible');
 
-    _tdmEs = new EventSource(
-      `${API}/tags/download?profile_id=${encodeURIComponent(_activeProfile.id)}`
+    const stream = new EventSource(
+      `${API}/tags/download?profile_id=${encodeURIComponent(profile.id)}`
     );
-    _tdmEs.onmessage = ({ data }) => {
-      const ev = JSON.parse(data);
+    _tdmEs = stream;
+    stream.onmessage = ({ data }) => {
+      if (_tdmEs !== stream || profile !== _activeProfile) return;
+      let ev;
+      try { ev = JSON.parse(data); } catch { stream.onerror();return; }
       if (ev.type === 'progress') {
         const pct = ev.pct || 0;
         fill.style.width = pct + '%';
@@ -3105,7 +2969,7 @@ function initTagDownloadModal() {
         fill.style.width = '100%';
         label.textContent = ev.msg || 'Indexando…';
       } else if (ev.type === 'done') {
-        _tdmEs.close(); _tdmEs = null;
+        stream.close(); _tdmEs = null;
         _acTagsLoaded = ev.count > 0;
         _acCsvName    = ev.csv || _acCsvName;
         const lbl = document.getElementById('tag-count-label');
@@ -3115,12 +2979,15 @@ function initTagDownloadModal() {
         _hideTagsDownloadModal();
         toast(`Tags cargados: ${ev.count.toLocaleString()}`);
       } else if (ev.type === 'error') {
-        _tdmEs.close(); _tdmEs = null;
+        stream.close(); _tdmEs = null;
         label.textContent = 'Error: ' + ev.msg;
         btnDl.disabled = false;
       }
     };
-    _tdmEs.onerror = () => {
+    stream.onerror = () => {
+      stream.close();
+      if (_tdmEs !== stream || profile !== _activeProfile) return;
+      _tdmEs = null;
       label.textContent = 'Error de conexión';
       btnDl.disabled = false;
     };
@@ -3136,16 +3003,17 @@ function initTagDownloadModal() {
 
   btnSkip?.addEventListener('click', () => {
     if (document.getElementById('tdm-skip-check')?.checked && _activeProfile) {
-      localStorage.setItem(`tags_skip_${_activeProfile.id}`, '1');
+      try { localStorage.setItem(`tags_skip_${_activeProfile.id}`, '1'); } catch {}
     }
     _hideTagsDownloadModal();
   });
+  window.addEventListener('pagehide', () => { _hideTagsDownloadModal();_tagAutocomplete.close(); });
 }
 
 
 async function initTagSystem() {
   // Attach autocomplete a todos los textareas de prompt (estáticos)
-  ['inp-prompt', 'inp-negative', 'ad-prompt-override'].forEach(id => {
+  ['inp-prompt', 'inp-negative', 'ad-prompt-override', 'styles-prompt'].forEach(id => {
     const el = document.getElementById(id);
     if (el) initAutocomplete(el);
   });

@@ -7,7 +7,7 @@
   const STATES = {pending:'Pendiente', accepted:'Aceptado', rejected:'Rechazado'};
   const state = {projects:[], styles:[], pieces:[], recipes:[], generations:[], catalog:{models:[],loras:[],text_encoders:[],vaes:[]}, projectId:'', sampleIds:new Set(), purgeIds:new Set(), activeJob:null, masterId:null, masterBase64:null, masterReady:false, masterToken:0, currentStyle:null, recipeStyleRevision:null, recipePieceRevisions:{}, recipeFormatSnapshot:null};
   const session={id:null,active:false,status:'starting',error:'',timer:null,inFlight:null,controller:null,socket:null,epoch:0,generationPending:false};
-  const catalogPicker={kind:'models',row:null,limit:48};
+  const catalogPicker={kind:'models',row:null,limit:48,folder:'*'};
   let favorites;
   try { favorites = new Set(JSON.parse(localStorage.getItem('anima-studio-favorites') || '[]')); } catch { favorites = new Set(); }
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -121,6 +121,33 @@
   const catalogFilename = item => item?.relative_path || item?.backend_file || item?.file || '';
   const normalizeCatalogText = value => String(value??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLocaleLowerCase();
   const catalogTags = item => Array.isArray(item?.tags)?item.tags.map(String):[];
+  function catalogFolder(item) {
+    const backend=item?.backend_file||item?.file;
+    const parts=String(backend||item?.relative_path||'').replace(/\\/g,'/').split('/').filter(Boolean);
+    if(!backend&&parts[0]?.toLowerCase()==='loras')parts.shift();
+    if(parts[0]?.toLowerCase()==='anima')parts.shift();
+    return parts.slice(0,-1).join('/');
+  }
+  function catalogFolders() {
+    const entries=state.catalog.loras||[],counts=new Map();
+    for(const item of entries){const folder=catalogFolder(item);counts.set(folder,(counts.get(folder)||0)+1);}
+    return [{value:'*',label:'Todos',count:entries.length},...[...counts].sort(([a],[b])=>a.localeCompare(b,'es',{numeric:true})).map(([value,count])=>({value,label:value||'Sin carpeta',count}))];
+  }
+  function renderCatalogFolders() {
+    const tabs=$('catalog-folders'),grid=$('catalog-grid'),isLora=catalogPicker.kind==='loras';
+    tabs.classList.toggle('hidden',!isLora);
+    grid.setAttribute('role',isLora?'tabpanel':'region');
+    if(!isLora){tabs.innerHTML='';grid.setAttribute('aria-labelledby','catalog-title');return;}
+    const folders=catalogFolders();
+    if(!folders.some(folder=>folder.value===catalogPicker.folder)){catalogPicker.folder='*';catalogPicker.limit=48;grid.scrollTop=0;}
+    tabs.innerHTML=folders.map((folder,index)=>`<button id="catalog-folder-${index}" type="button" role="tab" class="catalog-folder-tab" data-catalog-folder="${esc(folder.value)}" aria-selected="${folder.value===catalogPicker.folder}" aria-controls="catalog-grid" tabindex="${folder.value===catalogPicker.folder?0:-1}" title="${esc(folder.label)}">${esc(folder.label)}<span>${folder.count}</span></button>`).join('');
+    grid.setAttribute('aria-labelledby',`catalog-folder-${folders.findIndex(folder=>folder.value===catalogPicker.folder)}`);
+  }
+  function selectCatalogFolder(folder,focus=false) {
+    if(catalogPicker.kind!=='loras'||!catalogFolders().some(item=>item.value===folder))return;
+    catalogPicker.folder=folder;catalogPicker.limit=48;renderCatalogPicker();$('catalog-grid').scrollTop=0;
+    if(focus)$(`catalog-folder-${catalogFolders().findIndex(item=>item.value===folder)}`).focus();
+  }
   function catalogThumbnail(item) {
     const url=item?.thumbnail_url;
     return typeof url==='string'&&/^\/api\/(?:anima-studio|vault)\//.test(url)?url:'';
@@ -146,15 +173,16 @@
   function renderModelChoice() {renderCatalogChoice($('choose-model'),'models',$('model-select').value);}
   function renderLoraChoice(row) {renderCatalogChoice(row.querySelector('.choose-lora'),'loras',row.querySelector('select').value);}
   function openCatalogPicker(kind,row=null) {
-    catalogPicker.kind=kind;catalogPicker.row=row;catalogPicker.limit=48;
+    catalogPicker.kind=kind;catalogPicker.row=row;catalogPicker.limit=48;catalogPicker.folder='*';
     $('catalog-title').textContent=kind==='models'?'Modelos Anima':'LoRAs Anima';
     $('catalog-description').textContent=kind==='models'?'Escoge el modelo que dará forma al estilo.':'Combina LoRAs de estilo, personaje u outfit; después ajusta su peso.';
     $('catalog-search').value='';$('catalog-images-only').checked=false;
-    renderCatalogPicker();$('catalog-dialog').showModal();$('catalog-search').focus();
+    renderCatalogPicker();$('catalog-grid').scrollTop=0;$('catalog-dialog').showModal();$('catalog-search').focus();
   }
-  function matchingCatalogEntries(kind,query,imagesOnly=false) {
+  function matchingCatalogEntries(kind,query,imagesOnly=false,folder='*') {
     const terms=normalizeCatalogText(query).trim().split(/\s+/).filter(Boolean);
     return (state.catalog[kind]||[]).filter(item=>{
+      if(kind==='loras'&&folder!=='*'&&catalogFolder(item)!==folder)return false;
       if(imagesOnly&&!catalogThumbnail(item))return false;
       const text=normalizeCatalogText([catalogName(item),catalogFilename(item),item.file,item.name,...catalogTags(item)].join(' '));
       return terms.every(term=>text.includes(term));
@@ -162,9 +190,10 @@
   }
   function pickerValue() {return catalogPicker.kind==='models'?$('model-select').value:catalogPicker.row?.querySelector('select').value||'';}
   function renderCatalogPicker() {
+    renderCatalogFolders();
     const kind=catalogPicker.kind,selected=pickerValue();
     const used=new Set(kind==='loras'?[...$('lora-list').children].filter(row=>row!==catalogPicker.row).map(row=>row.querySelector('select').value):[]);
-    const matches=matchingCatalogEntries(kind,$('catalog-search').value,$('catalog-images-only').checked).sort((a,b)=>
+    const matches=matchingCatalogEntries(kind,$('catalog-search').value,$('catalog-images-only').checked,catalogPicker.folder).sort((a,b)=>
       Number(optionValue(b)===selected)-Number(optionValue(a)===selected)||Number(!!catalogThumbnail(b))-Number(!!catalogThumbnail(a))||catalogName(a).localeCompare(catalogName(b),'es'));
     const visible=matches.slice(0,catalogPicker.limit);
     $('catalog-results').textContent=`${matches.length} ${kind==='models'?'modelos':'LoRAs'}${visible.length<matches.length?` · mostrando ${visible.length}`:''}`;
@@ -570,8 +599,15 @@
     $('choose-model').onclick=()=>openCatalogPicker('models');
     $('choose-model').addEventListener('error',markBrokenCatalogImage,true);
     $('catalog-grid').addEventListener('error',markBrokenCatalogImage,true);
+    $('catalog-folders').onclick=event=>{const tab=event.target.closest('[data-catalog-folder]');if(tab)selectCatalogFolder(tab.dataset.catalogFolder,true);};
+    $('catalog-folders').onkeydown=event=>{
+      if(!event.target.closest('[data-catalog-folder]'))return;
+      const folders=catalogFolders(),index=folders.findIndex(folder=>folder.value===catalogPicker.folder);
+      const next={ArrowRight:(index+1)%folders.length,ArrowLeft:(index+folders.length-1)%folders.length,Home:0,End:folders.length-1}[event.key];
+      if(next!==undefined){event.preventDefault();selectCatalogFolder(folders[next].value,true);}
+    };
     $('catalog-grid').onclick=event=>{const button=event.target.closest('[data-catalog-file]');if(button&&!button.disabled)chooseCatalogFile(button.dataset.catalogFile);};
-    const filterCatalog=()=>{catalogPicker.limit=48;renderCatalogPicker();};
+    const filterCatalog=()=>{catalogPicker.limit=48;renderCatalogPicker();$('catalog-grid').scrollTop=0;};
     $('catalog-search').oninput=filterCatalog;$('catalog-images-only').onchange=filterCatalog;
     $('catalog-more').onclick=()=>{catalogPicker.limit+=48;renderCatalogPicker();};
     $('catalog-dialog').onclose=()=>{catalogPicker.row=null;};
