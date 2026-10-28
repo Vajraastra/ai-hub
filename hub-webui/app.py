@@ -11,6 +11,7 @@ import atexit
 import threading
 import asyncio
 import socket
+from contextlib import asynccontextmanager
 from typing import Optional
 
 # En Windows la consola usa cp1252 por defecto y revienta (UnicodeEncodeError)
@@ -105,7 +106,15 @@ bridge.on_log(_on_log)
 
 
 # ── FastAPI ─────────────────────────────────────────────────────────────────
-api = FastAPI(title="AI Hub WebUI")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        yield
+    finally:
+        await close_managed_backends()
+
+
+api = FastAPI(title="AI Hub WebUI", lifespan=lifespan)
 
 
 _NO_CACHE_PATHS = {"/", "/vault", "/painter", "/fusion", "/ideogram", "/faceswap", "/minimax-h3", "/anima-studio"}
@@ -157,7 +166,6 @@ api.include_router(minimax_h3_router)
 api.include_router(anima_studio_router)
 
 
-@api.on_event("shutdown")
 async def close_managed_backends():
     for task in list(_anima_tasks):
         task.cancel()
