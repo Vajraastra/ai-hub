@@ -71,15 +71,16 @@ if errorlevel 1 (
     echo   Drivers: https://www.nvidia.com/drivers
     goto :fail
 )
-set "GPU_NAME="
-for /f "tokens=*" %%G in ('nvidia-smi --query-gpu^=name --format^=csv^,noheader^,nounits 2^>nul') do (
-    if not defined GPU_NAME set "GPU_NAME=%%G"
+set "GPU_COUNT=0"
+for /f "tokens=1,2,3 delims=," %%G in ('nvidia-smi --query-gpu^=index^,name^,memory.total --format^=csv^,noheader^,nounits 2^>nul') do (
+    set /a GPU_COUNT+=1 >nul
+    echo   OK  GPU NVIDIA %%G:%%H ^(%%I MiB VRAM^)
 )
-if not defined GPU_NAME (
+if "%GPU_COUNT%"=="0" (
     echo   ERROR: nvidia-smi ejecuto pero no detecto GPU.
     goto :fail
 )
-echo   OK  GPU: %GPU_NAME%
+echo   GPU NVIDIA detectadas: %GPU_COUNT%. La GPU de trabajo depende de cada app.
 
 REM ============================================================
 REM [2/6] uv
