@@ -4,12 +4,14 @@ const path = require('node:path');
 const vm = require('node:vm');
 const {test} = require('node:test');
 const AnimaProduction = require('../static/anima_production.js');
+const AnimaPieces = require('../static/anima_pieces.js');
+const AnimaWorkspace = require('../static/anima_workspace.js');
 const source = readFileSync(path.join(__dirname, '../static/anima_studio.js'), 'utf8');
 
 function harness() {
   const nodes = new Map(), requests = [], confirmations = [];
   const control = {confirm: true, blocked: false, errors:[], now:100000};
-  const selectIds = new Set(['cal-style','prod-style','piece-kind','piece-filter','sampler','scheduler']);
+  const selectIds = new Set(['cal-style','prod-style','piece-kind','piece-filter','piece-master','piece-lora','piece-test-style','piece-test-format','sampler','scheduler']);
   function makeNode(id, isSelect = selectIds.has(id) || id.endsWith('-select')) {
     const classes = new Set(), nested = new Map();
     let html = '', value = '';
@@ -25,6 +27,7 @@ function harness() {
       addEventListener() {}, focus() {},
       getContext() { return {clearRect() {}, drawImage() {}}; },
       close() { this.open = false; }, showModal() { this.open = true; },
+      reset() {},
       add(option) { this.options.push(option); if(option.selected || this.options.length===1) value = String(option.value); },
       replaceChildren(...children) { this.children = children; html = ''; },
       append(child) { this.children.push(child); },
@@ -64,7 +67,7 @@ function harness() {
     catalog:{models:[],loras:[],text_encoders:[],vaes:[]},
   };
   const context = vm.createContext({
-    console:{...console,error(...args) { control.errors.push(args); }}, AnimaProduction, WebSocket:{OPEN:1},
+    console:{...console,error(...args) { control.errors.push(args); }}, AnimaProduction, AnimaPieces, AnimaWorkspace, WebSocket:{OPEN:1},
     Date:class extends Date { static now() { return control.now; } },
     document:{getElementById:element,createElement:makeNode,
       querySelectorAll(selector) { return selector === '[name="mode"]' ? radios : []; }},
@@ -82,19 +85,207 @@ function harness() {
       return {ok:true,async text() { return JSON.stringify(result); }};
     },
   });
-  vm.runInContext(source.replace('  init();', '  globalThis.studio = {state,session,renderAll,renderGalleries,renderStyles,renderProductionMenu,chooseProduction,productionPayload,selectedPieces,loadRecipe,deleteImage,deleteResource,reload,refreshGenerations,resetWorkspace,cleanupStorage,pollJob,updateSessionView,storageStatus:()=>({pending:storagePending,busy:storageCleanupBusy,retryAt:storageRetryAt})};'), context);
+  vm.runInContext(source.replace('  init();', '  globalThis.studio = {state,session,renderAll,renderGalleries,renderStyles,renderProductionMenu,chooseProduction,productionPayload,selectedPieces,loadRecipe,saveRecipe,deleteImage,deleteResource,reload,refreshGenerations,resetWorkspace,cleanupStorage,pollJob,renderVisualWorkspace,createVisualElement,addVisualElement,removeVisualElement,visualReadiness,updateSessionView,openPiece,savePiece,testPiece,choosePieceMaster,productionPieceChanged,restoreComposition,releaseComposition,selectMaster,capturePieceSample,storageStatus:()=>({pending:storagePending,busy:storageCleanupBusy,retryAt:storageRetryAt})};'), context);
   const studio = context.studio;
   Object.assign(studio.state,database,{projectId:'project'});
+  element('piece-kind').innerHTML=['character','personality','outfit','pose','expression','background','item','scene'].map(kind=>`<option value="${kind}">${kind}</option>`).join('');
   element('prod-seed').value = '42';
   studio.renderAll();
   return {studio,element,database,requests,control,confirmations,context};
 }
 
 const response = json => ({ok:true, async text() { return typeof json==='string'?json:JSON.stringify(json); }});
+
+test('visual workshop exposes creation and inventory before a composition target',()=>{
+  const {studio,element}=harness();
+  assert.match(element('element-type-cards').innerHTML,/Crear personaje/);
+  assert.match(element('inventory-grid').innerHTML,/Heroína/);
+  assert.equal(studio.visualReadiness().ready,false);
+  assert.equal(element('generate-production').disabled,true);
+});
+
+test('visual selection uses one piece per role and filters never rewrite the composition',()=>{
+  const {studio,element}=harness();
+  studio.state.pieces.push({id:'dress',kind:'outfit',name:'Vestido',revision:2,project_id:'project',prompt:'green dress'});
+  studio.state.pieces.push({id:'background',kind:'background',name:'Paisaje',revision:1,project_id:'project',prompt:'forest'});
+  studio.state.pieces.find(p=>p.id==='hero').seed='18446744073709551615';
+  studio.addVisualElement('hero');element('prod-style').value='style';studio.addVisualElement('dress');
+  studio.state.recipePieceRevisions.hero=3;
+  const before=JSON.stringify(studio.productionPayload());
+  element('inventory-search').value='no matches';studio.renderVisualWorkspace();
+  assert.equal(JSON.stringify(studio.productionPayload()),before);
+  assert.match(element('composition-slots').innerHTML,/Heroína[\s\S]*Vestido/);
+  assert.equal(element('prod-seed').value,'18446744073709551615');
+  assert.throws(()=>studio.addVisualElement('background'),/otro tipo/);
+  assert.deepEqual(Array.from(studio.selectedPieces()),['hero','dress']);
+  studio.removeVisualElement('outfit');
+  assert.deepEqual(Array.from(studio.selectedPieces()),['hero']);
+});
+
+test('creation can be opened and cancelled without changing selected composition',()=>{
+  const {studio,element}=harness();studio.chooseProduction('characters');element('prod-style').value='style';
+  studio.addVisualElement('hero');const before=JSON.stringify(studio.productionPayload());
+  studio.createVisualElement('outfit');
+  assert.equal(element('piece-kind').value,'outfit');
+  assert.equal(JSON.stringify(studio.productionPayload()),before);
+});
 async function until(predicate) {
   for(let step=0;step<30;step++) { if(predicate())return; await Promise.resolve(); }
   assert.ok(predicate(),'Expected request was never started.');
 }
+
+test('a variant editor inherits the exact master revision, seed and character LoRA without claiming its preview', async()=>{
+  const {studio,element,context,database,requests}=harness();
+  const master={id:'master',revision:7,name:'Identidad',kind:'character',project_id:'project',prompt:'blue eyes',negative:'glasses',seed:'18446744073709551615',sample_asset_id:'preview',loras:[{file:'hero.safetensors',strength:.8,trigger:'hero'}]};
+  studio.state.pieces.push(master);studio.openPiece(master,true);
+  assert.equal(element('piece-kind').value,'character');assert.equal(element('piece-kind').disabled,true);
+  assert.equal(element('piece-seed').value,'18446744073709551615');assert.equal(element('piece-sample-id').value,'');
+  element('piece-prompt').value='green eyes';
+  context.fetch=async(url,options={})=>{
+    requests.push({url,method:options.method||'GET',body:options.body});
+    if(url.endsWith('/pieces')&&options.method==='POST')return response({...JSON.parse(options.body),id:'variant',revision:1});
+    return response(database);
+  };
+  await studio.savePiece({preventDefault(){}});
+  const body=JSON.parse(requests.find(r=>r.url.endsWith('/pieces')).body);
+  assert.equal(body.master_id,'master');assert.equal(body.master_revision,7);assert.equal(body.seed,'18446744073709551615');
+  assert.equal(body.prompt,'green eyes');assert.equal(body.loras[0].trigger,'hero');assert.equal(body.sample_asset_id,null);
+  assert.equal(master.prompt,'blue eyes');assert.equal(master.sample_asset_id,'preview');
+});
+
+test('a recovered composition pins historical settings and only replaces the expression until explicitly released',()=>{
+  const {studio,element}=harness();
+  const record={id:'source',category:'characters',seed:'18446744073709551615',config:{width:1024,height:1536,steps:39,cfg:4,loras:[{file:'style-lora',strength:.5},{file:'old-character',strength:1}]},
+    snapshot:{style:{id:'style',revision:2,config:{cfg:2,loras:[{file:'style-lora',strength:.5}]}},pieces:[{id:'hero',kind:'character',name:'Heroína',revision:1}]},
+    composition:{additional_prompt:'full body',additional_negative:'cropped'}};
+  studio.restoreComposition(record,'expression');
+  assert.equal(element('prod-seed').value,record.seed);assert.equal(element('prod-seed').disabled,true);
+  assert.equal(element('prod-style').disabled,true);
+  assert.equal(element('piece-pickers').querySelector('[data-piece-kind="character"]').disabled,true);
+  assert.equal(element('piece-pickers').querySelector('[data-piece-kind="expression"]').disabled,false);
+  element('prod-prompt').value='raised eyebrows, surprised';
+  const payload=studio.productionPayload();
+  assert.equal(payload.source_asset_id,'source');assert.equal(payload.expression_prompt,'raised eyebrows, surprised');
+  assert.equal(payload.config.seed,record.seed);assert.equal(payload.config.steps,39);assert.equal(payload.style_revision,2);assert.equal(payload.piece_revisions.hero,1);
+  studio.releaseComposition(false);
+  assert.equal(studio.productionPayload().source_asset_id,undefined);assert.equal(element('prod-seed').disabled,false);
+  assert.equal(studio.productionPayload().piece_revisions.hero,1);
+  assert.equal(studio.productionPayload().config.cfg,4);assert.equal(studio.productionPayload().config.steps,39);
+  assert.deepEqual(JSON.parse(JSON.stringify(studio.productionPayload().config.loras)),[{file:'style-lora',strength:.5}]);
+});
+
+test('selecting a character proposes its exact seed and selecting an unrelated resource releases the old composition',()=>{
+  const {studio,element}=harness();
+  studio.chooseProduction('characters');element('prod-style').value='style';
+  studio.state.pieces[0].seed='18446744073709551615';
+  const picker=element('piece-pickers').querySelector('[data-piece-kind="character"]');picker.value='hero';studio.productionPieceChanged(picker);
+  assert.equal(studio.productionPayload().config.seed,'18446744073709551615');
+  studio.state.sourceAssetId='old';studio.chooseProduction('backgrounds');
+  assert.equal(studio.state.sourceAssetId,null);assert.equal(element('prod-style').disabled,false);
+});
+
+test('a piece test can replay a deleted style from its historical snapshot and displays its actual seed',async()=>{
+  const {studio,element,context,requests}=harness();
+  studio.state.styles=[];
+  const piece={id:'outfit',revision:2,kind:'outfit',name:'Uniforme',project_id:'project',prompt:'blue uniform',seed:'18446744073709551615',
+    generation_snapshot:{config:{width:1024,height:1536},snapshot:{style:{id:'deleted-style',name:'Acabado anterior',revision:4,config:{seed:'12'}}}}};
+  studio.state.pieces.push(piece);studio.openPiece(piece,true);
+  assert.equal(element('piece-test-style').value,'deleted-style');
+  assert.match(element('piece-test-style').innerHTML,/Acabado anterior · v4 · del maestro/);
+  assert.equal(element('piece-reuse-settings').checked,true);assert.equal(element('piece-reuse-settings').disabled,false);
+  Object.assign(studio.session,{active:true,status:'ready',socket:{readyState:1}});
+  context.fetch=async(url,options={})=>{
+    requests.push({url,method:options.method||'GET',body:options.body});
+    if(url.endsWith('/generate'))return response({job_id:'test-job'});
+    if(url.includes('/jobs/'))return response({status:'done',result:{id:'result'}});
+    return response([]);
+  };
+  await studio.testPiece(piece,'deleted-style','portrait',true);
+  const payload=JSON.parse(requests.find(request=>request.url.endsWith('/generate')).body);
+  assert.equal(payload.style_id,'deleted-style');assert.equal(payload.style_revision,4);assert.equal(payload.piece_test.reuse_master_settings,true);
+  assert.equal(payload.config.seed,'18446744073709551615');assert.equal(element('prod-seed').value,'42');
+  assert.deepEqual(payload.piece_ids,['outfit']);
+});
+
+test('saving and testing a new element preserves an existing frozen composition and keeps its result separate',async()=>{
+  const {studio,element,database,context,requests}=harness();
+  database.styles.push({id:'test-style',name:'Acabado para objetos',project_id:'project',revision:6,config:{seed:'17'}});
+  studio.state.styles=database.styles;
+  database.pieces.push({id:'dress',name:'Vestido actual',kind:'outfit',project_id:'project',revision:8,prompt:'red dress'});
+  const sourceRecord={id:'frozen-source',project_id:'project',category:'characters',purpose:'production',mode:'txt2img',status:'accepted',
+    seed:'18446744073709551615',config:{width:1024,height:1536,steps:39,cfg:4,seed:'18446744073709551615'},
+    snapshot:{style:{id:'style',name:'Acabado guardado',revision:2,config:{cfg:3}},pieces:[
+      {id:'hero',kind:'character',name:'Heroína original',revision:1,prompt:'blue eyes'},
+      {id:'dress',kind:'outfit',name:'Vestido original',revision:2,prompt:'green dress'},
+    ]},composition:{additional_prompt:'full body',additional_negative:'cropped'}};
+  database.generations.push(sourceRecord);
+  studio.renderAll();studio.restoreComposition(sourceRecord,'txt2img');
+  const before=JSON.stringify(studio.productionPayload());
+  const sourceBefore=JSON.stringify(studio.state.sourceRecord);
+  studio.createVisualElement('item');
+  element('piece-name').value='Poción nueva';element('piece-prompt').value='small blue potion, glass bottle';
+  element('piece-seed').value='12345678901234567890';
+  element('piece-test-style').value='test-style';element('piece-test-format').value='portrait';
+  Object.assign(studio.session,{active:true,status:'ready',socket:{readyState:1}});
+  const result={id:'piece-test-result',project_id:'project',category:'items',purpose:'piece_test',mode:'txt2img',status:'pending',
+    name:'Poción nueva',seed:'12345678901234567890',piece_test:{id:'new-item',kind:'item'}};
+  context.fetch=async(url,options={})=>{
+    requests.push({url,method:options.method||'GET',body:options.body});
+    if(url.endsWith('/pieces')&&options.method==='POST'){
+      const saved={...JSON.parse(options.body),id:'new-item',revision:1};database.pieces.push(saved);return response(saved);
+    }
+    if(url.endsWith('/bootstrap'))return response(database);
+    if(url.endsWith('/generate')){database.generations.push(result);return response({job_id:'element-job'});}
+    if(url.includes('/jobs/'))return response({status:'done',result});
+    if(url.includes('/generations?'))return response(database.generations);
+    return response({});
+  };
+  await studio.savePiece({preventDefault(){},submitter:{id:'save-test-piece'}});
+  const payload=JSON.parse(requests.find(request=>request.url.endsWith('/generate')).body);
+  assert.equal(payload.purpose,'piece_test');assert.equal(payload.category,'items');
+  assert.equal(payload.style_id,'test-style');assert.equal(payload.style_revision,6);
+  assert.equal(payload.config.seed,'12345678901234567890');assert.deepEqual(payload.piece_ids,['new-item']);
+  assert.equal(payload.source_asset_id,undefined);
+  assert.equal(JSON.stringify(studio.productionPayload()),before);
+  assert.equal(studio.state.productionCategory,'characters');assert.equal(studio.state.productionMode,'txt2img');
+  assert.equal(element('prod-style').value,'style');assert.equal(element('prod-seed').value,'18446744073709551615');
+  assert.equal(studio.state.recipeStyleRevision,2);
+  assert.deepEqual(JSON.parse(JSON.stringify(studio.state.recipePieceRevisions)),{hero:1,dress:2});
+  assert.equal(studio.state.sourceAssetId,'frozen-source');assert.equal(JSON.stringify(studio.state.sourceRecord),sourceBefore);
+  assert.match(element('element-test-gallery').innerHTML,/Poción nueva[\s\S]*12345678901234567890/);
+  assert.doesNotMatch(element('production-gallery').innerHTML,/piece-test-result/);
+});
+
+test('piece test cards cannot become composition sources that leak their presentation template',()=>{
+  const {studio,element}=harness();studio.chooseProduction('characters');
+  const record={id:'piece-preview',project_id:'project',category:'characters',purpose:'piece_test',piece_test:{id:'hero'},seed:'42',snapshot:{style:{id:'style',revision:1},pieces:[]}};
+  studio.state.elementTestId='hero';studio.state.generations.push(record);studio.renderGalleries();
+  assert.match(element('element-test-gallery').innerHTML,/Elegir imagen del elemento/);
+  assert.doesNotMatch(element('production-gallery').innerHTML,/piece-preview/);
+  assert.doesNotMatch(element('production-gallery').innerHTML,/data-use-composition="piece-preview"/);
+  assert.doesNotMatch(element('production-gallery').innerHTML,/data-master="piece-preview"/);
+  assert.throws(()=>studio.restoreComposition(record,'txt2img'),/prueba de pieza/);
+});
+
+test('frozen expression recipes are blocked and normal recipes exclude effective character LoRAs',async()=>{
+  const {studio,element,context,requests,database}=harness();
+  const record={id:'master',category:'characters',seed:'42',config:{width:1024,height:1536,loras:[{file:'finish',strength:.5},{file:'character',strength:.8}]},
+    snapshot:{style:{id:'style',revision:2,config:{loras:[{file:'finish',strength:.5}]}},pieces:[{id:'hero',kind:'character',revision:3}]},
+    composition:{additional_prompt:'full body',additional_negative:'cropped'}};
+  studio.restoreComposition(record,'expression');element('recipe-name').value='Alegre';
+  await assert.rejects(studio.saveRecipe(),/maestro y la máscara facial/);
+  assert.equal(requests.length,0);
+  studio.restoreComposition(record,'txt2img');element('recipe-name').value='Composición';
+  context.fetch=async(url,options={})=>{
+    requests.push({url,method:options.method||'GET',body:options.body});
+    if(url.endsWith('/recipes')&&options.method==='POST')return response({...JSON.parse(options.body),id:'saved-recipe'});
+    return response(database);
+  };
+  await studio.saveRecipe();
+  const payload=JSON.parse(requests.find(request=>request.url.endsWith('/recipes')).body);
+  assert.equal(payload.source_asset_id,undefined);assert.equal(payload.prompt,'full body');
+  assert.deepEqual(payload.config.loras,[{file:'finish',strength:.5}]);
+});
 
 test('production starts with a resource menu and blocks payloads until a choice', () => {
   const {studio,element} = harness();
@@ -105,7 +296,7 @@ test('production starts with a resource menu and blocks payloads until a choice'
   assert.throws(()=>studio.productionPayload(),/Elige primero/);
   studio.chooseProduction('characters');
   assert.equal(element('production-workspace').classList.contains('hidden'),false);
-  assert.equal(element('production-menu').classList.contains('hidden'),true);
+  assert.equal(element('production-menu').classList.contains('hidden'),false);
 });
 
 test('switching to backgrounds discards character pieces and uses the background category and format', () => {

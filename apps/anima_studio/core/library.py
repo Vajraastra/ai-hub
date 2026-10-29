@@ -20,6 +20,8 @@ from pathlib import Path
 from string import Formatter
 from typing import Any
 
+from . import pieces as piece_templates
+
 
 class LibraryError(ValueError):
     pass
@@ -30,7 +32,7 @@ class LibraryConflict(LibraryError):
 
 
 _KINDS = {"projects", "styles", "pieces", "recipes"}
-_PIECES = {"character", "personality", "outfit", "pose", "expression", "style", "scene"}
+_PIECES = piece_templates.KINDS
 _STATES = {"pending", "accepted", "rejected"}
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,95}$")
 _VARIANT = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
@@ -132,7 +134,11 @@ class Library:
                     raise LibraryError("Revisión no válida.")
                 path = self._path("revisions", kind, entry_id, f"{revision:08d}.json")
             value = self._read(path)
-            return self._style_view(value) if kind == "styles" and revision is None else value
+            if revision is None and kind == "styles":
+                return self._style_view(value)
+            if revision is None and kind == "pieces":
+                return self._piece_view(value)
+            return value
 
     def _style_view(self, value: dict) -> dict:
         """Hide unavailable preview samples without rewriting saved revisions."""
@@ -146,6 +152,16 @@ class Library:
                     continue
                 available.append(sample_id)
             result["sample_ids"] = available
+        return result
+
+    def _piece_view(self, value: dict) -> dict:
+        """A removed test image does not erase the piece's captured settings."""
+        result = _clone(value)
+        if result.get("sample_asset_id"):
+            try:
+                self.image_path(result["sample_asset_id"])
+            except (LibraryError, OSError):
+                result.pop("sample_asset_id", None)
         return result
 
     def list(self, kind: str, project_id: str | None = None) -> list[dict]:
@@ -163,7 +179,11 @@ class Library:
                         continue
                     if kind != "projects" and value.get("project_id") not in (None, project_id):
                         continue
-                entries.append(self._style_view(value) if kind == "styles" else value)
+                if kind == "styles":
+                    value = self._style_view(value)
+                elif kind == "pieces":
+                    value = self._piece_view(value)
+                entries.append(value)
             return entries
 
     def _validate_project(self, value: dict):
@@ -243,7 +263,7 @@ class Library:
                 if piece_id:
                     self._same_scope("pieces", piece_id, project_id, pins.get(piece_id))
 
-    def save(self, kind: str, payload: dict) -> dict:
+    def save(self, kind: str, payload: dict, *, imported: bool = False) -> dict:
         self._kind(kind)
         if not isinstance(payload, dict):
             raise LibraryError("El recurso debe ser un objeto.")
@@ -255,6 +275,12 @@ class Library:
             if old and kind == "styles":
                 old = self._style_view(old)
             value = {**old, **incoming}
+            if kind == "pieces":
+                value["id"] = entry_id
+                try:
+                    value = piece_templates.materialize_piece(self, value, incoming, old, imported=imported)
+                except ValueError as exc:
+                    raise LibraryError(str(exc)) from exc
             if old and kind != "projects" and old.get("project_id") != value.get("project_id"):
                 raise LibraryError("No se puede cambiar el proyecto de un recurso existente; crea una copia.")
             self._validate(kind, value)
@@ -769,7 +795,8 @@ class Library:
         if isinstance(value, str):
             return value == asset_id
         if isinstance(value, dict):
-            return any(Library._contains_id(child, asset_id) for child in value.values())
+            return any(Library._contains_id(child, asset_id) for field, child in value.items()
+                       if field != "generation_snapshot")
         if isinstance(value, list):
             return any(Library._contains_id(child, asset_id) for child in value)
         return False
@@ -779,12 +806,16 @@ class Library:
         """Only live image roles are dependencies; provenance is metadata."""
         if isinstance(value, dict):
             for field, child in value.items():
-                if field in ("source_sample_ids", "imported_from"):
+                if field in ("source_sample_ids", "source_sample_asset_id", "imported_from", "generation_snapshot"):
                     continue
                 if field in ("master_id", "master_asset_id") and child == asset_id:
                     return True
                 if field == "sample_ids":
                     if samples and isinstance(child, list) and asset_id in child:
+                        return True
+                    continue
+                if field == "sample_asset_id":
+                    if samples and child == asset_id:
                         return True
                     continue
                 if Library._image_reference(child, asset_id, samples=samples):

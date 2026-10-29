@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 import uvicorn
 
 from anima_studio_routes import anima_studio_router, _tasks, _sessions
+from anima_pose_routes import anima_pose_router
 from tag_routes import tags_router
 
 ROOT = Path(__file__).resolve().parent
@@ -41,6 +42,7 @@ async def lifespan(app):
 
 api = FastAPI(title="Anima Studio · PoC", lifespan=lifespan)
 api.include_router(anima_studio_router)
+api.include_router(anima_pose_router)
 api.include_router(tags_router, prefix="/api/painter")
 api.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
 

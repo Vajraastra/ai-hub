@@ -26,7 +26,7 @@ from anima_studio.core.catalog_assets import CatalogAssets
 from anima_studio.core.comfy_client import ComfyClient
 from anima_studio.core.library import Library, LibraryConflict
 from anima_studio.core.storage import StorageLifecycle
-from anima_studio.core import pipeline
+from anima_studio.core import pipeline, composition, pose_control
 
 anima_studio_router = APIRouter(prefix="/api/anima-studio", tags=["anima-studio"])
 _library = Library(Path(os.environ.get("ANIMA_STUDIO_DATA", _ROOT / "apps/anima_studio/data")))
@@ -50,7 +50,7 @@ _catalog_assets = None
 _catalog_time = 0.0
 _catalog_lock = asyncio.Lock()
 _KINDS = ("projects", "styles", "pieces", "recipes")
-_PIECE_KINDS = ("character", "personality", "outfit", "pose", "expression", "scene", "style")
+_PIECE_KINDS = ("character", "personality", "outfit", "pose", "expression", "background", "item", "scene", "style")
 
 
 def _storage() -> StorageLifecycle:
@@ -162,9 +162,9 @@ async def catalog_thumbnail(identifier: str):
 @anima_studio_router.get("/status")
 async def status():
     return {"comfyui": await _comfy.health_check(), "backend": "Anima / ComfyUI",
-            "reference_adapter": False, "pose_control": False,
+            "reference_adapter": False, "pose_control": True, "pose_editor": "skeleton2d",
             "expressions": "inpaint facial + composición exacta",
-            "limitations": ["Referencias IP-Adapter y control de pose 3D aún no integrados.",
+            "limitations": ["Editor de maniquí 3D pendiente. El control de esqueleto es experimental.",
                             "Txt2img produce RGB; pedir alfa en un perfil no elimina el fondo."]}
 
 
@@ -288,6 +288,10 @@ async def export_project(project_id: str):
                     history.append(_library.get(kind, entry["id"], revision))
                 except ValueError:
                     continue  # an interrupted prior save may leave a revision gap
+            # Current views hide deleted sample previews; retain that same view
+            # in the exported latest revision without rewriting the local store.
+            if history and history[-1].get("revision") == entry["revision"]:
+                history[-1] = copy.deepcopy(entry)
             revisions[kind][entry["id"]] = history
     return JSONResponse({"schema": "anima-studio-profile-v2", "project": project,
                          **resources, "revisions": revisions},
@@ -379,8 +383,32 @@ async def import_project(payload: dict = Body(...)):
 
             # Dependencies are imported first. All historical revisions are
             # reconstructed in order, including ones no current recipe uses.
-            for kind in ("pieces", "styles", "recipes"):
-                for old_id, versions in resources[kind]:
+            for kind in ("styles", "pieces", "recipes"):
+                entries = resources[kind]
+                if kind == "pieces":
+                    # A variant may sort before its master in an exported list.
+                    indexed = dict(entries)
+                    ordered, complete, visiting = [], set(), set()
+
+                    def visit(piece_id):
+                        if piece_id in complete:
+                            return
+                        if piece_id in visiting:
+                            raise ValueError("El perfil contiene un ciclo de maestros y variantes.")
+                        if piece_id not in indexed:
+                            raise ValueError("Falta el maestro de una variante del perfil.")
+                        visiting.add(piece_id)
+                        for _, version in indexed[piece_id]:
+                            if version.get("master_id"):
+                                visit(version["master_id"])
+                        visiting.remove(piece_id)
+                        complete.add(piece_id)
+                        ordered.append((piece_id, indexed[piece_id]))
+
+                    for piece_id in indexed:
+                        visit(piece_id)
+                    entries = ordered
+                for old_id, versions in entries:
                     for old_revision, snapshot in versions:
                         data = copy.deepcopy(snapshot)
                         for key in ("id", "revision", "created_at", "updated_at"):
@@ -389,6 +417,20 @@ async def import_project(payload: dict = Body(...)):
                                     imported_from={"id": old_id, "revision": old_revision})
                         if data.get("sample_ids"):
                             data["source_sample_ids"] = data.pop("sample_ids")
+                        if kind == "pieces":
+                            if data.get("sample_asset_id"):
+                                data["source_sample_asset_id"] = data.pop("sample_asset_id")
+                            if data.get("master_id"):
+                                data["master_id"], data["master_revision"] = reference(
+                                    "pieces", data["master_id"], data.get("master_revision"))
+                            saved_style = data.get("generation_snapshot", {}).get("snapshot", {}).get("style")
+                            if isinstance(saved_style, dict):
+                                old_style_id, old_style_revision = saved_style.get("id"), saved_style.get("revision")
+                                if (old_style_id, old_style_revision) in revision_map["styles"]:
+                                    saved_style["id"], saved_style["revision"] = reference(
+                                        "styles", old_style_id, old_style_revision)
+                                    saved_style["imported_from"] = {"id": old_style_id, "revision": old_style_revision}
+                                saved_style["project_id"] = project["id"]
                         if kind == "recipes":
                             if data.get("style_id"):
                                 data["style_id"], data["style_revision"] = reference(
@@ -410,7 +452,7 @@ async def import_project(payload: dict = Body(...)):
                                                  if isinstance(piece_ids, dict)
                                                  else [remap_piece(value) for value in piece_ids])
                             data["piece_revisions"] = pins
-                        saved = stage.save(kind, data)
+                        saved = stage.save(kind, data, imported=True)
                         revision_map[kind][(old_id, old_revision)] = saved["revision"]
 
             # Publish all validated files under one library lock. Newly allocated
@@ -435,29 +477,106 @@ async def import_project(payload: dict = Body(...)):
         raise HTTPException(400, f"No se importó el perfil: {exc}") from exc
 
 
+def _expression_source(payload):
+    """Older clients selecting a composed master get the same replay contract."""
+    if payload.get("mode") != "expression" or payload.get("source_asset_id") or not payload.get("master_asset_id"):
+        return payload
+    try:
+        record = _library.get_generation(payload["master_asset_id"])
+    except (ValueError, OSError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if not record.get("snapshot") or not record.get("config", {}).get("model"):
+        return payload  # Imported PNGs and pre-composition records use explicit settings.
+    result = copy.deepcopy(payload)
+    result["source_asset_id"] = record["id"]
+    if not any(key in result for key in ("expression_piece_id", "expression_prompt", "expression_negative")):
+        pins = result.get("piece_revisions", {})
+        for piece_id in result.get("piece_ids", []):
+            piece = _read("pieces", piece_id, pins.get(piece_id))
+            if piece.get("kind") == "expression":
+                result.update(expression_piece_id=piece_id, expression_piece_revision=piece["revision"])
+                break
+        else:
+            result.update(expression_prompt=result.get("prompt", ""), expression_negative=result.get("negative", ""))
+    return result
+
+
 @anima_studio_router.post("/compose")
 async def compose(payload: dict = Body(...)):
+    payload = _expression_source(payload)
+    if not isinstance(payload.get("config", {}), dict):
+        raise HTTPException(400, "La configuración debe ser un objeto.")
+    if any(not isinstance(payload.get(key, ""), str) for key in
+           ("prompt", "negative", "expression_prompt", "expression_negative")):
+        raise HTTPException(400, "Los bloques de prompt y negativo deben ser texto.")
     project_id = payload.get("project_id", "")
     project = _read("projects", project_id)
+    if payload.get("source_asset_id"):
+        try:
+            source = _library.get_generation(payload["source_asset_id"])
+            _library.image_path(source["id"])
+            _project_access(source, project_id)
+            expression = None
+            if payload.get("expression_piece_id"):
+                expression = _read("pieces", payload["expression_piece_id"], payload.get("expression_piece_revision"))
+                _project_access(expression, project_id)
+                if expression.get("kind") != "expression":
+                    raise ValueError("Selecciona una pieza de expresión.")
+            result = composition.frozen(source, expression=expression,
+                expression_prompt=payload.get("expression_prompt"),
+                expression_negative=payload.get("expression_negative"))
+            # Local edit controls do not alter the master's model, seed or prompt.
+            if payload.get("mode") == "expression":
+                controls = payload.get("config", {})
+                for name in ("denoise", "crop_padding", "feather"):
+                    if name in controls:
+                        result["config"][name] = controls[name]
+            return result
+        except (ValueError, OSError, KeyError, TypeError) as exc:
+            raise HTTPException(400, str(exc)) from exc
     style = None
-    if payload.get("style_id"):
-        style = _read("styles", payload["style_id"], payload.get("style_revision"))
-        _project_access(style, project_id)
     revisions = payload.get("piece_revisions", {})
-    pieces = [_read("pieces", value, revisions.get(value)) for value in payload.get("piece_ids", [])]
-    if len(pieces) > 24:
+    ids = payload.get("piece_ids", [])
+    if not isinstance(revisions, dict) or not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
+        raise HTTPException(400, "Las piezas y sus revisiones no tienen un formato válido.")
+    if len(ids) > 24:
         raise HTTPException(400, "Selecciona hasta 24 piezas por receta.")
+    piece_test = payload.get("piece_test")
+    if piece_test is not None:
+        if not isinstance(piece_test, dict) or piece_test.get("kind") not in composition.TEST_TEMPLATES:
+            raise HTTPException(400, "Elige el tipo de pieza que quieres probar.")
+        if piece_test.get("id"):
+            ids = [piece_test["id"]]
+    pieces = [_read("pieces", value, revisions.get(value)) for value in ids]
     for piece in pieces:
         _project_access(piece, project_id)
-    order = {name: index for index, name in enumerate(_PIECE_KINDS)}
-    pieces.sort(key=lambda item: (order.get(item.get("kind"), 99), item["id"]))
-    blocks = ([style] if style else []) + pieces
-    prompt = "\n".join(str(item.get("prompt", "")).strip() for item in blocks if item.get("prompt"))
-    negative = "\n".join(dict.fromkeys(str(item.get("negative", "")).strip() for item in blocks
-                                      if item.get("negative")))
-    prompt = "\n".join(value for value in (prompt, str(payload.get("prompt", "")).strip()) if value)
-    negative = "\n".join(value for value in (negative, str(payload.get("negative", "")).strip()) if value)
+    if piece_test is not None:
+        pieces = [p for p in pieces if p.get("kind") == piece_test["kind"]]
+        if not pieces:
+            raise HTTPException(400, "Guarda y selecciona una pieza de ese tipo antes de probarla.")
+    if len({p["id"] for p in pieces}) != len(pieces) or len({p["kind"] for p in pieces}) != len(pieces):
+        raise HTTPException(400, "Selecciona una sola pieza de cada tipo para la composición.")
+    inherited_config = {}
+    if piece_test is not None and piece_test.get("reuse_master_settings", True):
+        replay = pieces[0].get("generation_snapshot", {})
+        saved_style = replay.get("snapshot", {}).get("style")
+        if isinstance(saved_style, dict) and saved_style.get("id") == payload.get("style_id"):
+            _project_access(saved_style, project_id)
+            style = copy.deepcopy(saved_style)
+            # Effective LoRAs include the old character. Reassemble those from
+            # the saved style and the selected variant instead of applying twice.
+            inherited_config = {key: copy.deepcopy(value) for key, value in replay.get("config", {}).items()
+                if key in {"model", "text_encoder", "vae", "width", "height", "steps", "cfg", "sampler", "scheduler", "seed"}}
+    if style is None and payload.get("style_id"):
+        style = _read("styles", payload["style_id"], payload.get("style_revision"))
+        _project_access(style, project_id)
     config = copy.deepcopy(style.get("config", {}) if style else {})
+    config.update(inherited_config)
+    if "seed" not in payload.get("config", {}):
+        character = next((p for p in pieces if p.get("kind") == "character" and p.get("seed")), None)
+        tested = pieces[0] if piece_test and pieces[0].get("seed") else character
+        if tested:
+            config["seed"] = tested["seed"]
     config.update(copy.deepcopy(payload.get("config", {})))
     if payload.get("format_id"):
         fmt = payload.get("format_snapshot")
@@ -468,10 +587,14 @@ async def compose(payload: dict = Body(...)):
         if fmt is None:
             raise HTTPException(400, "El formato no pertenece al proyecto.")
         config.update(width=fmt["width"], height=fmt["height"])
-    return {"prompt": prompt, "negative": negative, "config": config,
-            "blocks": [{"kind": item.get("kind", "style"), "name": item["name"],
-                        "prompt": item.get("prompt", "")} for item in blocks],
-            "snapshot": {"project": project, "style": style, "pieces": pieces}}
+    try:
+        result = composition.assemble(project, style, pieces, config, str(payload.get("prompt", "")).strip(),
+                                      str(payload.get("negative", "")).strip(), piece_test=piece_test)
+        if payload.get("format_id"):
+            result["composition"].update(format_id=fmt["id"], format_snapshot=copy.deepcopy(fmt))
+        return result
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 def _image(value: str) -> bytes:
@@ -518,12 +641,17 @@ def _pin_project(project_id: str):
 
 
 async def _generate(payload: dict):
+    payload = _expression_source(copy.deepcopy(payload))
+    if payload.get("source_asset_id") and payload.get("mode") == "expression":
+        if payload.get("master_asset_id") not in (None, "", payload["source_asset_id"]):
+            raise HTTPException(400, "La máscara y la composición deben pertenecer al mismo maestro.")
+        payload["master_asset_id"] = payload["source_asset_id"]
     assembled = await compose(payload)
     if not assembled["prompt"].strip():
         raise HTTPException(400, "Escribe un prompt o selecciona piezas.")
     if payload.get("mode") == "expression" and not str(payload.get("prompt", "")).strip():
         if not any(item.get("kind") == "expression" and item.get("prompt", "").strip()
-                   for item in assembled["snapshot"]["pieces"]):
+                   for item in assembled["blocks"]):
             raise HTTPException(400, "Selecciona una expresión guardada o descríbela en las instrucciones.")
     config = assembled["config"]
     config["seed"] = _seed(config.get("seed", "42"))
@@ -538,6 +666,9 @@ async def _generate(payload: dict):
             "mode": payload.get("mode", "txt2img")}.items() if key in supported})
         params = pipeline.validate_params(params)
         selected_files = await asyncio.to_thread(_catalog.validate, params)
+        if params.pose_control and params.mode == "txt2img":
+            selected_files["pose_control"] = await asyncio.to_thread(
+                pose_control.validate_model_patch, _models_root(), params.pose_control)
         config = asdict(params)
     except (ValueError, TypeError) as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -594,19 +725,24 @@ async def _generate(payload: dict):
             names = {piece["kind"]: piece["name"] for piece in pieces}
             metadata = {**result["metadata"], "project_id": project["id"],
                         "project_name": project["name"], "snapshot": assembled["snapshot"],
+                        "composition": assembled["composition"],
                         "selected_files": selected_files,
                         "config": {**config, **result["metadata"].get("params", {}),
                                    "seed": str(params.seed)}, "seed": str(params.seed),
                         "prompt": assembled["prompt"], "negative": assembled["negative"],
                         "category": category,
-                        "character_name": payload.get("character") or names.get("character", ""),
-                        "outfit_name": payload.get("outfit") or names.get("outfit", ""),
+                        "character_name": names.get("character", "") if payload.get("source_asset_id")
+                                          else payload.get("character") or names.get("character", ""),
+                        "outfit_name": names.get("outfit", "") if payload.get("source_asset_id")
+                                       else payload.get("outfit") or names.get("outfit", ""),
                         "expression_name": payload.get("expression") or names.get("expression", ""),
                         "master_id": payload.get("master_asset_id"),
                         "master_asset_id": payload.get("master_asset_id"),
                         "purpose": payload.get("purpose", "production")}
             if isinstance(payload.get("calibration"), dict):
                 metadata["calibration"] = copy.deepcopy(payload["calibration"])
+            if isinstance(payload.get("piece_test"), dict):
+                metadata["piece_test"] = copy.deepcopy(payload["piece_test"])
             extras = {key: result[key] for key in ("patch", "mask", "generation_mask") if result.get(key)}
             if master is not None:
                 extras["master"] = master

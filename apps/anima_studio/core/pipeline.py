@@ -10,7 +10,7 @@ import uuid
 from dataclasses import asdict, dataclass, field, replace
 
 from .comfy_client import ComfyClient, load_workflow
-from . import expressions
+from . import expressions, pose_control
 
 
 class PipelineError(Exception):
@@ -37,6 +37,7 @@ class GenParams:
     master_seed: str = ""
     crop_padding: int = 64
     feather: float = 8.0
+    pose_control: dict | None = None
 
 
 def resolve_seed(value):
@@ -87,10 +88,11 @@ def validate_params(params):
         if not math.isfinite(strength) or not -3 <= strength <= 3:
             raise ValueError("El peso de LoRA debe estar entre -3 y 3")
     return replace(params, seed=resolve_seed(params.seed),
+                   pose_control=pose_control.validate_config(params.pose_control),
                    denoise=1.0 if params.mode == "txt2img" else params.denoise)
 
 
-def build_workflow(params, image_name="", mask_name=""):
+def build_workflow(params, image_name="", mask_name="", pose_image_name=""):
     template = load_workflow("expression.json" if params.mode == "expression" else "txt2img.json")
     values = asdict(params)
     values.update(seed=int(params.seed), image_name=image_name, mask_name=mask_name)
@@ -108,6 +110,18 @@ def build_workflow(params, image_name="", mask_name=""):
             "model": model, "lora_name": lora["file"],
             "strength_model": float(lora.get("strength", 1))}}
         model = [node, 0]
+    if params.pose_control and params.mode == "txt2img":
+        if not pose_image_name:
+            raise ValueError("Falta el mapa de pose cargado en ComfyUI.")
+        control = params.pose_control
+        workflow["1020"] = {"class_type": "ModelPatchLoader", "inputs": {
+            "name": control["model_patch"]}}
+        workflow["1022"] = {"class_type": "LoadImage", "inputs": {"image": pose_image_name}}
+        workflow["1021"] = {"class_type": "AnimaLLLiteApply", "inputs": {
+            "model": model, "model_patch": ["1020", 0], "image": ["1022", 0],
+            "strength": control["strength"], "start_percent": control["start_percent"],
+            "end_percent": control["end_percent"]}}
+        model = ["1021", 0]
     workflow["7"]["inputs"]["model"] = model
     return workflow
 
@@ -122,6 +136,8 @@ async def resolve_backend_names(client, params):
     checkpoint = params.model.startswith("checkpoints::")
     model_folder = "checkpoints" if checkpoint else "diffusion_models"
     folders = (model_folder, "text_encoders", "vae", "loras")
+    if params.pose_control and params.mode == "txt2img":
+        folders += ("model_patches",)
     catalogues = dict(zip(folders, await asyncio.gather(
         *(client.get_models(folder) for folder in folders))))
 
@@ -135,7 +151,10 @@ async def resolve_backend_names(client, params):
                 return candidate
         raise PipelineError(f"ComfyUI no ofrece este archivo en {folder}: {value}")
 
-    return replace(params,
+    control = params.pose_control
+    if control and params.mode == "txt2img":
+        control = {**control, "model_patch": exact_name(control["model_patch"], "model_patches")}
+    return replace(params, pose_control=control,
                    model=("checkpoints::" + exact_name(params.model.removeprefix("checkpoints::"), model_folder)
                           if checkpoint else exact_name(params.model, model_folder)),
                    text_encoder=exact_name(params.text_encoder, "text_encoders"),
@@ -178,8 +197,16 @@ async def generate(client, params, on_progress=None, master_bytes=None, mask_byt
                 "mode": params.mode, "backend_run_id": run_id}
     crop = None
     effective = params
-    image_name = mask_name = ""
+    image_name = mask_name = pose_image_name = ""
+    metadata["pose_control_applied"] = bool(params.pose_control and params.mode == "txt2img")
+    if params.pose_control and params.mode == "txt2img":
+        pose_data = pose_control.render_map(params.pose_control, params.width, params.height)
+        pose_image_name = await client.upload_image(pose_data, "pose.png", subfolder=namespace,
+                                                   on_artifact=record_artifact)
+        metadata["pose_map_sha256"] = hashlib.sha256(pose_data).hexdigest()
     if params.mode == "expression":
+        if params.pose_control:
+            metadata["pose_control_note"] = "La edición facial conserva la pose del maestro mediante composición."
         if not master_bytes or not mask_bytes:
             raise ValueError("Selecciona un maestro y dibuja una máscara facial")
         crop = expressions.prepare(master_bytes, mask_bytes, params.crop_padding, params.feather)
@@ -197,7 +224,7 @@ async def generate(client, params, on_progress=None, master_bytes=None, mask_byt
         metadata.update(master_sha256=hashlib.sha256(master_bytes).hexdigest(),
                         master_seed=params.master_seed, edit_seed=params.seed,
                         input_mask_sha256=hashlib.sha256(mask_bytes).hexdigest())
-    workflow = build_workflow(effective, image_name, mask_name)
+    workflow = build_workflow(effective, image_name, mask_name, pose_image_name)
     # Only the output node changes for identical seeds: model/sampler caches
     # remain usable, while SaveImage never points to a previous deleted file.
     workflow["9"]["inputs"]["filename_prefix"] = f"{namespace}/render"

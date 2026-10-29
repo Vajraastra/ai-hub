@@ -51,6 +51,7 @@ from ideogram_routes import ideogram_router
 from faceswap_routes import faceswap_router
 from minimax_h3_routes import minimax_h3_router
 from anima_studio_routes import anima_studio_router
+from anima_pose_routes import anima_pose_router
 from anima_studio_routes import _sessions as _anima_sessions, _tasks as _anima_tasks
 
 # ── WebSocket clients ───────────────────────────────────────────────────────
@@ -164,6 +165,7 @@ api.include_router(ideogram_router)
 api.include_router(faceswap_router)
 api.include_router(minimax_h3_router)
 api.include_router(anima_studio_router)
+api.include_router(anima_pose_router)
 
 
 async def close_managed_backends():

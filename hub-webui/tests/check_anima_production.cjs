@@ -18,9 +18,9 @@ test('English and Spanish project categories choose the same tools without mutat
 });
 
 test('backgrounds and objects omit character tools and facial mode', () => {
-  for (const category of ['fondos', 'objects']) {
+  for (const [category,kind] of [['fondos','background'], ['objects','item']]) {
     const result = profile(category);
-    assert.deepEqual(result.kinds, ['scene']);
+    assert.deepEqual(result.kinds, [kind,'scene']);
     assert.equal(result.expression, false);
   }
   assert.equal(profile('characters').expression, true);

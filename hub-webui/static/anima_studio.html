@@ -5,11 +5,16 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Taller Anima · AI Hub</title>
   <link rel="stylesheet" href="/static/anima_studio.css">
+  <link rel="stylesheet" href="/static/anima_style_browser.css">
   <link rel="stylesheet" href="/static/tag_autocomplete.css">
   <script src="/static/tag_autocomplete.js" defer></script>
   <script src="/static/anima_prompt_guide.js" defer></script>
   <script src="/static/anima_tags.js" defer></script>
   <script src="/static/anima_production.js" defer></script>
+  <script src="/static/anima_pieces.js" defer></script>
+  <script src="/static/anima_pose.js" defer></script>
+  <script src="/static/anima_style_browser.js" defer></script>
+  <script src="/static/anima_workspace.js" defer></script>
   <script src="/static/anima_studio.js" defer></script>
 </head>
 <body>
@@ -20,16 +25,16 @@
     <span id="backend-status" class="status-pill">Iniciando ComfyUI…</span>
   </header>
   <nav class="tabs" aria-label="Etapas del taller">
-    <button class="tab active" data-tab="styles" aria-selected="true"><span>01</span> Estilos</button>
-    <button class="tab" data-tab="production" aria-selected="false"><span>02</span> Producción</button>
-    <button class="tab" data-tab="library" aria-selected="false"><span>03</span> Biblioteca y revisión</button>
+    <button class="tab active" data-tab="production" aria-selected="true">Taller</button>
+    <button class="tab" data-tab="styles" aria-selected="false">Estilos</button>
+    <button class="tab" data-tab="library" aria-selected="false">Biblioteca y revisión</button>
     <button id="refresh" class="subtle nav-refresh">Actualizar</button>
   </nav>
   <section id="backend-session" class="session-panel" role="status" aria-live="polite"><div><strong id="backend-session-title">Iniciando ComfyUI…</strong><p id="backend-session-message">El taller prepara el backend automáticamente. Puedes organizar tus estilos y piezas mientras inicia.</p></div><button id="retry-backend" class="secondary hidden">Reintentar</button></section>
   <div id="notice" class="notice hidden" role="status" aria-live="polite"></div>
   <div id="job-status" class="job hidden" role="status" aria-live="polite"><div><strong id="job-title">Generando</strong><span id="job-phase"></span><button id="interrupt-job" class="subtle">Cancelar generación</button></div><progress id="job-progress" max="100" value="0"></progress></div>
   <main>
-    <section id="tab-styles" class="page active" aria-label="Calibración de estilos">
+    <section id="tab-styles" class="page" aria-label="Calibración de estilos">
       <div class="page-heading"><div><p class="eyebrow">PRIMERO, ENCUENTRA EL ACABADO</p><h2>Calibra una vez. Reutiliza el estilo.</h2><p>Compara modelos y LoRAs con la misma seed. Guarda la configuración elegida para este proyecto.</p></div><span id="style-count" class="muted"></span></div>
       <div class="work-grid">
         <div class="panel control-panel">
@@ -54,30 +59,51 @@
         <div class="panel comparison-panel"><div class="section-title"><div><h3>Estilos del proyecto</h3><p class="hint">Cada estilo conserva su modelo, LoRAs y ajustes. Selecciona uno para continuar calibrándolo.</p></div></div><div id="style-shelf" class="style-shelf"></div><div class="section-title"><div><h3>Muestras de calibración</h3><p class="hint">Marca las imágenes que representen el estilo. Puedes abrirlas para comparar a tamaño completo.</p></div></div><div id="cal-gallery" class="gallery comparison"></div></div>
       </div>
     </section>
-    <section id="tab-production" class="page" aria-label="Producción de recursos">
-      <div class="page-heading"><div><p class="eyebrow">ELIGE QUÉ VAS A CREAR</p><h2 id="production-title">¿Qué quieres generar?</h2><p id="production-description">Cada recurso tiene su propio espacio y las herramientas que necesita.</p></div><button id="change-production" class="secondary hidden">Cambiar recurso</button></div>
-      <div id="production-menu" class="production-menu" aria-label="Tipo de recurso"></div>
-      <div id="production-workspace" class="work-grid hidden">
-        <div class="panel control-panel">
-          <label>Estilo<select id="prod-style"><option value="">Selecciona un estilo guardado</option></select></label>
-          <div class="field-grid two"><label>Receta guardada<select id="recipe-select"><option value="">Nueva combinación</option></select></label><label>Formato<select id="format-select"></select></label></div><button id="delete-recipe" class="text-button danger" disabled>Borrar receta seleccionada</button><p id="recipe-revision-note" class="hint hidden"></p>
-          <div class="section-title small"><h3>Piezas del recurso</h3><button class="text-button" id="open-piece-form">+ Crear pieza</button></div><div id="piece-pickers" class="field-grid two"></div>
-          <label>Instrucciones de esta toma<textarea id="prod-prompt" data-tag-autocomplete aria-describedby="anima-tags-help" rows="3" placeholder="Cambios o detalles para esta imagen…"></textarea></label><label>Negativo adicional<textarea id="prod-negative" data-tag-autocomplete aria-describedby="anima-tags-help" rows="2"></textarea></label>
-          <label>Seed de la toma<input id="prod-seed" type="text" inputmode="numeric" value="42" spellcheck="false"></label><select id="category-select" hidden aria-hidden="true" tabindex="-1"></select>
-          <div class="button-row"><label class="check grow"><input id="seed-lock" type="checkbox" checked> Mantener seed</label><button id="new-seed" class="text-button">Nueva variación</button></div>
-          <details class="advanced"><summary>Guardar esta combinación como receta</summary><label>Nombre<input id="recipe-name" placeholder="Ej. Saludo de bienvenida"></label><button id="save-recipe" class="secondary wide">Guardar receta</button></details>
-          <div class="hidden" aria-hidden="true"><input type="radio" name="mode" value="txt2img" checked><input type="radio" name="mode" value="expression"></div>
+    <section id="tab-production" class="page active" aria-label="Taller de elementos">
+      <div class="page-heading workshop-heading"><div><p class="eyebrow">TU ESPACIO DE CREACIÓN</p><h2>De tus elementos a una imagen</h2><p>Crea diseños reutilizables, elígelos en tu inventario y combínalos.</p></div></div>
+      <section id="element-creator" class="panel flow-stage" aria-labelledby="element-creator-title">
+        <div class="stage-heading"><span class="stage-step" aria-hidden="true">1</span><div><h3 id="element-creator-title">Crea tus elementos</h3><p>¿Qué quieres diseñar ahora?</p></div></div>
+        <div id="element-type-cards" class="element-type-grid" aria-label="Tipo de elemento para crear"></div>
+        <p id="element-create-empty-message" class="hint creator-empty-message">Empieza con un personaje, un outfit o cualquier otro elemento. Su prueba aparecerá en tu inventario.</p>
+        <section id="element-tests" class="element-tests hidden" aria-labelledby="element-tests-title">
+          <div class="section-title"><div><h3 id="element-tests-title">Elige la imagen de tu elemento</h3><p class="hint">Genera pruebas y guarda la imagen que identificará este diseño en tu inventario.</p></div><button id="close-element-tests" class="subtle" type="button">Cerrar pruebas</button></div>
+          <div id="element-test-gallery" class="gallery"></div>
+        </section>
+      </section>
+      <section id="element-inventory" class="panel flow-stage" aria-labelledby="element-inventory-title">
+        <div class="stage-heading"><span class="stage-step" aria-hidden="true">2</span><div><h3 id="element-inventory-title">Elige desde tu inventario</h3><p>Añade los elementos que formarán tu próxima imagen.</p></div><span id="inventory-count" class="muted inventory-count" role="status" aria-live="polite"></span></div>
+        <div id="inventory-kind-tabs" class="inventory-kind-tabs" aria-label="Filtrar elementos por tipo"></div>
+        <div class="inventory-toolbar"><label class="inventory-search-label"><span class="sr-only">Buscar elementos</span><input id="inventory-search" type="search" placeholder="Buscar en tu inventario…"></label><label class="check inventory-favorite-filter"><input id="inventory-favorites" type="checkbox"> Favoritos</label></div>
+        <div id="inventory-grid" class="inventory-grid"></div>
+        <div class="inventory-more-row"><button id="inventory-more" class="subtle hidden" type="button">Mostrar más elementos</button></div>
+      </section>
+      <section id="composition-targets" class="panel composition-targets" aria-labelledby="composition-targets-title">
+        <div class="section-title"><div><h3 id="composition-targets-title">¿Qué vas a componer?</h3><p class="hint">El tipo de imagen determina los elementos que puedes combinar.</p></div><button id="change-production" class="subtle hidden" type="button">Cambiar tipo de imagen</button></div>
+        <div id="production-menu" class="production-menu" aria-label="Tipo de imagen final"></div>
+      </section>
+      <div id="production-workspace" class="composition-workspace hidden">
+        <section class="panel flow-stage composition-panel" aria-labelledby="production-title">
+          <div class="stage-heading"><span class="stage-step" aria-hidden="true">3</span><div><h3 id="production-title">Compón tu imagen</h3><p id="production-description">Revisa los elementos seleccionados y genera tu combinación.</p></div></div>
+          <div id="composition-source" class="composition-source hidden"><strong>Composición recuperada</strong><p id="composition-source-note" class="hint"></p><button id="release-composition" class="text-button" type="button">Editar como nueva composición</button></div>
+          <p id="composition-empty-message" class="composition-empty-message">Selecciona elementos del inventario para empezar tu composición.</p>
+          <div id="composition-slots" class="composition-slots" aria-label="Elementos de esta composición"></div>
+          <div class="composition-controls"><label class="style-field">Acabado de la imagen<select id="prod-style"><option value="">Selecciona un estilo guardado</option></select></label><label>Formato de salida<select id="format-select"></select></label></div>
+          <div class="hidden" aria-hidden="true"><button id="open-piece-form" type="button" tabindex="-1">Crear otro elemento</button><div id="piece-pickers" class="field-grid two"></div><select id="category-select" tabindex="-1"></select><input type="radio" name="mode" value="txt2img" checked><input type="radio" name="mode" value="expression"></div>
+          <details id="production-pose-tools" class="advanced"><summary>Ajustar el control de pose</summary><div id="pose-control-editor"></div></details>
           <div id="expression-controls" class="hidden">
             <p class="hint">Elige un maestro y pinta la zona facial que puede cambiar. El resto se conserva sobre el original.</p>
             <label>Maestro del proyecto<select id="master-select"><option value="">Selecciona una imagen o carga un PNG</option></select></label><button id="clear-master" class="text-button" type="button">Quitar maestro y máscara</button><label class="file-field">Cargar maestro PNG<input id="master-upload" type="file" accept="image/png"></label>
-            <div class="field-grid two"><label>Nombre para organizar la expresión<input id="expression-name" placeholder="Ej. Alegre"></label><label>Intensidad de edición<input id="denoise" type="number" min="0.05" max="1" step="0.05" value="0.5"></label></div><p class="hint">El nombre organiza el archivo. Para cambiar la cara, selecciona una expresión guardada o descríbela en las instrucciones de esta toma.</p>
+            <div class="field-grid two"><label>Nombre para organizar la expresión<input id="expression-name" placeholder="Ej. Alegre"></label><label>Intensidad de edición<input id="denoise" type="number" min="0.05" max="1" step="0.05" value="0.5"></label></div><p class="hint">El nombre organiza el archivo. Elige una expresión del inventario o descríbela en Ajustes de la toma.</p>
             <div class="mask-toolbar"><label>Pincel <input id="brush-size" type="range" min="5" max="180" value="45"></label><label class="check"><input id="mask-erase" type="checkbox"> Borrar</label><button id="clear-mask" class="subtle">Limpiar</button></div>
             <div id="mask-stage" class="mask-stage"><canvas id="master-canvas" width="512" height="512"></canvas><canvas id="mask-canvas" width="512" height="512" aria-label="Máscara facial. Arrastra para pintar la región editable."></canvas><span id="mask-placeholder">Carga un maestro para pintar la máscara</span></div><p id="mask-info" class="hint">La máscara se guarda con la generación.</p>
           </div>
-          <div class="button-row"><button id="preview-prompt" class="subtle grow">Ver prompt ensamblado</button><button id="generate-production" class="primary grow generate-action" disabled>Generar recurso</button></div><p id="capability-note" class="hint"></p>
-          <details id="assembled-preview" class="advanced"><summary>Prompt final y configuración</summary><pre id="composed-output">Aquí aparecerá la combinación resuelta.</pre></details>
-        </div>
-        <div class="panel"><div class="section-title"><div><h3>Resultados de producción</h3><p id="production-results-help" class="hint">Acepta una imagen para organizarla.</p></div></div><div id="production-gallery" class="gallery"></div></div>
+          <details class="advanced composition-take-settings"><summary>Ajustes de la toma</summary><label>Encuadre y detalles adicionales<textarea id="prod-prompt" data-tag-autocomplete aria-describedby="anima-tags-help" rows="3" placeholder="Opcional: encuadre, composición o detalles de esta toma…"></textarea></label><label>Negativo adicional<textarea id="prod-negative" data-tag-autocomplete aria-describedby="anima-tags-help" rows="2"></textarea></label><label>Seed de la toma<input id="prod-seed" type="text" inputmode="numeric" value="42" spellcheck="false"></label><div class="button-row"><label class="check grow"><input id="seed-lock" type="checkbox" checked> Mantener seed</label><button id="new-seed" class="text-button" type="button">Nueva variación</button></div></details>
+          <details class="advanced composition-recipes"><summary>Guardar o recuperar una combinación</summary><label>Receta guardada<select id="recipe-select"><option value="">Nueva combinación</option></select></label><button id="delete-recipe" class="text-button danger" disabled>Borrar receta seleccionada</button><label>Nombre de la combinación<input id="recipe-name" placeholder="Ej. Saludo de bienvenida"></label><button id="save-recipe" class="secondary wide">Guardar receta</button></details>
+          <p id="recipe-revision-note" class="hint hidden"></p>
+          <div class="composition-generate"><p id="composition-summary" class="composition-summary" role="status" aria-live="polite">Tu combinación aparecerá aquí.</p><div class="button-row"><button id="preview-prompt" class="subtle">Revisar combinación</button><button id="generate-production" class="primary grow generate-action" disabled>Generar imagen</button></div></div><p id="capability-note" class="hint"></p>
+          <details id="assembled-preview" class="advanced"><summary>Prompt ensamblado y configuración</summary><pre id="composed-output">Aquí aparecerá la combinación resuelta.</pre></details>
+        </section>
+        <section class="panel composition-results" aria-labelledby="production-results-title"><div class="section-title"><div><h3 id="production-results-title">Tus resultados</h3><p id="production-results-help" class="hint">Elige una imagen para conservarla o seguir creando variantes.</p></div></div><div id="production-gallery" class="gallery"></div></section>
       </div>
     </section>
     <section id="tab-library" class="page" aria-label="Biblioteca y revisión">
@@ -91,7 +117,22 @@
     </section>
   </main>
   <dialog id="project-dialog"><form id="project-form"><div class="section-title"><h2 id="project-dialog-title">Nuevo proyecto</h2><button type="button" class="subtle" data-close="project-dialog" aria-label="Cerrar">✕</button></div><input id="project-id" type="hidden"><label>Nombre del proyecto<input id="project-name" required maxlength="120"></label><label>Categorías, separadas por comas<input id="project-categories" value="personajes, fondos, objetos, cartas" required></label><label>Retención de rechazados (días)<input id="project-retention" type="number" min="0" max="3650" value="30"></label><p class="hint">La limpieza se realiza desde revisión. No se borran imágenes por el paso del tiempo.</p><div class="section-title small"><h3>Formatos del proyecto</h3><button type="button" id="add-format" class="text-button">+ Formato</button></div><div id="format-editor"></div><details class="advanced"><summary>Nombres de los archivos</summary><label>Plantilla<input id="project-naming" value="{project}_{category}_{character}_{outfit}_{expression}_{revision}"></label><p class="hint">Campos: project, category, character, outfit, expression, revision. El identificador se añade para evitar colisiones.</p></details><div class="button-row"><button type="submit" class="primary grow">Guardar proyecto</button><button type="button" id="export-project" class="subtle">Exportar perfil</button><button type="button" id="delete-project" class="danger">Borrar proyecto</button><label class="file-button subtle">Importar perfil<input id="import-project" type="file" accept="application/json,.json"></label></div></form></dialog>
-  <dialog id="piece-dialog"><form id="piece-form"><div class="section-title"><h2 id="piece-dialog-title">Nueva pieza</h2><button type="button" class="subtle" data-close="piece-dialog" aria-label="Cerrar">✕</button></div><input id="piece-id" type="hidden"><label>Tipo<select id="piece-kind"></select></label><label>Nombre<input id="piece-name" required maxlength="120" placeholder="Ej. Outfit camarera"></label><label>Prompt de esta pieza<textarea id="piece-prompt" data-tag-autocomplete aria-describedby="anima-tags-help" rows="6" required placeholder="Describe sólo lo que corresponde a esta pieza."></textarea></label><label>Negativo<textarea id="piece-negative" data-tag-autocomplete aria-describedby="anima-tags-help" rows="3"></textarea></label><label>Etiquetas, separadas por comas<input id="piece-tags" placeholder="Ej. uniforme, interior"></label><label class="check"><input id="piece-shared" type="checkbox"> Disponible en otros proyectos</label><p class="hint">El personaje conserva identidad y proporciones. El outfit describe únicamente prendas y accesorios.</p><button type="submit" class="primary wide">Guardar pieza</button></form></dialog>
+  <dialog id="piece-dialog" class="piece-editor-dialog"><form id="piece-form">
+    <div class="section-title"><h2 id="piece-dialog-title">Nuevo maestro</h2><button type="button" class="subtle" data-close="piece-dialog" aria-label="Cerrar">✕</button></div>
+    <input id="piece-id" type="hidden"><input id="piece-sample-id" type="hidden">
+    <div class="field-grid two"><label>Tipo<select id="piece-kind"></select></label><label>Derivar de un maestro<select id="piece-master"><option value="">Maestro independiente</option></select></label></div>
+    <p id="piece-editor-help" class="hint"></p><p id="piece-master-note" class="hint hidden"></p>
+    <div id="piece-sample" class="piece-sample hidden"><img id="piece-sample-preview" alt="Prueba elegida para este maestro"><p id="piece-sample-note" class="hint"></p><button id="piece-clear-sample" class="text-button" type="button">Desvincular imagen de prueba</button></div>
+    <label>Nombre<input id="piece-name" required maxlength="120" placeholder="Nombre del diseño o variante"></label>
+    <label>Descripción del diseño<textarea id="piece-prompt" data-tag-autocomplete aria-describedby="anima-tags-help" rows="5" required></textarea></label>
+    <label>Evitar en el diseño<textarea id="piece-negative" data-tag-autocomplete aria-describedby="anima-tags-help" rows="2"></textarea></label>
+    <label>Seed de las pruebas<input id="piece-seed" type="text" inputmode="numeric" spellcheck="false" placeholder="Opcional; hereda la del maestro"></label>
+    <div id="piece-character-tools" class="hidden"><div class="field-grid two"><label>LoRA opcional del personaje<select id="piece-lora"><option value="">Sin LoRA propio</option></select></label><label>Peso<input id="piece-lora-strength" type="number" min="-3" max="3" step="0.05" value="1"></label></div><p class="hint">Añade sus activadores al prompt de identidad. Este LoRA acompaña al personaje; el acabado sigue en Estilos.</p></div>
+    <div id="piece-pose-tools" class="hidden"><div id="piece-pose-editor"></div></div>
+    <label>Etiquetas, separadas por comas<input id="piece-tags" placeholder="Ej. uniforme, interior"></label><label class="check"><input id="piece-shared" type="checkbox"> Disponible en otros proyectos</label>
+    <section class="piece-test-panel" aria-labelledby="piece-test-title"><div class="section-title"><h3 id="piece-test-title">Así se verá tu elemento</h3></div><div class="field-grid two"><label class="style-field">Estilo de la prueba<select id="piece-test-style"></select></label><label>Formato<select id="piece-test-format"></select></label></div><label class="check"><input id="piece-reuse-settings" type="checkbox"> Conservar ajustes del maestro</label><p id="piece-settings-note" class="hint"></p><p class="hint">Genera una prueba para reconocer este diseño en el inventario. El outfit se presenta sobre un maniquí neutro.</p><button id="save-test-piece" type="submit" class="primary wide generate-action">Guardar y generar prueba</button></section>
+    <button id="save-piece-only" type="submit" class="subtle wide">Guardar sin generar</button>
+  </form></dialog>
   <dialog id="catalog-dialog" class="catalog-dialog" aria-labelledby="catalog-title"><div class="section-title"><div><h2 id="catalog-title">Modelos Anima</h2><p id="catalog-description" class="hint">Escoge una tarjeta para usarla en este estilo.</p></div><button type="button" class="subtle" data-close="catalog-dialog" aria-label="Cerrar galería">✕</button></div><div id="catalog-folders" class="catalog-folder-tabs hidden" role="tablist" aria-label="Subcarpetas de LoRAs"></div><div class="catalog-filters"><label class="grow">Buscar por nombre, archivo o etiqueta<input id="catalog-search" type="search" placeholder="Ej. WAI, acuarela, personaje…" autocomplete="off"></label><label class="check"><input id="catalog-images-only" type="checkbox"> Con miniatura</label></div><div class="catalog-summary"><span id="catalog-results" role="status" aria-live="polite"></span><span>Haz clic en una tarjeta para elegir</span></div><div id="catalog-grid" class="catalog-grid"></div><div class="catalog-more-row"><button id="catalog-more" type="button" class="subtle hidden">Mostrar más</button></div></dialog>
   <dialog id="image-dialog" class="image-dialog"><div class="image-dialog-bar"><span id="image-dialog-title"></span><button class="subtle" data-close="image-dialog" aria-label="Cerrar">✕</button></div><img id="image-dialog-image" alt="Imagen generada a tamaño completo"></dialog>
 </body>

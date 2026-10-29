@@ -10,12 +10,12 @@
     },
     background: {
       label: 'Fondos', description: 'Construye el entorno, la composición y la iluminación.',
-      kinds: ['scene'], expression: false,
+      kinds: ['background', 'scene'], expression: false,
       promptPlaceholder: 'Describe el lugar, la perspectiva, la iluminación y la atmósfera…',
     },
     item: {
       label: 'Objetos', description: 'Describe el objeto y el entorno en el que quieres mostrarlo.',
-      kinds: ['scene'], expression: false,
+      kinds: ['item', 'scene'], expression: false,
       promptPlaceholder: 'Describe el objeto, sus materiales, sus detalles y cómo se presenta…',
     },
     card: {
@@ -25,7 +25,7 @@
     },
     custom: {
       label: 'Otros recursos', description: 'Combina las piezas que necesite este recurso.',
-      kinds: ALL_KINDS, expression: false,
+      kinds: [...ALL_KINDS, 'background', 'item'], expression: false,
       promptPlaceholder: 'Describe el recurso que quieres generar…',
     },
   };

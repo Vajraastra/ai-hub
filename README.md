@@ -30,7 +30,7 @@ tested target. `run.sh` remains as a best-effort, untested fallback for Linux.
 | **Ideogram 4** | Text-heavy image generation via JSON + bounding boxes (sharp typography, controlled layout) |
 | **Face Swap** | Face replacement with real pose (LivePortrait + ReActor/HyperSwap) |
 | **MiniMax H3** | Local video generation with native audio: single clips or chained segments |
-| **Anima Studio (PoC)** | Game art workshop: project styles, reusable prompt pieces and facial expression edits |
+| **Anima Studio (PoC)** | Visual game art workshop: reusable masters and variants, styles, composition and facial expression edits |
 
 Retired modules (kept out of the active tree, history in `git log`): FaceFusion, dataset-refiner,
 TagGUI, LoRA Merger, Forge Lab — the last two were superseded by Forge Fusion.
@@ -66,8 +66,9 @@ or shared backends remain available.
 
 Models and LoRAs are selected through searchable thumbnail galleries. Compatibility comes
 from model headers, including Anima files stored in `checkpoints`; previews and display names
-come from the local library. See [the workshop guide](apps/anima_studio/README.md) for styles,
-reusable prompt pieces, facial expressions and offline testing.
+come from the local library. The workshop opens with element creation, a visual inventory and
+composition from selected designs. See [the workshop guide](apps/anima_studio/README.md) for
+masters, variants, styles, facial expressions and offline testing.
 
 ## Architecture
 
