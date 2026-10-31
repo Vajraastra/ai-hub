@@ -25,8 +25,9 @@ from anima_studio.core.catalog import Catalog
 from anima_studio.core.catalog_assets import CatalogAssets
 from anima_studio.core.comfy_client import ComfyClient
 from anima_studio.core.library import Library, LibraryConflict
+from anima_studio.core.prompt_library import PromptLibrary, PromptLibraryError, PromptNotFound, PromptConflict
 from anima_studio.core.storage import StorageLifecycle
-from anima_studio.core import pipeline, composition, pose_control
+from anima_studio.core import pipeline, composition, pose_control, pieces as piece_templates
 
 anima_studio_router = APIRouter(prefix="/api/anima-studio", tags=["anima-studio"])
 _library = Library(Path(os.environ.get("ANIMA_STUDIO_DATA", _ROOT / "apps/anima_studio/data")))
@@ -198,6 +199,40 @@ async def sampling_options():
         return {"samplers": ["er_sde", "euler", "euler_ancestral"], "schedulers": ["simple", "normal"]}
 
 
+def _prompts() -> PromptLibrary:
+    # Resolve the current data root for isolated sessions/tests. Store instances
+    # share a lock per root, independently of ComfyUI admission and project data.
+    return PromptLibrary(_library.root)
+
+
+def _prompt_call(method: str, *args):
+    try:
+        return getattr(_prompts(), method)(*args)
+    except PromptConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except PromptNotFound as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except PromptLibraryError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(500, "No se pudo acceder a la biblioteca de prompts. Revisa la carpeta de datos.") from exc
+
+
+@anima_studio_router.get("/prompts")
+def list_prompts():
+    return _prompt_call("list")
+
+
+@anima_studio_router.post("/prompts")
+def save_prompt(payload: dict = Body(...)):
+    return _prompt_call("save", payload)
+
+
+@anima_studio_router.delete("/prompts/{prompt_id}")
+def delete_prompt(prompt_id: str, expected_revision: int = Query(..., ge=1)):
+    return _prompt_call("delete", prompt_id, expected_revision)
+
+
 def _save(kind: str, payload: dict):
     if kind == "pieces" and payload.get("kind") not in _PIECE_KINDS:
         raise HTTPException(400, "Tipo de pieza desconocido.")
@@ -271,6 +306,7 @@ async def bootstrap():
         cleanup = {"cleanup_pending": True, "deferred": True, "errors": []}
     return {**{kind: _library.list(kind) for kind in _KINDS},
             "generations": _library.list_generations(), "catalog": models,
+            "piece_test_templates": copy.deepcopy(composition.TEST_TEMPLATES),
             "catalog_error": catalog_error, "status": await status(), "storage_cleanup": cleanup}
 
 
@@ -501,6 +537,34 @@ def _expression_source(payload):
     return result
 
 
+def _draft_piece(piece_test, project_id):
+    """Validate a test snapshot without creating or revising an inventory piece."""
+    incoming = piece_test["draft"]
+    allowed = {"kind", "name", "prompt", "negative", "tags", "seed", "loras", "master_id",
+               "master_revision", "sample_asset_id", "pose_control", "definition", "project_id"}
+    if not isinstance(incoming, dict) or set(incoming) - allowed:
+        raise ValueError("El borrador contiene campos no válidos; sus ajustes se recuperan desde una prueba real.")
+    if incoming.get("kind", piece_test["kind"]) != piece_test["kind"]:
+        raise ValueError("El borrador y la prueba deben ser del mismo tipo.")
+    if incoming.get("project_id") not in (None, "", project_id):
+        raise ValueError("El borrador pertenece a otro proyecto.")
+    value = copy.deepcopy(incoming)
+    name = value.get("name", "")
+    if not isinstance(name, str):
+        raise ValueError("El nombre del borrador debe ser texto.")
+    labels = {"character": "personaje", "outfit": "outfit", "pose": "pose", "expression": "expresión",
+              "background": "fondo", "item": "objeto", "personality": "personalidad", "scene": "escenario"}
+    value.update(id=f"draft-{uuid.uuid4().hex}", kind=piece_test["kind"], project_id=project_id,
+                 name=name.strip() or f"Prueba de {labels[piece_test['kind']]}")
+    # The same materializer validates LoRAs, pose, exact seeds and pinned master /
+    # sample references used by normal saves. Client-supplied replay snapshots
+    # never enter this path; only the library can resolve them.
+    value = piece_templates.materialize_piece(_library, value, value, {})
+    _library._validate("pieces", value)
+    value.update(revision=0, draft=True)
+    return value
+
+
 @anima_studio_router.post("/compose")
 async def compose(payload: dict = Body(...)):
     payload = _expression_source(payload)
@@ -509,13 +573,71 @@ async def compose(payload: dict = Body(...)):
     if any(not isinstance(payload.get(key, ""), str) for key in
            ("prompt", "negative", "expression_prompt", "expression_negative")):
         raise HTTPException(400, "Los bloques de prompt y negativo deben ser texto.")
+    if "negative_override" in payload and not isinstance(payload["negative_override"], str):
+        raise HTTPException(400, "El negativo de la prueba debe ser texto.")
     project_id = payload.get("project_id", "")
     project = _read("projects", project_id)
+    piece_test = payload.get("piece_test")
+    if "integration" in payload and not isinstance(payload["integration"], bool):
+        raise HTTPException(400, "El modo del integrador debe ser verdadero o falso.")
+    integration = payload.get("integration", False)
+    if "integration_framing" in payload:
+        framing = payload["integration_framing"]
+        if not integration or not isinstance(framing, str) or framing not in composition.INTEGRATION_FRAMING:
+            raise HTTPException(400, "Elige un encuadre del integrador: cuerpo entero, medio cuerpo o retrato.")
+    if integration and piece_test is not None:
+        raise HTTPException(400, "Elige una prueba individual o una composición del integrador.")
+    if integration and not payload.get("source_asset_id"):
+        if "negative_override" in payload:
+            raise HTTPException(400, "El integrador conserva los negativos del estilo y las piezas. Usa el negativo adicional de la toma.")
+        if not isinstance(payload.get("style_id"), str) or not payload["style_id"]:
+            raise HTTPException(400, "Elige el estilo con el que quieres integrar tus piezas.")
+        if type(payload.get("style_revision")) is not int or payload["style_revision"] < 1:
+            raise HTTPException(400, "Selecciona una revisión concreta del estilo del integrador.")
+        if set(payload.get("config", {})) - {"seed", "width", "height", "pose_control"}:
+            raise HTTPException(400, "El modelo, los LoRAs de acabado y el sampling pertenecen al estilo. Cámbialos en Estilos.")
+    source_piece = None
+    if piece_test is not None:
+        if not isinstance(piece_test, dict) or piece_test.get("kind") not in composition.TEST_TEMPLATES:
+            raise HTTPException(400, "Elige el tipo de pieza que quieres probar.")
+        if any(key in piece_test and not isinstance(piece_test[key], str)
+               for key in ("context_prompt", "context_negative")):
+            raise HTTPException(400, "El contexto de la prueba y su negativo deben ser texto.")
+        if "reuse_master_settings" in piece_test and not isinstance(piece_test["reuse_master_settings"], bool):
+            raise HTTPException(400, "La recuperación de ajustes debe ser verdadera o falsa.")
+        if "specialized" in piece_test and not isinstance(piece_test["specialized"], bool):
+            raise HTTPException(400, "El modo del editor debe ser verdadero o falso.")
+        if "source_piece_id" in piece_test or "source_piece_revision" in piece_test:
+            source_id, source_revision = piece_test.get("source_piece_id"), piece_test.get("source_piece_revision")
+            if not isinstance(source_id, str) or not source_id or type(source_revision) is not int or source_revision < 1:
+                raise HTTPException(400, "Selecciona una pieza de origen y su revisión concreta.")
+            source_piece = _read("pieces", source_id, source_revision)
+            _project_access(source_piece, project_id)
+            if source_piece.get("kind") != piece_test["kind"]:
+                raise HTTPException(400, "La pieza de origen y el borrador deben ser del mismo tipo.")
+        if piece_test.get("specialized"):
+            if not isinstance(payload.get("style_id"), str) or not payload["style_id"]:
+                raise HTTPException(400, "Elige un estilo calibrado para probar este diseño.")
+            if type(payload.get("style_revision")) is not int or payload["style_revision"] < 1:
+                raise HTTPException(400, "Selecciona una revisión concreta del estilo calibrado.")
+            if set(payload.get("config", {})) - {"seed", "width", "height", "pose_control"}:
+                raise HTTPException(400, "El modelo, los LoRAs de acabado y el sampling pertenecen al estilo. Cámbialos en Estilos.")
+        token = piece_test.get("token")
+        if token is not None and (not isinstance(token, str) or not token or len(token) > 120
+                                  or any(ord(char) < 32 for char in token)):
+            raise HTTPException(400, "El identificador de la sesión de pruebas no es válido.")
+        if "draft" in piece_test and payload.get("source_asset_id"):
+            raise HTTPException(400, "Prueba el borrador separado de una composición fijada.")
     if payload.get("source_asset_id"):
         try:
             source = _library.get_generation(payload["source_asset_id"])
             _library.image_path(source["id"])
             _project_access(source, project_id)
+            if integration:
+                saved_style = source.get("snapshot", {}).get("style") or {}
+                if (payload.get("style_id") not in (None, "", saved_style.get("id"))
+                        or payload.get("style_revision") not in (None, saved_style.get("revision"))):
+                    raise ValueError("Libera la composición recuperada antes de elegir otro estilo.")
             expression = None
             if payload.get("expression_piece_id"):
                 expression = _read("pieces", payload["expression_piece_id"], payload.get("expression_piece_revision"))
@@ -524,7 +646,8 @@ async def compose(payload: dict = Body(...)):
                     raise ValueError("Selecciona una pieza de expresión.")
             result = composition.frozen(source, expression=expression,
                 expression_prompt=payload.get("expression_prompt"),
-                expression_negative=payload.get("expression_negative"))
+                expression_negative=payload.get("expression_negative"),
+                negative_override=payload.get("negative_override"))
             # Local edit controls do not alter the master's model, seed or prompt.
             if payload.get("mode") == "expression":
                 controls = payload.get("config", {})
@@ -541,13 +664,22 @@ async def compose(payload: dict = Body(...)):
         raise HTTPException(400, "Las piezas y sus revisiones no tienen un formato válido.")
     if len(ids) > 24:
         raise HTTPException(400, "Selecciona hasta 24 piezas por receta.")
-    piece_test = payload.get("piece_test")
-    if piece_test is not None:
-        if not isinstance(piece_test, dict) or piece_test.get("kind") not in composition.TEST_TEMPLATES:
-            raise HTTPException(400, "Elige el tipo de pieza que quieres probar.")
+    draft = None
+    if piece_test is not None and "draft" in piece_test:
+        if ids or revisions or piece_test.get("id"):
+            raise HTTPException(400, "Una prueba usa un borrador o una pieza guardada, no ambos.")
+        try:
+            draft = _draft_piece(piece_test, project_id)
+            if piece_test.get("specialized") and "seed" in payload.get("config", {}):
+                # A real sample provides trusted style provenance, while this
+                # new trial may deliberately choose a different variation.
+                draft["seed"] = piece_templates.seed_text(payload["config"]["seed"])
+        except (ValueError, OSError, KeyError, TypeError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+    elif piece_test is not None:
         if piece_test.get("id"):
             ids = [piece_test["id"]]
-    pieces = [_read("pieces", value, revisions.get(value)) for value in ids]
+    pieces = [draft] if draft is not None else [_read("pieces", value, revisions.get(value)) for value in ids]
     for piece in pieces:
         _project_access(piece, project_id)
     if piece_test is not None:
@@ -557,7 +689,15 @@ async def compose(payload: dict = Body(...)):
     if len({p["id"] for p in pieces}) != len(pieces) or len({p["kind"] for p in pieces}) != len(pieces):
         raise HTTPException(400, "Selecciona una sola pieza de cada tipo para la composición.")
     inherited_config = {}
-    if piece_test is not None and piece_test.get("reuse_master_settings", True):
+    if piece_test is not None and piece_test.get("specialized"):
+        for piece in pieces + ([source_piece] if source_piece is not None else []):
+            saved_style = piece.get("generation_snapshot", {}).get("snapshot", {}).get("style")
+            if (isinstance(saved_style, dict) and saved_style.get("id") == payload.get("style_id")
+                    and saved_style.get("revision") == payload.get("style_revision")):
+                _project_access(saved_style, project_id)
+                style = copy.deepcopy(saved_style)
+                break
+    if piece_test is not None and not piece_test.get("specialized") and piece_test.get("reuse_master_settings", True):
         replay = pieces[0].get("generation_snapshot", {})
         saved_style = replay.get("snapshot", {}).get("style")
         if isinstance(saved_style, dict) and saved_style.get("id") == payload.get("style_id"):
@@ -572,7 +712,7 @@ async def compose(payload: dict = Body(...)):
         _project_access(style, project_id)
     config = copy.deepcopy(style.get("config", {}) if style else {})
     config.update(inherited_config)
-    if "seed" not in payload.get("config", {}):
+    if not integration and "seed" not in payload.get("config", {}):
         character = next((p for p in pieces if p.get("kind") == "character" and p.get("seed")), None)
         tested = pieces[0] if piece_test and pieces[0].get("seed") else character
         if tested:
@@ -588,8 +728,14 @@ async def compose(payload: dict = Body(...)):
             raise HTTPException(400, "El formato no pertenece al proyecto.")
         config.update(width=fmt["width"], height=fmt["height"])
     try:
-        result = composition.assemble(project, style, pieces, config, str(payload.get("prompt", "")).strip(),
-                                      str(payload.get("negative", "")).strip(), piece_test=piece_test)
+        user_prompt = str(payload.get("prompt", "")).strip()
+        prompt = "\n".join(filter(None, (user_prompt, composition.INTEGRATION_FRAMING.get(payload.get("integration_framing"), ""))))
+        result = composition.assemble(project, style, pieces, config, prompt,
+                                      str(payload.get("negative", "")).strip(), piece_test=piece_test,
+                                      negative_override=payload.get("negative_override"))
+        if integration and "integration_framing" in payload:
+            result["composition"].update(integration_framing=payload["integration_framing"],
+                                         integration_user_prompt=payload.get("prompt", ""))
         if payload.get("format_id"):
             result["composition"].update(format_id=fmt["id"], format_snapshot=copy.deepcopy(fmt))
         return result
@@ -680,7 +826,12 @@ async def _generate(payload: dict):
     if category == "calibration":
         category = category_ids[0]
     if category not in category_ids:
-        raise HTTPException(400, "La categoría no pertenece al proyecto.")
+        if payload.get("piece_test") is not None:
+            # Tests are typed by piece_test, independently of the production
+            # categories a project happens to organize its history under.
+            category = category_ids[0]
+        else:
+            raise HTTPException(400, "La categoría no pertenece al proyecto.")
     if not await _comfy.health_check():
         raise HTTPException(503, "ComfyUI aún no está disponible. Espera al inicio o reintenta desde el taller.")
     master = mask = None

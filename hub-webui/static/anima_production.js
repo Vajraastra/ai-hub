@@ -1,7 +1,7 @@
 /* Resource-specific production choices. Category IDs remain owned by the project. */
 (function (root) {
   'use strict';
-  const ALL_KINDS = ['character', 'personality', 'outfit', 'pose', 'expression', 'scene'];
+  const ALL_KINDS = ['character', 'personality', 'outfit', 'pose', 'expression', 'background', 'item', 'scene'];
   const PROFILES = {
     character: {
       label: 'Personajes', description: 'Define la identidad, ropa, pose y expresión del personaje.',
@@ -25,7 +25,7 @@
     },
     custom: {
       label: 'Otros recursos', description: 'Combina las piezas que necesite este recurso.',
-      kinds: [...ALL_KINDS, 'background', 'item'], expression: false,
+      kinds: ALL_KINDS, expression: false,
       promptPlaceholder: 'Describe el recurso que quieres generar…',
     },
   };

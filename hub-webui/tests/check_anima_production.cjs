@@ -34,7 +34,9 @@ test('custom categories remain usable and profiles cannot be changed by callers'
   assert.equal(profile('iconos').id, 'custom');
   assert.equal(profile('iconos').expression, false);
   profile('characters').kinds.length = 0;
-  assert.equal(profile('personajes').kinds.length, 6);
+  assert.equal(profile('personajes').kinds.length, 8);
+  assert.ok(profile('personajes').kinds.includes('background'));
+  assert.ok(profile('personajes').kinds.includes('item'));
   assert.equal(profile(null).id, 'custom');
   assert.equal(profile('giftcards').id, 'custom');
 });

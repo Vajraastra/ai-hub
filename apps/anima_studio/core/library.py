@@ -796,7 +796,7 @@ class Library:
             return value == asset_id
         if isinstance(value, dict):
             return any(Library._contains_id(child, asset_id) for field, child in value.items()
-                       if field != "generation_snapshot")
+                       if field not in ("generation_snapshot", "trial_negative"))
         if isinstance(value, list):
             return any(Library._contains_id(child, asset_id) for child in value)
         return False

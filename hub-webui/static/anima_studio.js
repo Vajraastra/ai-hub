@@ -11,6 +11,9 @@
   const deleted = Object.fromEntries(['projects','styles','pieces','recipes','generations'].map(kind=>[kind,new Set()]));
   let storageRetryAt=0,storageCleanupBusy=false,storagePending=false;
   let productionPose=null,piecePose=null,pieceDraft=null;
+  let calibrationDraft=null,calibrationStyleEpoch=0,calibrationStyleSaving=false;
+  let projectCreating=false;
+  let pieceTrialStyle=null,pieceStyleSnapshot=null,pieceLoras=null,elementStylesBrowser=null,elementTrialToken='',elementTrialEpoch=0;
   const pieceProfiles=globalThis.AnimaPieces;
   const workspace=globalThis.AnimaWorkspace;
   let visualStyles=null;
@@ -61,6 +64,7 @@
   function forgetDeleted(kind,id) {
     deleted[kind].add(id);state[kind]=availableRecords(kind,state[kind]);
     if(kind==='generations'){
+      if(calibrationDraft?.record.id===id){calibrationDraft=null;calibrationStyleEpoch++;$('style-dialog').close();}
       state.sampleIds.delete(id);state.purgeIds.delete(id);
       state.styles=availableRecords('styles',state.styles);
       if(state.currentStyle)state.currentStyle={...state.currentStyle,sample_ids:(state.currentStyle.sample_ids||[]).filter(sample=>sample!==id)};
@@ -101,6 +105,7 @@
   function setTab(name) {
     document.querySelectorAll('.tab').forEach(tab => { const active=tab.dataset.tab===name; tab.classList.toggle('active',active); tab.setAttribute('aria-selected',String(active)); });
     document.querySelectorAll('.page').forEach(page => page.classList.toggle('active',page.id===`tab-${name}`));
+    if(name==='integrator'&&!state.productionCategory){const category=productionCategories().find(c=>AnimaProduction.profile(c).id==='character')||productionCategories()[0];if(category)chooseProduction(optionValue(category));}
   }
   function renderProjects() {
     selectOptions($('project-select'),state.projects,'Selecciona un proyecto',state.projectId);
@@ -136,8 +141,13 @@
     $('production-description').textContent=chosen?(state.productionMode==='expression'?'Elige un maestro, pinta la zona facial y describe la expresión.':p.description):'Cada recurso tiene su propio espacio y las herramientas que necesita.';
     $('prod-prompt').placeholder=p.promptPlaceholder;
     $('expression-controls').classList.toggle('hidden',state.productionMode!=='expression');
+    $('composition-empty-message').textContent=state.productionMode==='expression'?'Elige una imagen maestra y pinta la región facial que quieres editar.':'Describe tu imagen abajo o añade elementos del inventario. Puedes probar antes de guardar diseños.';
+    $('production-format-field').classList.toggle('hidden',state.productionMode==='expression');
+    $('integrator-framing-field').classList.toggle('hidden',!['character','card'].includes(p.id)||state.productionMode==='expression');
+    $('prod-negative-label').textContent=state.productionMode==='expression'?'Evitar en la expresión':'Evitar en esta toma (adicional)';
     $('production-pose-tools').classList.toggle('hidden',p.id!=='character'||state.productionMode==='expression');
     $('generate-production').textContent=state.productionMode==='expression'?'Generar expresión':'Generar imagen';
+    $('capability-note').textContent=state.productionMode==='expression'?'La edición se limita a la zona pintada; el resto de la imagen se conserva.':['character','item'].includes(p.id)?'La transparencia no se extrae automáticamente. Revisa el fondo antes de exportar.':'';
     $('production-results-help').textContent=p.expression?'Acepta una imagen para organizarla. Usa «Como maestro» para derivar expresiones.':'Acepta una imagen para organizarla o borra los resultados que no quieras conservar.';
     updateCompositionSource();
     renderVisualWorkspace();
@@ -153,18 +163,30 @@
       state.derivedConfig=null;
       $('piece-pickers').replaceChildren();$('recipe-select').value='';state.recipeStyleRevision=null;state.recipePieceRevisions={};state.recipeFormatSnapshot=null;
       for(const id of ['prod-prompt','prod-negative','recipe-name','expression-name'])$(id).value='';
+      $('integrator-framing').value='full-body';
       clearMaster();renderFormatOptions();
-      const preferred=AnimaProduction.preferredFormat(productionProfile(),currentProject()?.formats||[]);
-      if(preferred)$('format-select').value=preferred;
+      const preferred=AnimaProduction.preferredFormat(productionProfile(),compatibleFormats());
+      if(preferred){
+        $('format-select').value=preferred;
+      }
       $('composed-output').textContent='Aquí aparecerá la combinación resuelta.';$('assembled-preview').open=false;
     }
     $('category-select').value=String(category);
     document.querySelectorAll('[name="mode"]').forEach(r=>r.checked=r.value===mode);
+    if(changed){
+      if(!$('prod-style').value){const preferred=state.styles.filter(inProject).find(s=>s.id===($('cal-style').value||state.currentStyle?.id))||state.styles.filter(inProject)[0];if(preferred)$('prod-style').value=preferred.id;}
+      const style=state.styles.find(s=>s.id===$('prod-style').value);if(style?.config?.seed!==undefined)$('prod-seed').value=String(style.config.seed);
+    }
     renderProductionMenu();renderPieces();renderGalleries();
   }
+  function productionElementKind() {const profile=productionProfile().id;return profile==='character'?'character':profile==='background'?'background':'item';}
+  function compatibleFormats() {
+    const kind=productionElementKind(),orientation=AnimaElementProfiles.profile(kind).orientation;
+    return (currentProject()?.formats||[]).filter(f=>orientation==='portrait'?f.height>f.width:orientation==='landscape'?f.width>f.height:f.width===f.height);
+  }
   function renderFormatOptions() {
-    const formats=currentProject()?.formats||[], snapshot=state.recipeFormatSnapshot;
-    selectOptions($('format-select'),formats,formats.length?undefined:'Configura los formatos del proyecto');
+    const formats=compatibleFormats(), snapshot=state.recipeFormatSnapshot;
+    selectOptions($('format-select'),formats,'Formato automático para este recurso');
     if(snapshot){
       if(![...$('format-select').options].some(option=>option.value===snapshot.id))$('format-select').add(new Option(`${snapshot.name||snapshot.id} · guardado`,snapshot.id));
       $('format-select').value=snapshot.id;
@@ -173,7 +195,7 @@
   }
   function updateRecipeNote() {
     const parts=[];
-    if(state.recipeStyleRevision!==null)parts.push(`estilo v${state.recipeStyleRevision}`);
+    if(state.recipeStyleRevision!=null)parts.push(`estilo v${state.recipeStyleRevision}`);
     if(state.recipeFormatSnapshot){const format=state.recipeFormatSnapshot;parts.push(`${format.name||'formato'} ${format.width} × ${format.height}${format.alpha?' · alfa requerido':''}`);}
     $('recipe-revision-note').textContent=parts.length?`Configuración guardada: ${parts.join(' · ')}.`:'';
     $('recipe-revision-note').classList.toggle('hidden',!parts.length);
@@ -185,7 +207,7 @@
     const styles = allStyles.filter(s=>`${s.name} ${s.prompt}`.toLowerCase().includes(term));
     const options = styles.map(s => ({id:s.id,name:`${favorites.has(s.id)?'★ ':''}${s.name} · v${s.revision || 1}${s.project_id?'':' · Compartido'}`}));
     selectOptions($('cal-style'),options,'Sin estilo guardado');
-    selectOptions($('prod-style'),allStyles.map(s=>({id:s.id,name:`${favorites.has(s.id)?'★ ':''}${s.name} · v${s.revision||1}${s.project_id?'':' · Compartido'}`})),'Selecciona un estilo guardado');
+    selectOptions($('prod-style'),allStyles.map(s=>({id:s.id,name:`${favorites.has(s.id)?'★ ':''}${s.name} · v${s.revision||1}${s.project_id?'':' · Compartido'}`})),'Elige un estilo calibrado');
     $('favorite-style').disabled=!$('cal-style').value;
     $('favorite-style').textContent=favorites.has($('cal-style').value)?'★':'☆';
     $('delete-style').disabled=!$('cal-style').value;
@@ -200,6 +222,7 @@
     selectOptions($('encoder-select'),state.catalog.text_encoders || [],state.catalog.text_encoders?.length ? undefined : 'Encoder no disponible');
     selectOptions($('vae-select'),state.catalog.vaes || [],state.catalog.vaes?.length ? undefined : 'VAE no disponible');
     renderModelChoice();
+    pieceLoras?.setCatalog(state.catalog);
     for (const row of $('lora-list').children) {
       const select=row.querySelector('select'), previous=select.value;
       selectOptions(select,state.catalog.loras || [],'Selecciona un LoRA',previous);
@@ -263,10 +286,11 @@
   }
   function renderModelChoice() {renderCatalogChoice($('choose-model'),'models',$('model-select').value);}
   function renderLoraChoice(row) {renderCatalogChoice(row.querySelector('.choose-lora'),'loras',row.querySelector('select').value);}
-  function openCatalogPicker(kind,row=null) {
+  function openCatalogPicker(kind,row=null,external=null) {
+    catalogPicker.external=external;
     catalogPicker.kind=kind;catalogPicker.row=row;catalogPicker.limit=48;catalogPicker.folder='*';
     $('catalog-title').textContent=kind==='models'?'Modelos Anima':'LoRAs Anima';
-    $('catalog-description').textContent=kind==='models'?'Escoge el modelo que dará forma al estilo.':'Combina LoRAs de estilo, personaje u outfit; después ajusta su peso.';
+    $('catalog-description').textContent=kind==='models'?'Escoge el modelo que dará forma al estilo.':external?'Elige un LoRA de contenido para esta pieza; su peso y activadores se conservan con ella.':'Elige los LoRAs de acabado que se aplicarán con este estilo.';
     $('catalog-search').value='';$('catalog-images-only').checked=false;
     renderCatalogPicker();$('catalog-grid').scrollTop=0;$('catalog-dialog').showModal();$('catalog-search').focus();
   }
@@ -279,11 +303,11 @@
       return terms.every(term=>text.includes(term));
     });
   }
-  function pickerValue() {return catalogPicker.kind==='models'?$('model-select').value:catalogPicker.row?.querySelector('select').value||'';}
+  function pickerValue() {return catalogPicker.external?.value??(catalogPicker.kind==='models'?$('model-select').value:catalogPicker.row?.querySelector('select').value||'');}
   function renderCatalogPicker() {
     renderCatalogFolders();
     const kind=catalogPicker.kind,selected=pickerValue();
-    const used=new Set(kind==='loras'?[...$('lora-list').children].filter(row=>row!==catalogPicker.row).map(row=>row.querySelector('select').value):[]);
+    const used=new Set(catalogPicker.external?.used??(kind==='loras'?[...$('lora-list').children].filter(row=>row!==catalogPicker.row).map(row=>row.querySelector('select').value):[]));
     const matches=matchingCatalogEntries(kind,$('catalog-search').value,$('catalog-images-only').checked,catalogPicker.folder).sort((a,b)=>
       Number(optionValue(b)===selected)-Number(optionValue(a)===selected)||Number(!!catalogThumbnail(b))-Number(!!catalogThumbnail(a))||catalogName(a).localeCompare(catalogName(b),'es'));
     const visible=matches.slice(0,catalogPicker.limit);
@@ -297,6 +321,7 @@
   function chooseCatalogFile(file) {
     const kind=catalogPicker.kind,item=(state.catalog[kind]||[]).find(entry=>optionValue(entry)===file);
     if(!item)return;
+    if(catalogPicker.external){catalogPicker.external.select(file);$('catalog-dialog').close();return;}
     if(kind==='models'){$('model-select').value=file;renderModelChoice();}
     else {
       const used=[...$('lora-list').children].some(row=>row!==catalogPicker.row&&row.querySelector('select').value===file);
@@ -311,7 +336,7 @@
     const pieces = state.pieces.filter(inProject);
     const source=state.sourceRecord?.snapshot||state.sourceRecord?.metadata?.snapshot;
     for(const piece of source?.pieces||[])if(!pieces.some(p=>p.id===piece.id))pieces.push(piece);
-    $('piece-pickers').innerHTML = Object.entries(KINDS).filter(([kind])=>state.productionCategory&&productionProfile().kinds.includes(kind)).map(([kind,label]) => `<label>${label}<select data-piece-kind="${kind}"><option value="">Sin ${label.toLowerCase()}</option>${pieces.filter(p=>p.kind===kind).map(p=>`<option value="${esc(p.id)}">${esc(p.name)}${p.project_id?'':' · Compartido'}</option>`).join('')}</select></label>`).join('');
+    $('piece-pickers').innerHTML = Object.entries(KINDS).filter(([kind])=>state.productionCategory&&productionProfile().kinds.includes(kind)).map(([kind,label]) => `<label class="${state.productionMode==='expression'&&kind!=='expression'?'hidden':''}">${label}<select data-piece-kind="${kind}"><option value="">Sin ${label.toLowerCase()}</option>${pieces.filter(p=>p.kind===kind).map(p=>`<option value="${esc(p.id)}">${esc(p.name)}${p.project_id?'':' · Compartido'}</option>`).join('')}</select></label>`).join('');
     for (const select of $('piece-pickers').querySelectorAll('select')) {
       const old = previous.find(id => pieces.some(p=>p.id===id && p.kind===select.dataset.pieceKind));
       if (old) select.value=old;
@@ -339,31 +364,44 @@
     return {name:g.name || [g.character_name||g.character,g.outfit_name||g.outfit,g.expression_name||g.expression].filter(Boolean).join(' · ') || g.category || 'Prueba de generación',seed:String(g.seed ?? g.edit_seed ?? config.seed ?? g.metadata?.seed ?? '—'),config};
   }
   function assetCard(g,context) {
-    const info=recordInfo(g), selected=context==='cal'?state.sampleIds.has(g.id):state.purgeIds.has(g.id);
-    const choose=context==='cal' ? `<label class="asset-check"><input type="checkbox" data-sample="${esc(g.id)}" ${selected?'checked':''}>Muestra del estilo</label>` : context==='review' && g.status==='rejected' ? `<label class="asset-check"><input type="checkbox" data-purge="${esc(g.id)}" ${selected?'checked':''}>Seleccionar</label>` : '';
+    if(context==='cal')return calibrationCard(g);
+    const info=recordInfo(g), selected=state.purgeIds.has(g.id);
+    const choose=context==='review' && g.status==='rejected' ? `<label class="asset-check"><input type="checkbox" data-purge="${esc(g.id)}" ${selected?'checked':''}>Seleccionar</label>` : '';
     const status=g.status||'pending';
     const pieceTest=(g.purpose||g.metadata?.purpose)==='piece_test';
-    const designActions=`<button data-capture-piece="${esc(g.id)}">${pieceTest?'Elegir imagen del elemento':'Crear maestro de pieza'}</button>${!pieceTest&&(g.snapshot||g.metadata?.snapshot)?.style?.id?`<button data-use-composition="${esc(g.id)}">Usar composición</button>`:''}`;
-    return `<article class="asset-card"><div class="asset-image"><img src="${imageUrl(g.id)}" loading="lazy" alt="${esc(info.name)}" data-open-image="${esc(g.id)}">${choose}</div><div class="asset-content"><div class="asset-title">${esc(info.name)}</div><div class="asset-meta">Seed ${esc(info.seed)}${info.config.steps?` · ${esc(info.config.steps)} pasos`:''}</div><span class="asset-state ${esc(status)}">${esc(STATES[status]||status)}</span><div class="asset-actions">${status!=='accepted'?`<button data-review="accepted" data-id="${esc(g.id)}">Aceptar</button>`:''}${status!=='rejected'?`<button data-review="rejected" data-id="${esc(g.id)}">Rechazar</button>`:`<button data-review="pending" data-id="${esc(g.id)}">Restaurar</button>`}${!pieceTest&&productionCategories().some(c=>AnimaProduction.profile(c).expression&&sameCategory(c,g.category))?`<button data-master="${esc(g.id)}">Como maestro</button>`:''}${designActions}<a href="${imageUrl(g.id)}?download=true" download>PNG</a><a href="${API}/generations/${encodeURIComponent(g.id)}" download="${esc(g.id)}.json">Ficha</a>${context==='cal'?`<button data-load-config="${esc(g.id)}">Recuperar ajustes</button>`:''}<button class="danger" data-delete-image="${esc(g.id)}">Borrar imagen</button></div></div></article>`;
+    const designActions=`<button type="button" data-capture-piece="${esc(g.id)}">${pieceTest?'Elegir imagen del elemento':'Crear maestro de pieza'}</button>${!pieceTest&&(g.snapshot||g.metadata?.snapshot)?.project&&(g.config||g.metadata?.config)?.model?`<button type="button" data-use-composition="${esc(g.id)}">Usar composición</button>`:''}`;
+    return `<article class="asset-card"><div class="asset-image"><img src="${imageUrl(g.id)}" loading="lazy" alt="${esc(info.name)}" data-open-image="${esc(g.id)}">${choose}</div><div class="asset-content"><div class="asset-title">${esc(info.name)}</div><div class="asset-meta">Seed ${esc(info.seed)}${info.config.steps?` · ${esc(info.config.steps)} pasos`:''}</div><span class="asset-state ${esc(status)}">${esc(STATES[status]||status)}</span><div class="asset-actions">${status!=='accepted'?`<button type="button" data-review="accepted" data-id="${esc(g.id)}">Aceptar</button>`:''}${status!=='rejected'?`<button type="button" data-review="rejected" data-id="${esc(g.id)}">Rechazar</button>`:`<button type="button" data-review="pending" data-id="${esc(g.id)}">Restaurar</button>`}${isMasterCandidate(g)?`<button type="button" data-master="${esc(g.id)}">Como maestro</button>`:''}${designActions}<a href="${imageUrl(g.id)}?download=true" download>PNG</a><a href="${API}/generations/${encodeURIComponent(g.id)}" download="${esc(g.id)}.json">Ficha</a><button type="button" class="danger" data-delete-image="${esc(g.id)}">Borrar imagen</button></div></div></article>`;
+  }
+  function calibrationCard(g) {
+    const status=g.status||'pending';
+    const date=new Date(g.created_at),stamp=Number.isNaN(date.getTime())?'Sin fecha registrada':date.toLocaleString('es-MX',{dateStyle:'short',timeStyle:'short'});
+    return `<article class="asset-card calibration-card"><button type="button" class="calibration-open" data-open-image="${esc(g.id)}" aria-label="Abrir muestra a tamaño completo"><img src="${imageUrl(g.id)}" loading="lazy" alt="Muestra de calibración"></button><div class="asset-content"><div class="calibration-heading"><strong>Muestra de calibración</strong><span class="asset-state ${esc(status)}">${esc(STATES[status]||status)}</span></div><small class="muted">${esc(stamp)}</small>${AnimaCalibration.details(g)}<div class="calibration-primary-actions"><button type="button" class="primary" data-save-calibration="${esc(g.id)}">Guardar estilo</button><button type="button" class="secondary" data-load-config="${esc(g.id)}">Recuperar ajustes</button></div><details class="calibration-extra"><summary>Imagen y revisión</summary><div class="asset-actions"><button data-open-image="${esc(g.id)}">Ver imagen completa</button><a href="${imageUrl(g.id)}?download=true" download>PNG</a><a href="${API}/generations/${encodeURIComponent(g.id)}" download="${esc(g.id)}.json">Ficha completa</a>${status!=='accepted'?`<button data-review="accepted" data-id="${esc(g.id)}">Aceptar</button>`:''}${status!=='rejected'?`<button data-review="rejected" data-id="${esc(g.id)}">Rechazar</button>`:`<button data-review="pending" data-id="${esc(g.id)}">Restaurar</button>`}<button class="danger" data-delete-image="${esc(g.id)}">Borrar imagen</button></div></details></div></article>`;
+  }
+  function isMasterCandidate(record) {
+    if(!record?.id||record.project_id!==state.projectId||record.status==='rejected'||record.purged_at||record.purged||!sampleAvailable(record.id))return false;
+    if([record.purpose,record.metadata?.purpose].some(purpose=>['calibration','piece_test'].includes(purpose))||record.piece_test||record.metadata?.piece_test||record.calibration||record.metadata?.calibration)return false;
+    if(['calibration','calibracion'].includes(record.category))return false;
+    return productionCategories().some(category=>AnimaProduction.profile(category).expression&&sameCategory(category,record.category));
   }
   function renderGalleries() {
     const generations=availableRecords('generations',projectGenerations()).slice().reverse();
     if(workspace){
-      const tests=generations.filter(g=>(g.piece_test||g.metadata?.piece_test)?.id===state.elementTestId&&state.elementTestId);
+      const tests=generations.filter(g=>globalThis.AnimaElementLab?AnimaElementLab.matches(g,state.elementTestId):(g.piece_test||g.metadata?.piece_test)?.id===state.elementTestId&&state.elementTestId);
       $('element-tests').classList.toggle('hidden',!state.elementTestId);
       $('element-test-gallery').innerHTML=tests.length?tests.slice(0,8).map(g=>assetCard(g,'element')).join(''):empty('Preparando la prueba del elemento','Sus resultados aparecerán aquí; después elige la imagen para tu inventario.');
     }
     const calibration=generations.filter(g=>g.purpose==='calibration' || g.metadata?.purpose==='calibration' || g.category==='calibration' || g.category==='calibracion' || state.sampleIds.has(g.id));
     $('cal-gallery').innerHTML=calibration.length ? calibration.map(g=>assetCard(g,'cal')).join('') : empty('Aquí empieza tu biblioteca de estilos','Genera una prueba para comparar el acabado y guardar sus ajustes.');
     const production=generations.filter(g=>!['calibration','piece_test'].includes(g.purpose) && !['calibration','piece_test'].includes(g.metadata?.purpose) && !['calibration','calibracion'].includes(g.category)&&sameCategory(g.category,state.productionCategory)&&(g.mode||g.metadata?.mode||'txt2img')===state.productionMode);
-    $('production-gallery').innerHTML=production.length ? production.map(g=>assetCard(g,'production')).join('') : empty('Tu próximo recurso aparecerá aquí','Selecciona un estilo y las piezas que formarán la imagen.');
+    $('production-gallery').innerHTML=production.length ? production.map(g=>assetCard(g,'production')).join('') : empty(state.productionMode==='expression'?'Tu próxima expresión aparecerá aquí':'Tu próximo recurso aparecerá aquí',state.productionMode==='expression'?'Elige un maestro, pinta la máscara y describe la expresión.':'Elige un estilo y describe tu imagen, o combina diseños del inventario.');
     const filter=$('review-filter').value, term=$('image-search').value.trim().toLowerCase();
     const review=generations.filter(g=>(!filter||g.status===filter) && JSON.stringify([g.name,g.category,g.character_name||g.character,g.outfit_name||g.outfit,g.expression_name||g.expression,g.id]).toLowerCase().includes(term));
     $('review-gallery').innerHTML=review.length ? review.map(g=>assetCard(g,'review')).join('') : empty('No hay imágenes en esta vista','Cambia el filtro o genera un recurso para revisarlo.');
     $('review-count').textContent=`${generations.length} imágenes · ${generations.filter(g=>g.status==='accepted').length} aceptadas · ${generations.filter(g=>g.status==='rejected').length} rechazadas`;
+    renderElementTrials();
     $('purge-controls').classList.toggle('hidden',filter!=='rejected');
     updatePurgeCount();
-    selectOptions($('master-select'),generations.filter(g=>g.status!=='rejected'&&sameCategory(g.category,state.productionCategory)).map(g=>({id:g.id,name:`${recordInfo(g).name} · ${g.id.slice(0,8)}`})),'Selecciona una imagen o carga un PNG',state.masterId || '');
+    selectOptions($('master-select'),generations.filter(g=>isMasterCandidate(g)&&sameCategory(g.category,state.productionCategory)).map(g=>({id:g.id,name:`${recordInfo(g).name} · ${g.id.slice(0,8)}`})),'Selecciona una imagen o carga un PNG',state.masterId || '');
     renderVisualWorkspace();
   }
   function updatePurgeCount() {
@@ -387,7 +425,6 @@
     if(data.storage_cleanup?.errors?.length&&!data.storage_cleanup.deferred)notice(`Limpieza pendiente: ${data.storage_cleanup.errors.join(' ')}`,true);
   }
   function updateStatus(status) {
-    $('capability-note').textContent=(status.limitations||[]).join(' ');
     updateSessionView();
   }
   function sessionReady() {return session.active&&session.status==='ready'&&session.socket?.readyState===WebSocket.OPEN;}
@@ -545,20 +582,52 @@
     const style=state.styles.find(s=>s.id===id); state.currentStyle=style || null;
     $('favorite-style').disabled=!style;$('favorite-style').textContent=favorites.has(id)?'★':'☆';
     if(!style)return;
-    $('style-name').value=style.name; $('style-shared').checked=!style.project_id; $('style-prompt').value=style.prompt||''; $('style-negative').value=style.negative||'';
-    state.sampleIds=new Set((style.sample_ids||[]).filter(sampleAvailable)); loadConfig(style.config||{}); $('save-style').textContent='Guardar nueva revisión'; renderGalleries();
+    $('style-prompt').value=style.prompt||''; $('style-negative').value=style.negative||'';
+    state.sampleIds=new Set((style.sample_ids||[]).filter(sampleAvailable)); loadConfig(style.config||{}); renderGalleries();
   }
-  async function saveStyle(copy=false) {
-    assertProject(); const name=$('style-name').value.trim(); if(!name) throw new Error('Escribe un nombre para el estilo.');
-    const projectId=$('style-shared').checked?null:state.projectId;
-    const sameScope=!state.currentStyle || (state.currentStyle.project_id||null)===projectId;
-    const payload={...(state.currentStyle && !copy && sameScope?{id:state.currentStyle.id}:{}),project_id:projectId,name,prompt:$('style-prompt').value.trim(),negative:$('style-negative').value.trim(),config:calibrationConfig(),sample_ids:[...state.sampleIds].filter(sampleAvailable)};
-    const result=await api('/styles','POST',payload); $('style-search').value='';await reload(); $('cal-style').value=result.id; $('prod-style').value=result.id; productionStyleChanged();loadStyle(result.id);renderStyles();notice(`Estilo «${result.name}» guardado · revisión ${result.revision||1}.`);
+  async function openCalibrationStyle(id) {
+    assertProject();
+    if(!projectGenerations().some(g=>g.id===id)||!sampleAvailable(id))throw new Error('Esta muestra ya no está disponible en el proyecto.');
+    const projectId=state.projectId,epoch=++calibrationStyleEpoch;
+    const record=await api(`/generations/${encodeURIComponent(id)}`);
+    if(epoch!==calibrationStyleEpoch||projectId!==state.projectId||!sampleAvailable(id))return;
+    if(record.project_id!==projectId||record.purged_at||record.purged)throw new Error('Esta muestra ya no está disponible en el proyecto.');
+    calibrationDraft={record:JSON.parse(JSON.stringify(record)),projectId};
+    const saved=AnimaCalibration.snapshot(record);
+    $('style-save-preview').src=imageUrl(id);$('style-save-summary').innerHTML=AnimaCalibration.details(record);
+    $('style-save-prompt').value=saved.prompt;$('style-save-negative').value=saved.negative;
+    $('style-save-note').textContent=saved.hasCalibration?'Puedes guardar varios estilos desde esta muestra o desde otras calibraciones.':'Esta muestra antigua no separa el estilo de la escena. Define el prompt reutilizable si lo necesitas; la escena no se añadirá automáticamente.';
+    selectOptions($('style-save-target'),state.styles.filter(inProject).map(s=>({id:s.id,name:`Nueva revisión de ${s.name} · v${s.revision||1}`})),'Un estilo nuevo','');
+    $('style-save-target').value='';calibrationStyleTargetChanged();
+    $('style-dialog').showModal();$('style-name').focus();
+  }
+  function calibrationStyleTargetChanged() {
+    const target=state.styles.find(s=>s.id===$('style-save-target').value&&inProject(s));
+    $('style-name').value=target?.name||'';$('style-shared').checked=target?!target.project_id:false;
+    $('style-shared').disabled=!!target;$('save-style').textContent=target?'Guardar nueva revisión':'Guardar estilo nuevo';
+  }
+  async function saveCalibrationStyle(event) {
+    event?.preventDefault();
+    if(calibrationStyleSaving)return;
+    const draft=calibrationDraft;
+    if(!draft||draft.projectId!==state.projectId||!sampleAvailable(draft.record.id))throw new Error('Abre una muestra disponible del proyecto activo.');
+    const targetId=$('style-save-target').value;
+    const selectedStyle=targetId?state.styles.find(s=>s.id===targetId&&inProject(s)):null;
+    const targetStyle=selectedStyle?{...selectedStyle,sample_ids:(selectedStyle.sample_ids||[]).filter(sampleAvailable)}:null;
+    if(targetId&&!targetStyle)throw new Error('El estilo seleccionado ya no está disponible.');
+    const payload=AnimaCalibration.stylePayload(draft.record,{projectId:draft.projectId,name:$('style-name').value,shared:$('style-shared').checked,prompt:$('style-save-prompt').value,negative:$('style-save-negative').value,targetStyle});
+    calibrationStyleSaving=true;$('save-style').disabled=true;
+    try {
+      const result=await api('/styles','POST',payload);
+      if(calibrationDraft===draft)$('style-dialog').close();
+      await reload();notice(`Estilo «${result.name}» guardado · revisión ${result.revision||1}.`);
+    } finally {calibrationStyleSaving=false;$('save-style').disabled=false;}
   }
   function productionStyleChanged() {
     releaseComposition(false);
     state.derivedConfig=null;
     state.recipeStyleRevision=null;
+    state.recipeFormatSnapshot=null;$('format-select').value='';
     $('recipe-select').value='';updateRecipeNote();
     const style=state.styles.find(s=>s.id===$('prod-style').value);
     if(style?.config?.seed!==undefined)$('prod-seed').value=String(style.config.seed);
@@ -570,7 +639,6 @@
     delete state.recipePieceRevisions[select.value];
     select.dataset.previousValue=select.value;
     const piece=state.pieces.find(p=>p.id===select.value);
-    if(select.dataset.pieceKind==='character'&&piece?.seed!==undefined&&!state.sourceAssetId&&!state.derivedConfig){$('prod-seed').value=String(piece.seed);$('seed-lock').checked=true;}
     if(select.dataset.pieceKind==='pose')productionPose?.setValue(piece?.pose_control||null);
     renderVisualWorkspace();
   }
@@ -588,7 +656,8 @@
   function visualReadiness() {
     if(!workspace)return {ready:true,message:''};
     return workspace.readiness({category:state.productionCategory,profile:productionProfile().id,
-      pieces:selectedVisualPieces(),hasStyle:!!$('prod-style').value,source:!!state.sourceAssetId,
+      pieces:selectedVisualPieces(),hasStyle:!!$('prod-style').value||!!state.derivedConfig?.model,source:!!state.sourceAssetId,
+      hasConfig:false,additionalPrompt:$('prod-prompt').value,
       mode:state.productionMode,masterReady:state.masterReady,expressionPrompt:$('prod-prompt').value});
   }
   function renderVisualWorkspace() {
@@ -616,9 +685,13 @@
     visualStyles?.refresh();
     updateGenerationAvailability();
   }
+  function beginPieceCreation() {
+    setTab('production');
+    $('element-creator').scrollIntoView?.({behavior:'smooth',block:'start'});
+    $('element-creator-title').focus?.({preventScroll:true});
+  }
   function createVisualElement(kind) {
-    assertProject();openPiece();pieceDraft={kind,project_id:state.projectId};
-    fillPieceFields(pieceDraft);renderPieceTestStyles();renderPieceEditor();
+    assertProject();openPiece({kind,project_id:state.projectId});
     $('piece-dialog-title').textContent=`Crear ${workspace.label(kind).toLowerCase()}`;
   }
   function addVisualElement(id) {
@@ -634,7 +707,7 @@
     if(!picker)throw new Error('El objetivo elegido no admite este tipo de elemento.');
     if(picker.value===piece.id&&(state.recipePieceRevisions[piece.id]==null||state.recipePieceRevisions[piece.id]===piece.revision))return;
     picker.value=piece.id;productionPieceChanged(picker);renderVisualWorkspace();
-    notice(`${piece.name} añadido a la imagen.`);
+    setTab('integrator');notice(`${piece.name} añadido a la imagen.`);
   }
   function removeVisualElement(kind) {
     if(state.sourceAssetId&&kind!=='expression')throw new Error('Libera la composición para quitar elementos fijados.');
@@ -645,13 +718,16 @@
   function productionPayload() {
     if(!state.productionCategory)throw new Error('Elige primero qué recurso quieres generar.');
     assertProject(); const style=state.styles.find(s=>s.id===$('prod-style').value && inProject(s));
-    if(!style&&!state.sourceAssetId)throw new Error('Selecciona un estilo guardado para producir el recurso.');
+    if(!style&&!state.sourceAssetId&&!state.derivedConfig?.model)throw new Error('Elige un estilo calibrado para componer tu imagen.');
     const format=state.recipeFormatSnapshot||(currentProject().formats||[]).find(f=>String(f.id??f.name)===$('format-select').value);
-    if(!format&&!state.sourceAssetId)throw new Error('Selecciona un formato del proyecto.');
     const ids=selectedPieces(), revisions=Object.fromEntries(Object.entries(state.recipePieceRevisions).filter(([id])=>ids.includes(id)));
-    const config={...(state.sourceConfig||state.derivedConfig||{}),width:Number(format?.width??state.sourceConfig?.width),height:Number(format?.height??state.sourceConfig?.height),seed:seedValue('prod-seed')};
+    const replay=state.sourceConfig||(!style?state.derivedConfig:null);
+    const config={...(replay||{}),seed:seedValue('prod-seed')};
+    if(format){config.width=Number(format.width);config.height=Number(format.height);}
+    else if(!state.sourceAssetId&&(!state.derivedConfig||style)){Object.assign(config,AnimaElementProfiles.format(currentProject(),productionElementKind()));}
     const pose=productionPose?.getValue();if(pose)config.pose_control=pose;
     const payload={project_id:state.projectId,style_id:style?.id||state.sourceStyleId,style_revision:state.recipeStyleRevision??style?.revision,piece_ids:ids,piece_revisions:Object.keys(revisions).length?revisions:undefined,prompt:$('prod-prompt').value.trim(),negative:$('prod-negative').value.trim(),config,format_id:format?.id,format_snapshot:state.recipeFormatSnapshot?{...state.recipeFormatSnapshot}:undefined,category:state.productionCategory,mode:state.productionMode,character:pieceByKind('character')?.name||'',outfit:pieceByKind('outfit')?.name||'',expression:pieceByKind('expression')?.name||'',recipe_id:$('recipe-select').value||undefined};
+    if(!state.sourceAssetId&&style){payload.integration=true;if(state.productionMode!=='expression'&&['character','card'].includes(productionProfile().id))payload.integration_framing=$('integrator-framing').value||'full-body';}
     if(state.sourceAssetId){
       payload.source_asset_id=state.sourceAssetId;
       const expression=pieceByKind('expression');
@@ -662,7 +738,7 @@
     return payload;
   }
   async function previewPrompt() {
-    const data=await api('/compose','POST',productionPayload()); $('composed-output').textContent=JSON.stringify(data,null,2); $('assembled-preview').open=true;
+    const data=await api('/compose','POST',productionPayload()); $('composed-output').textContent=`Descripción final\n\n${data.prompt}\n\nQué evitar\n\n${data.negative}`; $('assembled-preview').open=true;
   }
   async function startGeneration(payload) {
     if(state.activeJob)throw new Error('Ya hay una generación del taller en curso.');
@@ -719,7 +795,8 @@
     if(state.sourceAssetId&&state.productionMode==='expression')throw new Error('Esta receta no puede conservar todavía el maestro y la máscara facial. Conserva la imagen maestra y recupérala desde «Como maestro» para repetir sus expresiones.');
     if(state.sourceAssetId&&!state.sourceAdditionalKnown)throw new Error('La ficha antigua no separa las instrucciones adicionales. Libera la composición y revisa el prompt antes de guardar una receta.');
     const payload=productionPayload(),name=$('recipe-name').value.trim();if(!name)throw new Error('Escribe un nombre para la receta.');
-    if(state.sourceAssetId){const snapshot=state.sourceRecord?.snapshot||state.sourceRecord?.metadata?.snapshot;payload.config.loras=JSON.parse(JSON.stringify(snapshot?.style?.config?.loras||[]));}
+    if(state.sourceAssetId&&payload.style_id){const config=payload.config;payload.config={seed:config.seed,width:config.width,height:config.height,...(config.pose_control?{pose_control:config.pose_control}:{})};payload.integration=true;}
+    if(state.sourceAssetId&&payload.mode!=='expression'&&['character','card'].includes(productionProfile().id))payload.integration_framing=$('integrator-framing').value||'full-body';
     if(payload.mode!=='expression')for(const key of ['source_asset_id','expression_piece_id','expression_piece_revision','expression_prompt','expression_negative'])delete payload[key];
     const saved=await api('/recipes','POST',{...payload,name,id:$('recipe-select').value||undefined});await reload();$('recipe-select').value=saved.id;loadRecipe(saved.id);notice(`Receta «${name}» guardada.`);
   }
@@ -735,7 +812,8 @@
     $('delete-recipe').disabled=!recipe;
     state.recipeStyleRevision=recipe?.style_revision??null;state.recipePieceRevisions={...(recipe?.piece_revisions||{})};state.recipeFormatSnapshot=recipe?.format_snapshot?{...recipe.format_snapshot}:null;renderFormatOptions();if(!recipe)return;
     state.derivedConfig=JSON.parse(JSON.stringify(recipe.config||{}));delete state.derivedConfig.pose_control;
-    $('recipe-name').value=recipe.name;$('prod-style').value=recipe.style_id||recipe.snapshot?.style?.id||'';$('prod-prompt').value=recipe.prompt||'';$('prod-negative').value=recipe.negative||'';
+    $('recipe-name').value=recipe.name;$('prod-style').value=recipe.style_id||recipe.snapshot?.style?.id||'';$('prod-prompt').value=recipe.prompt||'';$('prod-negative').value=recipe.negative_override!==undefined?'':recipe.negative||'';
+    $('integrator-framing').value=recipe.integration_framing||'full-body';
     if(recipe.config?.seed!==undefined)$('prod-seed').value=String(recipe.config.seed);
     if(recipe.format_id)$('format-select').value=recipe.format_id;
     const ids=Array.isArray(recipe.piece_ids)?recipe.piece_ids:Object.values(recipe.piece_ids||{});
@@ -746,11 +824,13 @@
   function updateCompositionSource() {
     const frozen=!!state.sourceAssetId;
     $('composition-source').classList.toggle('hidden',!frozen);
-    $('composition-source-note').textContent=frozen?`Seed, estilo y piezas de ${state.sourceAssetId.slice(0,8)} fijados. Puedes cambiar el bloque de expresión. Para cambiar otra pieza, libera la composición.`:'';
+    $('composition-source-note').textContent=frozen?`Ajustes y elementos de ${state.sourceAssetId.slice(0,8)} fijados. Puedes cambiar el bloque de expresión. Para cambiar otra pieza, libera la composición.`:'';
     for(const id of ['prod-style','format-select','prod-seed','seed-lock','new-seed'])$(id).disabled=frozen;
     for(const picker of $('piece-pickers').querySelectorAll('select'))picker.disabled=frozen&&picker.dataset.pieceKind!=='expression';
     for(const id of ['prod-prompt','prod-negative'])$(id).disabled=frozen&&state.productionMode!=='expression';
     $('production-pose-tools').classList.toggle('composition-frozen',frozen);
+    $('production-style-field').classList.toggle('hidden',frozen&&state.productionMode==='expression');
+    $('production-variation-tools').classList.toggle('hidden',state.productionMode==='expression');
     renderVisualWorkspace();
   }
   function releaseComposition(showNotice=true) {
@@ -758,7 +838,7 @@
     if(hadSource&&state.sourceConfig){
       state.derivedConfig=JSON.parse(JSON.stringify(state.sourceConfig));
       const snapshot=state.sourceRecord?.snapshot||state.sourceRecord?.metadata?.snapshot;
-      state.derivedConfig.loras=JSON.parse(JSON.stringify(snapshot?.style?.config?.loras||[]));
+      state.derivedConfig.loras=JSON.parse(JSON.stringify(snapshot?.style?.config?.loras||(snapshot?.style===null?state.sourceConfig?.loras:[])||[]));
       for(const key of ['pose_control','prompt','negative'])delete state.derivedConfig[key];
     }
     state.sourceAssetId=null;state.sourceConfig=null;state.sourceRecord=null;state.sourceStyleId=null;state.sourceAdditionalKnown=false;
@@ -772,131 +852,200 @@
     if(!category)throw new Error('La categoría de la generación ya no está en el proyecto.');
     chooseProduction(optionValue(category),mode);
     state.sourceAssetId=record.id;state.sourceConfig=saved.config;state.sourceRecord=record;state.sourceStyleId=saved.style_id;state.sourceAdditionalKnown=saved.additional_known;state.derivedConfig=null;
-    state.recipeStyleRevision=saved.style_revision;state.recipePieceRevisions=saved.piece_revisions;
+    state.recipeStyleRevision=saved.style_revision??null;state.recipePieceRevisions=saved.piece_revisions;
     for(const piece of saved.pieces)pinnedPieceViews.set(`${piece.id}:${piece.revision}`,piece);
     state.recipeFormatSnapshot=saved.format_snapshot||{id:`source-${record.id}`,name:'Lienzo del maestro',width:saved.config.width,height:saved.config.height};
     selectOptions($('prod-style'),state.styles.filter(inProject).map(s=>({id:s.id,name:s.name})),'Selecciona un estilo guardado',saved.style_id);
+    $('prod-style').value=saved.style_id||'';
     renderFormatOptions();
     for(const picker of $('piece-pickers').querySelectorAll('select')){
       const piece=saved.pieces.find(p=>p.kind===picker.dataset.pieceKind);
       if(piece&&!Array.from(picker.options).some(option=>option.value===piece.id))picker.add(new Option(`${piece.name} · guardado`,piece.id));
       picker.value=piece?.id||'';picker.dataset.previousValue=picker.value;
     }
+    $('integrator-framing').value=saved.integration_framing||'full-body';
     $('prod-seed').value=saved.config.seed;$('seed-lock').checked=true;
     $('prod-prompt').value=mode==='expression'?'':saved.additional_prompt;
     $('prod-negative').value=mode==='expression'?'':saved.additional_negative;
     productionPose?.setValue(saved.config.pose_control||saved.pieces.find(p=>p.kind==='pose')?.pose_control||null);
-    updateCompositionSource();setTab('production');
+    updateCompositionSource();setTab('integrator');
     if(!saved.additional_known)notice('Composición recuperada. Esta ficha antigua no separa las instrucciones adicionales; el backend conserva el prompt original mientras siga fijada.');
   }
   function renderPieceEditor() {
-    const kind=$('piece-kind').value,profile=pieceProfiles?.profile(kind)||{help:'Define el contenido de esta pieza.',placeholder:'Describe esta pieza…'};
+    const kind=pieceDraft.kind,profile=AnimaElementProfiles.profile(kind);
     $('piece-editor-help').textContent=profile.help;$('piece-prompt').placeholder=profile.placeholder;
-    $('piece-character-tools').classList.toggle('hidden',kind!=='character');$('piece-pose-tools').classList.toggle('hidden',kind!=='pose');
-    const selected=$('piece-master').value||pieceDraft?.master_id;
-    const masters=state.pieces.filter(inProject).filter(p=>p.kind===kind&&p.id!==$('piece-id').value);
-    selectOptions($('piece-master'),masters.map(p=>({id:p.id,name:`${p.name} · v${p.revision||1}`})),'Maestro independiente',selected);
-    $('piece-master').disabled=!!$('piece-id').value||!!pieceDraft?.sample_asset_id;
-    $('piece-kind').disabled=!!pieceDraft?.master_id||!!$('piece-id').value;
+    $('piece-pose-tools').classList.toggle('hidden',kind!=='pose');
+    $('piece-loras-title').textContent=`LoRAs de ${profile.label.toLowerCase()} (opcional)`;
     $('piece-master-note').textContent=pieceDraft?.master_id?`Variante de un maestro fijado en v${pieceDraft.master_revision}. Conserva los valores heredados y edita sólo lo que quieras cambiar.`:'';
     $('piece-master-note').classList.toggle('hidden',!pieceDraft?.master_id);
     const sample=$('piece-sample-id').value;
     $('piece-sample').classList.toggle('hidden',!sample);
-    if(sample){$('piece-sample-preview').src=imageUrl(sample);$('piece-sample-note').textContent='Al guardar se captura la seed exacta y la configuración de esta prueba. El prompt de pieza sigue siendo editable.';}
+    if(sample){$('piece-sample-preview').src=imageUrl(sample);$('piece-sample-note').textContent='La imagen conserva la procedencia de la prueba. Puedes usar esta pieza con cualquier estilo en el Integrador.';}
     renderPieceSettings();
   }
+  function pieceStyleChoices() {
+    const choices=state.styles.filter(inProject).map(style=>({id:`${style.id}@${style.revision}`,name:`${style.name} · v${style.revision}`,style}));
+    const historic=pieceStyleSnapshot;
+    if(historic?.id&&!choices.some(c=>c.id===`${historic.id}@${historic.revision}`))choices.unshift({id:`${historic.id}@${historic.revision}`,name:`${historic.name||'Estilo de la muestra'} · v${historic.revision} · de la muestra`,style:historic});
+    return choices;
+  }
+  function preferredElementStyle() {
+    const choices=pieceStyleChoices();
+    return choices.find(c=>c.id===state.elementStyleKey)?.id||choices.find(c=>c.style.id===($('cal-style').value||$('prod-style').value||state.currentStyle?.id))?.id||choices[0]?.id||'';
+  }
   function renderPieceSettings() {
-    const snapshot=pieceDraft?.generation_snapshot,style=snapshot?.snapshot?.style;
-    const available=!!snapshot&&!!style?.id&&$('piece-test-style').value===style.id;
-    $('piece-reuse-settings').disabled=!available;
-    if(!available)$('piece-reuse-settings').checked=false;
-    $('piece-settings-note').textContent=available?`La prueba puede conservar el estilo v${style.revision} y el sampling de la prueba maestra. El formato y la seed elegidos se mantienen explícitos.`:'Al vincular una prueba, el maestro conserva su estilo, sampling y seed para reutilizarlos en variantes.';
+    $('piece-style-note').textContent=pieceTrialStyle?`«${pieceTrialStyle.name}» (v${pieceTrialStyle.revision}) se usa para esta prueba. La pieza se puede combinar con cualquier estilo en el Integrador.`:'Puedes explorar este editor. Para generar, elige un estilo calibrado o prepáralo en Estilos.';
+    $('piece-open-styles').classList.toggle('hidden',!!pieceTrialStyle);
   }
   function renderPieceTestStyles(preferred) {
-    const styles=state.styles.filter(inProject).map(s=>({id:s.id,name:`${s.name} · v${s.revision}`}));
-    const historical=pieceDraft?.generation_snapshot?.snapshot?.style;
-    if(historical?.id&&!styles.some(style=>style.id===historical.id))styles.push({id:historical.id,name:`${historical.name||'Estilo guardado'} · v${historical.revision} · del maestro`});
-    selectOptions($('piece-test-style'),styles,'Selecciona un estilo',preferred??historical?.id??$('prod-style').value);
+    selectOptions($('piece-test-style'),pieceStyleChoices(),'Elige un estilo calibrado',preferred??preferredElementStyle());
+    elementStylesBrowser?.refresh();
+  }
+  function readElementPresentation() {
+    return Object.fromEntries([...$('piece-specialized-controls').querySelectorAll('select')].map(select=>[select.dataset.elementControl,select.value]));
+  }
+  function elementContext() {return AnimaElementProfiles.context(pieceDraft.kind,readElementPresentation());}
+  function resetPieceNegative() {$('piece-negative').value=pieceDraft?.negative||'';}
+  function renderElementProfile() {
+    const kind=pieceDraft.kind,profile=AnimaElementProfiles.profile(kind),values=AnimaElementProfiles.values(kind,pieceDraft?.definition||{});
+    $('piece-editor-help').textContent=profile.help;$('piece-prompt').placeholder=profile.placeholder;
+    $('piece-prompt-label').textContent=({character:'Describe al personaje',personality:'Describe la personalidad',outfit:'Describe el outfit',pose:'Describe la pose',expression:'Describe la expresión',background:'Describe el fondo',item:'Describe el objeto',scene:'Describe el escenario'})[kind];
+    $('piece-specialized-controls').innerHTML=profile.controls.map(control=>`<label>${esc(control.label)}<select data-element-control="${esc(control.key)}">${control.options.map(option=>`<option value="${esc(option.value)}" ${option.value===values[control.key]?'selected':''}>${esc(option.label)}</option>`).join('')}</select></label>`).join('');
+    for(const select of $('piece-specialized-controls').querySelectorAll('select'))select.value=values[select.dataset.elementControl];
+    $('piece-format-note').textContent=profile.orientation==='portrait'?'Presentación vertical para el diseño.':profile.orientation==='landscape'?'Presentación horizontal para el entorno.':'Presentación cuadrada para esta prueba.';
+  }
+  function createPieceLoras() {
+    if(globalThis.AnimaPieceLoras)pieceLoras=AnimaPieceLoras.create({container:$('piece-loras-editor'),catalog:state.catalog,onPick:request=>openCatalogPicker('loras',null,request)});
   }
   function fillPieceFields(piece={}) {
-    $('piece-kind').value=piece.kind||'character';$('piece-name').value=piece.name||'';$('piece-prompt').value=piece.prompt||'';$('piece-negative').value=piece.negative||'';
+    $('piece-kind').value=piece.kind||'';$('piece-name').value=piece.name||'';$('piece-prompt').value=piece.prompt||'';$('piece-negative').value=piece.negative||'';
     $('piece-tags').value=(piece.tags||[]).join(', ');$('piece-shared').checked=piece.project_id===null;
     $('piece-seed').value=piece.seed??'';$('piece-sample-id').value=piece.sample_asset_id||'';
-    const lora=piece.loras?.[0];selectOptions($('piece-lora'),state.catalog.loras||[],'Sin LoRA propio',lora?.file||'');$('piece-lora-strength').value=String(lora?.strength??1);
-    piecePose?.setValue(piece.pose_control||null);
+    pieceLoras?.setValue(piece.loras||[]);piecePose?.setValue(piece.pose_control||null);
   }
   function openPiece(piece,variant=false) {
+    if(!piece?.kind)return beginPieceCreation();
+    if(!Object.hasOwn(KINDS,piece.kind))throw new Error('Elige un tipo de pieza válido desde el Taller.');
+    if($('notice').closest?.('#piece-dialog'))$('notice').classList.add('hidden');
+    elementTrialEpoch++;elementTrialToken=globalThis.crypto?.randomUUID?.()||`trial-${Date.now()}-${elementTrialEpoch}`;
     $('piece-form').reset();
     pieceDraft=variant&&piece?pieceProfiles.variant(piece):piece?JSON.parse(JSON.stringify(piece)):{};
     if(variant)delete pieceDraft.sample_asset_id;
+    pieceStyleSnapshot=null;
+    if(pieceDraft.definition)delete pieceDraft.definition.trial_negative;
     $('piece-id').value=variant?'':piece?.id||'';
-    const kind=pieceDraft.kind||(state.productionCategory?productionProfile().kinds[0]:'character');
+    const kind=pieceDraft.kind;
     fillPieceFields({...pieceDraft,kind,project_id:Object.hasOwn(pieceDraft,'project_id')?pieceDraft.project_id:state.projectId});
-    $('piece-dialog-title').textContent=variant?'Nueva variante':piece?'Editar pieza':'Nuevo maestro';
-    renderPieceTestStyles();
-    selectOptions($('piece-test-format'),currentProject()?.formats||[],undefined,$('format-select').value);
-    const testConfig=pieceDraft.generation_snapshot?.config;
-    if(testConfig){const format=(currentProject()?.formats||[]).find(f=>f.width===testConfig.width&&f.height===testConfig.height);if(format)$('piece-test-format').value=format.id;}
-    $('piece-reuse-settings').checked=!!pieceDraft.generation_snapshot;
-    $('piece-master').value=pieceDraft.master_id||'';renderPieceEditor();$('piece-dialog').showModal();
+    $('piece-dialog-title').textContent=`${variant?'Variante de':piece?.id?'Editar':'Crear'} ${workspace.label(kind).toLowerCase()}`;
+    $('piece-seed').value='';renderElementProfile();renderPieceTestStyles();applyPieceStyle();
+    $('piece-save-details').open=!!piece?.id;
+    $('piece-loras-section').open=!!pieceDraft.loras?.length;
+    $('piece-negative-details').open=!!pieceDraft.negative;
+    $('piece-test-status').textContent='Prueba antes de poner nombre o guardar tu diseño.';
+    renderPieceEditor();$('piece-dialog').showModal();renderElementTrials();
   }
-  function choosePieceMaster() {
-    const master=state.pieces.find(p=>p.id===$('piece-master').value);
-    if(!master){pieceDraft={};renderPieceEditor();return;}
-    pieceDraft=pieceProfiles.variant(master);fillPieceFields(pieceDraft);renderPieceTestStyles();$('piece-reuse-settings').checked=!!pieceDraft.generation_snapshot;renderPieceEditor();
+  function renderElementTrials() {
+    if(!globalThis.AnimaElementLab)return;
+    const tests=availableRecords('generations',projectGenerations()).filter(g=>AnimaElementLab.matches(g,elementTrialToken)).slice().reverse();
+    $('piece-test-gallery').innerHTML=tests.length?tests.map(g=>assetCard(g,'element')).join(''):empty('Aquí aparecerán tus pruebas','Empieza con una idea, cambia los ajustes y genera. Guarda sólo cuando quieras conservar un diseño.');
+  }
+  function pieceFields() {
+    const kind=pieceDraft.kind,loras=pieceLoras?.getValue()||[];
+    const definition={...pieceDraft?.definition,presentation:readElementPresentation()};delete definition.trial_negative;
+    const payload={project_id:$('piece-shared').checked?null:state.projectId,kind,name:$('piece-name').value.trim(),prompt:$('piece-prompt').value.trim(),negative:$('piece-negative').value,definition,
+      tags:$('piece-tags').value.split(',').map(t=>t.trim()).filter(Boolean),loras,master_id:pieceDraft?.master_id||undefined,master_revision:pieceDraft?.master_revision||undefined,sample_asset_id:$('piece-sample-id').value||null};
+    if(kind==='pose')payload.pose_control=piecePose?.getValue()||null;
+    return payload;
+  }
+  async function trialPiece() {
+    assertProject();
+    const draft=pieceFields(),context=elementContext();
+    const payload=AnimaElementLab.payload({project:currentProject(),draft,token:elementTrialToken,style:pieceTrialStyle,
+      sourcePiece:state.pieces.find(piece=>piece.id===$('piece-id').value),
+      seed:$('piece-seed').value||pieceTrialStyle?.config?.seed||'42',dimensions:AnimaElementProfiles.format(currentProject(),draft.kind),
+      contextPrompt:context.prompt,contextNegative:context.negative});
+    const epoch=elementTrialEpoch;state.elementTestId=elementTrialToken;
+    $('piece-test-status').textContent='Generando tu diseño con el estilo elegido…';
+    try{await startGeneration(payload);if(epoch===elementTrialEpoch){renderElementTrials();$('piece-test-status').textContent='Prueba terminada. Ajusta el diseño, prueba otra variación o guarda la imagen que prefieras.';}}
+    catch(error){if(epoch===elementTrialEpoch)$('piece-test-status').textContent=error.message;throw error;}
+  }
+  function applyPieceStyle() {
+    const choice=pieceStyleChoices().find(c=>c.id===$('piece-test-style').value);
+    pieceTrialStyle=choice?JSON.parse(JSON.stringify(choice.style)):null;
+    if(choice)state.elementStyleKey=choice.id;
+    if(!$('piece-seed').value)$('piece-seed').value=String(pieceTrialStyle?.config?.seed??'42');
+    renderPieceSettings();
   }
   async function capturePieceSample(id) {
+    const projectId=state.projectId,epoch=elementTrialEpoch,wasOpen=$('piece-dialog').open;
     const record=await api(`/generations/${encodeURIComponent(id)}`);
+    if(state.projectId!==projectId||elementTrialEpoch!==epoch||(wasOpen&&!$('piece-dialog').open))return;
+    if(!sampleAvailable(id))throw new Error('Esta prueba ya no está disponible.');
+    if((record.purpose||record.metadata?.purpose)==='piece_test'&&globalThis.AnimaElementLab){
+      const sample=AnimaElementLab.sample(record),original=state.pieces.find(p=>p.id===sample.draft.id);
+      const same=!!pieceDraft&&$('piece-dialog').open&&sample.draft.kind===pieceDraft.kind;
+      const target=original||(same&&AnimaElementLab.matches(record,elementTrialToken)?state.pieces.find(p=>p.id===$('piece-id').value):null);
+      if(!same)openPiece(original||{kind:sample.draft.kind,project_id:state.projectId});
+      // Capture all fields from this image, never from the edited form.
+      pieceDraft={...sample.draft,project_id:target?target.project_id:state.projectId};
+      $('piece-id').value=target?.id||'';fillPieceFields(pieceDraft);
+      pieceStyleSnapshot=sample.style;renderElementProfile();renderPieceTestStyles(sample.style?`${sample.style.id}@${sample.style.revision}`:'');applyPieceStyle();
+      $('piece-negative').value=sample.draft.negative||'';$('piece-seed').value=sample.config.seed;
+      $('piece-dialog-title').textContent=`Guardar prueba de ${workspace.label(sample.draft.kind).toLowerCase()}`;
+      $('piece-save-details').open=true;renderPieceEditor();$('piece-name').focus();
+      notice('Ajustes de la imagen recuperados. Dale un nombre y guarda el diseño en tu inventario.');return;
+    }
     const composition=record.composition||{},kind=record.piece_test?.kind||record.metadata?.piece_test?.kind||(AnimaProduction.profile(record.category).id==='background'?'background':AnimaProduction.profile(record.category).id==='item'?'item':'character');
     const snapshot=record.snapshot||record.metadata?.snapshot||{},piece=(snapshot.pieces||[]).find(p=>p.kind===kind);
     const existing=record.purpose==='piece_test'&&piece?state.pieces.find(p=>p.id===piece.id):null;
-    if(existing){openPiece(existing);pieceDraft.sample_asset_id=id;$('piece-sample-id').value=id;$('piece-seed').value=recordInfo(record).seed;$('piece-dialog-title').textContent='Elegir imagen del elemento';renderPieceEditor();return;}
-    openPiece();pieceDraft={kind,sample_asset_id:id};
-    fillPieceFields({kind,name:piece?.name||recordInfo(record).name,prompt:piece?.prompt||composition.additional_prompt||record.prompt||'',negative:piece?.negative||'',seed:recordInfo(record).seed,sample_asset_id:id,project_id:state.projectId});
-    $('piece-dialog-title').textContent='Guardar prueba como maestro';renderPieceEditor();
+    if(existing){openPiece(existing);pieceDraft.sample_asset_id=id;$('piece-sample-id').value=id;$('piece-seed').value=recordInfo(record).seed;$('piece-dialog-title').textContent=`Elegir imagen de ${workspace.label(kind).toLowerCase()}`;renderPieceEditor();return;}
+    openPiece({kind,project_id:state.projectId});pieceDraft={...JSON.parse(JSON.stringify(piece||{})),kind,sample_asset_id:id,project_id:state.projectId};
+    for(const key of ['id','revision','master_id','master_revision','generation_snapshot'])delete pieceDraft[key];
+    fillPieceFields({...pieceDraft,name:piece?.name||recordInfo(record).name,prompt:piece?.prompt||composition.additional_prompt||record.prompt||'',negative:piece?.negative||'',seed:recordInfo(record).seed});
+    pieceStyleSnapshot=snapshot.style||null;renderElementProfile();renderPieceTestStyles(pieceStyleSnapshot?`${pieceStyleSnapshot.id}@${pieceStyleSnapshot.revision}`:'');applyPieceStyle();
+    $('piece-negative').value=piece?.negative||'';$('piece-seed').value=recordInfo(record).seed;
+    $('piece-dialog-title').textContent=`Guardar prueba de ${workspace.label(kind).toLowerCase()}`;renderPieceEditor();
   }
   async function savePiece(event) {
     event.preventDefault();assertProject();
+    const fields=pieceFields();
+    if(!fields.name){$('piece-save-details').open=true;$('piece-name').focus();throw new Error('Dale un nombre al diseño para guardarlo. Puedes generar pruebas sin nombre.');}
     const projectId=$('piece-shared').checked?null:state.projectId,old=state.pieces.find(p=>p.id===$('piece-id').value);
     const sameScope=!old||(old.project_id||null)===projectId;
-    const kind=$('piece-kind').value,seed=$('piece-seed').value.trim();
-    if(seed)seedValue('piece-seed');
-    const lora=$('piece-lora').value,previous=pieceDraft?.loras?.[0],loras=kind==='character'&&lora?[{...(previous?.file===lora?previous:{}),file:lora,strength:numeric('piece-lora-strength',-3,3)},...(pieceDraft?.loras||[]).slice(1)]:[];
-    const payload={id:sameScope?($('piece-id').value||undefined):undefined,project_id:projectId,kind,name:$('piece-name').value.trim(),prompt:$('piece-prompt').value.trim(),negative:$('piece-negative').value.trim(),tags:$('piece-tags').value.split(',').map(t=>t.trim()).filter(Boolean),seed:seed||null,loras,
-      master_id:pieceDraft?.master_id||undefined,master_revision:pieceDraft?.master_revision||undefined,sample_asset_id:$('piece-sample-id').value||null};
-    if(kind==='pose')payload.pose_control=piecePose?.getValue()||null;
-    const testStyle=$('piece-test-style').value,testFormat=$('piece-test-format').value,reuseSettings=$('piece-reuse-settings').checked,testing=event.submitter?.id==='save-test-piece';
-    if(testing&&!testStyle)throw new Error('Selecciona un estilo guardado para probar la pieza.');
-    const saved=await api('/pieces','POST',payload);
+    const saved=await api('/pieces','POST',{...fields,id:sameScope?($('piece-id').value||undefined):undefined});
     $('piece-dialog').close();await reload();notice(`Elemento «${saved.name}» guardado en el inventario.`);
-    if(testing)await testPiece(saved,testStyle,testFormat,reuseSettings);
-  }
-  async function testPiece(piece,styleId,formatId,reuseSettings=true) {
-    const category=productionCategories().find(c=>AnimaProduction.profile(c).kinds.includes(piece.kind));
-    if(!category)throw new Error('Pieza guardada. Añade una categoría compatible para generar su prueba.');
-    const historical=piece.generation_snapshot?.snapshot?.style;
-    const style=state.styles.find(s=>s.id===styleId&&inProject(s))||(reuseSettings&&historical?.id===styleId?historical:null);
-    const format=(currentProject()?.formats||[]).find(f=>f.id===formatId);
-    if(!style)throw new Error('Pieza guardada. Elige un estilo disponible o conserva los ajustes del maestro para usar su estilo histórico.');
-    if(!format)throw new Error('Pieza guardada. Selecciona un formato para generar su prueba.');
-    const seed=String(piece.seed??style.config?.seed??'42');
-    if(!/^\d+$/.test(seed)||BigInt(seed)>18446744073709551615n)throw new Error('La seed de prueba no es válida.');
-    state.elementTestId=piece.id;renderGalleries();
-    const payload={project_id:state.projectId,style_id:styleId,style_revision:reuseSettings&&historical?.id===styleId?historical.revision:style.revision,
-      piece_ids:[piece.id],piece_revisions:{[piece.id]:piece.revision},piece_test:{kind:piece.kind,id:piece.id,reuse_master_settings:reuseSettings},purpose:'piece_test',prompt:'',negative:'',
-      config:{width:Number(format.width),height:Number(format.height),seed:BigInt(seed).toString()},format_id:format.id,category:optionValue(category),mode:'txt2img'};
-    if(piece.kind==='pose'&&piece.pose_control)payload.config.pose_control=piece.pose_control;
-    setTab('production');await startGeneration(payload);
   }
   function addFormat(format={}) {
     const row=document.createElement('div');row.className='format-row';row.dataset.id=format.id||'';
     row.innerHTML=`<label>Nombre<input data-field="name" required value="${esc(format.name||'')}" placeholder="Ej. Retrato"></label><label>Ancho<input data-field="width" type="number" min="256" max="4096" step="16" value="${format.width||1024}" required></label><label>Alto<input data-field="height" type="number" min="256" max="4096" step="16" value="${format.height||1024}" required></label><label class="check" title="Transparencia requerida"><input data-field="alpha" type="checkbox" ${format.alpha?'checked':''}>Alfa</label><button type="button" class="subtle" aria-label="Quitar formato">✕</button>`;
     row.querySelector('button').onclick=()=>row.remove();$('format-editor').append(row);
   }
+  function projectDefaults() {
+    return {categories:['personajes','fondos','objetos','cartas'],formats:[
+      {id:'portrait',name:'Personaje',width:1024,height:1536,alpha:true},
+      {id:'square',name:'Cuadrado',width:1024,height:1024,alpha:false},
+      {id:'landscape',name:'Fondo',width:1536,height:864,alpha:false}
+    ],retention_days:30,naming:'{project}_{category}_{character}_{outfit}_{expression}_{revision}'};
+  }
+  async function createProject() {
+    if(projectCreating)return;
+    projectCreating=true;$('new-project').disabled=true;
+    try {
+      const names=new Set(state.projects.map(p=>p.name.trim().toLocaleLowerCase()));
+      let number=1;while(names.has(`proyecto ${number}`))number++;
+      const saved=await api('/projects','POST',{...projectDefaults(),name:`Proyecto ${number}`});
+      state.projects.push(saved);state.projectId=saved.id;resetWorkspace();
+      try{localStorage.setItem('anima-studio-project',saved.id);}catch{}
+      renderAll();setTab('styles');
+      await reload();notice(`«${saved.name}» listo para calibrar. Puedes cambiar su nombre en Configurar.`);
+    } finally {projectCreating=false;$('new-project').disabled=false;}
+  }
   function openProject(project) {
-    $('project-form').reset();$('project-id').value=project?.id||'';$('project-name').value=project?.name||'';$('project-dialog-title').textContent=project?'Configurar proyecto':'Nuevo proyecto';$('project-categories').value=(project?.categories||['personajes','fondos','objetos','cartas']).map(optionValue).join(', ');$('project-retention').value=project?.retention_days??30;$('project-naming').value=project?.naming||'{project}_{category}_{character}_{outfit}_{expression}_{revision}';$('format-editor').replaceChildren();
-    (project?.formats||[{id:'portrait',name:'Personaje',width:1024,height:1536,alpha:true},{id:'square',name:'Cuadrado',width:1024,height:1024,alpha:false},{id:'landscape',name:'Fondo',width:1536,height:864,alpha:false}]).forEach(addFormat);
-    $('export-project').disabled=!project;$('delete-project').disabled=!project;$('project-dialog').showModal();
+    if(!project)return;
+    const defaults=projectDefaults();
+    $('project-form').reset();$('project-id').value=project.id;$('project-name').value=project.name;$('project-dialog-title').textContent='Configurar proyecto';$('project-categories').value=(project.categories||defaults.categories).map(optionValue).join(', ');$('project-retention').value=project.retention_days??defaults.retention_days;$('project-naming').value=project.naming||defaults.naming;$('format-editor').replaceChildren();
+    (project.formats||defaults.formats).forEach(addFormat);
+    $('export-project').disabled=false;$('delete-project').disabled=false;$('project-dialog').showModal();
   }
   async function saveProject(event) {
     event.preventDefault();const old=state.projects.find(p=>p.id===$('project-id').value)||{};
@@ -932,8 +1081,8 @@
   }
   function resetStyle() {
     state.currentStyle=null;state.sampleIds.clear();$('cal-style').value='';
-    for(const id of ['style-name','style-prompt','style-negative'])$(id).value='';
-    $('style-shared').checked=false;$('save-style').textContent='Guardar estilo';renderStyles();renderGalleries();
+    for(const id of ['style-prompt','style-negative'])$(id).value='';
+    renderStyles();renderGalleries();
   }
   async function purgeRejected() {
     const ids=[...state.purgeIds].filter(id=>projectGenerations().some(g=>g.id===id&&g.status==='rejected'));
@@ -947,10 +1096,11 @@
     await refreshAfterDelete(refreshGenerations,`Limpieza terminada: ${result.purged?.length||0} imágenes retiradas y ${result.protected?.length||0} protegidas por otros usos.${result.cleanup_pending?' Queda una limpieza de archivos pendiente.':''}`);
   }
   async function selectMaster(id) {
+    if(id){const record=state.generations.find(g=>g.id===id);if(!isMasterCandidate(record)||!sameCategory(record.category,state.productionCategory))throw new Error('Elige una imagen de producción compatible para editar su expresión, o carga un PNG.');}
     state.masterId=id||null;state.masterBase64=null;$('master-upload').value='';
     if(!id){clearMaster();return;}
     const record=state.generations.find(g=>g.id===id);
-    if(record&&(record.snapshot||record.metadata?.snapshot)?.style?.id)restoreComposition(record,'expression');
+    if(record&&(record.snapshot||record.metadata?.snapshot)?.project&&record.config?.model)restoreComposition(record,'expression');
     state.masterId=id;
     const seed=recordInfo(record||{}).seed;if(seed!=='—')$('prod-seed').value=seed;
     $('seed-lock').checked=true;
@@ -975,15 +1125,24 @@
     const stop=()=>{painting=false;last=null;};canvas.onpointerup=stop;canvas.onpointercancel=stop;canvas.onlostpointercapture=stop;
   }
   function downloadJson(data,name) {const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
+  function resetCalibrationDashboard() {
+    calibrationStyleEpoch++;calibrationDraft=null;$('style-dialog').close();
+    state.currentStyle=null;state.sampleIds.clear();$('cal-style').value='';
+    for(const id of ['style-name','style-prompt','style-negative','test-prompt','style-search'])$(id).value='';
+    $('style-shared').checked=false;$('style-shared').disabled=false;
+    loadConfig({model:optionValue(state.catalog.models?.[0]),text_encoder:optionValue(state.catalog.text_encoders?.[0]),vae:optionValue(state.catalog.vaes?.[0]),loras:[],steps:30,cfg:4,sampler:'er_sde',scheduler:'simple',width:1024,height:1024,seed:'42'});
+  }
   function resetWorkspace() {
+    resetCalibrationDashboard();
+    pieceTrialStyle=null;pieceStyleSnapshot=null;state.elementStyleKey='';elementTrialEpoch++;$('piece-dialog').close();
     state.elementTestId=null;
     inventoryView.kind='';inventoryView.limit=24;pinnedPieceViews.clear();
     $('inventory-search').value='';$('inventory-favorites').checked=false;
     state.productionCategory='';state.productionMode='txt2img';$('piece-pickers').replaceChildren();
-    state.sampleIds.clear();state.purgeIds.clear();state.currentStyle=null;state.recipeStyleRevision=null;state.recipePieceRevisions={};state.recipeFormatSnapshot=null;clearMaster();state.derivedConfig=null;
-    for(const id of ['style-name','style-prompt','style-negative','test-prompt','prod-prompt','prod-negative','recipe-name','expression-name','style-search'])$(id).value='';
-    $('style-shared').checked=false;$('cal-style').value='';$('prod-style').value='';$('recipe-select').value='';$('save-style').textContent='Guardar estilo';$('recipe-revision-note').classList.add('hidden');$('prod-seed').value='42';
-    $('lora-list').replaceChildren();$('empty-loras').classList.remove('hidden');$('composed-output').textContent='Aquí aparecerá la combinación resuelta.';
+    state.purgeIds.clear();state.recipeStyleRevision=null;state.recipePieceRevisions={};state.recipeFormatSnapshot=null;clearMaster();state.derivedConfig=null;
+    for(const id of ['prod-prompt','prod-negative','recipe-name','expression-name'])$(id).value='';
+    $('prod-style').value='';$('recipe-select').value='';$('recipe-revision-note').classList.add('hidden');$('prod-seed').value='42';
+    $('composed-output').textContent='Aquí aparecerá la combinación resuelta.';
   }
   function wireEvents() {
     $('close-element-tests').onclick=()=>{state.elementTestId=null;renderGalleries();};
@@ -1013,7 +1172,7 @@
     document.querySelectorAll('.tab').forEach(tab=>tab.onclick=()=>setTab(tab.dataset.tab));
     document.querySelectorAll('[data-close]').forEach(button=>button.onclick=()=>$(button.dataset.close).close());
     $('project-select').onchange=action(async()=>{state.projectId=$('project-select').value;resetWorkspace();try{localStorage.setItem('anima-studio-project',state.projectId);}catch{}await reload();});
-    $('new-project').onclick=()=>openProject();$('edit-project').onclick=()=>openProject(currentProject());$('project-form').onsubmit=action(saveProject);$('add-format').onclick=()=>addFormat();
+    $('new-project').onclick=action(createProject);$('edit-project').onclick=()=>openProject(currentProject());$('project-form').onsubmit=action(saveProject);$('add-format').onclick=()=>addFormat();
     $('delete-project').onclick=action(()=>deleteResource('projects',$('project-id').value));
     $('export-project').onclick=action(async()=>{const id=$('project-id').value;if(id)downloadJson(await api(`/projects/${encodeURIComponent(id)}/export`),`${currentProject()?.name||'proyecto'}-perfil.json`);});
     $('import-project').onchange=action(async()=>{const file=$('import-project').files[0];if(!file)return;let profile;try{profile=JSON.parse(await file.text());}catch{throw new Error('El archivo de perfil no contiene JSON válido.');}const result=await api('/projects/import','POST',profile);state.projectId=result.id;resetWorkspace();$('project-dialog').close();await reload();notice('Perfil importado.');});
@@ -1032,13 +1191,14 @@
       const next={ArrowRight:(index+1)%folders.length,ArrowLeft:(index+folders.length-1)%folders.length,Home:0,End:folders.length-1}[event.key];
       if(next!==undefined){event.preventDefault();selectCatalogFolder(folders[next].value,true);}
     };
-    $('catalog-grid').onclick=event=>{const button=event.target.closest('[data-catalog-file]');if(button&&!button.disabled)chooseCatalogFile(button.dataset.catalogFile);};
+    $('catalog-grid').onclick=action(event=>{const button=event.target.closest('[data-catalog-file]');if(button&&!button.disabled)chooseCatalogFile(button.dataset.catalogFile);});
     const filterCatalog=()=>{catalogPicker.limit=48;renderCatalogPicker();$('catalog-grid').scrollTop=0;};
     $('catalog-search').oninput=filterCatalog;$('catalog-images-only').onchange=filterCatalog;
     $('catalog-more').onclick=()=>{catalogPicker.limit+=48;renderCatalogPicker();};
-    $('catalog-dialog').onclose=()=>{catalogPicker.row=null;};
-    $('add-lora').onclick=()=>openCatalogPicker('loras');$('cal-style').onchange=()=>{loadStyle($('cal-style').value);renderStyles();};$('save-style').onclick=action(()=>saveStyle());$('duplicate-style').onclick=action(()=>saveStyle(true));$('generate-test').onclick=action(generateTest);
-    $('reset-style').onclick=resetStyle;
+    $('catalog-dialog').onclose=()=>{catalogPicker.row=null;catalogPicker.external=null;};
+    $('add-lora').onclick=()=>openCatalogPicker('loras');$('cal-style').onchange=()=>{loadStyle($('cal-style').value);renderStyles();};$('generate-test').onclick=action(generateTest);
+    $('style-form').onsubmit=action(saveCalibrationStyle);$('style-save-target').onchange=calibrationStyleTargetChanged;
+    $('style-dialog').onclose=()=>{calibrationStyleEpoch++;calibrationDraft=null;$('style-save-preview').removeAttribute('src');$('style-save-summary').replaceChildren();};
     $('delete-style').onclick=action(()=>deleteResource('styles',$('cal-style').value));
     $('delete-recipe').onclick=action(()=>deleteResource('recipes',$('recipe-select').value));
     $('change-production').onclick=()=>{$('production-workspace').classList.add('hidden');$('production-menu').classList.remove('hidden');$('change-production').classList.add('hidden');$('production-title').textContent='¿Qué quieres generar?';$('production-description').textContent='Cada recurso tiene su propio espacio y las herramientas que necesita.';};
@@ -1047,10 +1207,13 @@
     $('format-select').onchange=()=>{releaseComposition(false);state.recipeFormatSnapshot=null;renderFormatOptions();};
     $('release-composition').onclick=()=>releaseComposition();
     $('preview-prompt').onclick=action(previewPrompt);$('generate-production').onclick=action(generateProduction);$('new-seed').onclick=()=>$('prod-seed').value=freshSeed();$('save-recipe').onclick=action(saveRecipe);$('recipe-select').onchange=()=>loadRecipe($('recipe-select').value);
-    $('open-piece-form').onclick=()=>openPiece();$('add-piece').onclick=()=>openPiece();$('piece-form').onsubmit=action(savePiece);$('piece-search').oninput=renderPieceLibrary;$('piece-filter').onchange=renderPieceLibrary;$('favorites-only').onchange=renderPieceLibrary;
-    $('piece-kind').onchange=()=>{pieceDraft={...pieceDraft,kind:$('piece-kind').value};$('piece-master').value='';renderPieceEditor();};
-    $('piece-master').onchange=choosePieceMaster;
-    $('piece-test-style').onchange=()=>{$('piece-reuse-settings').checked=false;renderPieceSettings();};
+    $('open-piece-form').onclick=beginPieceCreation;$('add-piece').onclick=beginPieceCreation;$('piece-form').onsubmit=event=>event.preventDefault();$('save-piece-only').onclick=action(savePiece);$('piece-search').oninput=renderPieceLibrary;$('piece-filter').onchange=renderPieceLibrary;$('favorites-only').onchange=renderPieceLibrary;
+    $('piece-test-style').onchange=applyPieceStyle;
+    $('piece-reset-negative').onclick=resetPieceNegative;
+    $('piece-new-variation').onclick=()=>{$('piece-seed').value=freshSeed();$('piece-test-status').textContent='Nueva variación preparada. Pulsa Generar prueba.';};
+    $('piece-open-styles').onclick=()=>{$('piece-dialog').close();setTab('styles');};
+    $('save-test-piece').onclick=action(trialPiece);
+    $('piece-test-gallery').addEventListener('click',event=>{if(event.target.closest('button'))event.preventDefault();});
     $('piece-clear-sample').onclick=()=>{$('piece-sample-id').value='';if(pieceDraft)pieceDraft.sample_asset_id=null;renderPieceEditor();};
     $('review-filter').onchange=renderGalleries;$('image-search').oninput=renderGalleries;$('purge-rejected').onclick=action(purgeRejected);
     $('cleanup-storage').onclick=()=>void cleanupStorage();
@@ -1061,10 +1224,11 @@
     $('master-upload').onchange=action(async()=>{const file=$('master-upload').files[0];if(!file)return;if(file.size>20*1024*1024)throw new Error('Utiliza un PNG de menos de 20 MB.');const data=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(new Error('No se pudo leer el PNG.'));reader.readAsDataURL(file);});await loadMasterImage(data);state.masterId=null;state.masterBase64=data.split(',')[1];$('master-select').value='';});
     $('clear-mask').onclick=()=>$('mask-canvas').getContext('2d').clearRect(0,0,$('mask-canvas').width,$('mask-canvas').height);
     document.addEventListener('click',action(async event=>{
-      const button=event.target.closest('[data-review],[data-master],[data-open-image],[data-edit-piece],[data-variant-piece],[data-capture-piece],[data-use-composition],[data-use-piece],[data-favorite],[data-load-config],[data-load-style],[data-delete-image],[data-delete-resource],[data-use-recipe]');if(!button)return;
+      const button=event.target.closest('[data-review],[data-master],[data-open-image],[data-edit-piece],[data-variant-piece],[data-capture-piece],[data-use-composition],[data-use-piece],[data-favorite],[data-load-config],[data-save-calibration],[data-load-style],[data-delete-image],[data-delete-resource],[data-use-recipe]');if(!button)return;
+      if(button.dataset.saveCalibration)return openCalibrationStyle(button.dataset.saveCalibration);
       if(button.dataset.deleteImage)return deleteImage(button.dataset.deleteImage);
       if(button.dataset.deleteResource)return deleteResource(button.dataset.deleteResource,button.dataset.id);
-      if(button.dataset.useRecipe){loadRecipe(button.dataset.useRecipe);setTab('production');return;}
+      if(button.dataset.useRecipe){loadRecipe(button.dataset.useRecipe);setTab('integrator');return;}
       if(button.dataset.capturePiece)return capturePieceSample(button.dataset.capturePiece);
       if(button.dataset.useComposition){const record=await api(`/generations/${encodeURIComponent(button.dataset.useComposition)}`);return restoreComposition(record,'txt2img');}
       if(button.dataset.variantPiece)return openPiece(state.pieces.find(p=>p.id===button.dataset.variantPiece),true);
@@ -1073,7 +1237,7 @@
       if(button.dataset.master){
         const master=state.generations.find(g=>g.id===button.dataset.master),category=productionCategories().find(c=>AnimaProduction.profile(c).expression&&sameCategory(c,master?.category));
         if(!category)throw new Error('Este recurso no pertenece a una categoría compatible con expresiones. Abre Expresiones y carga un maestro de personaje.');
-        chooseProduction(optionValue(category),'expression');setTab('production');$('master-select').value=button.dataset.master;return selectMaster(button.dataset.master);
+        chooseProduction(optionValue(category),'expression');setTab('integrator');$('master-select').value=button.dataset.master;return selectMaster(button.dataset.master);
       }
       if(button.dataset.openImage){const id=button.dataset.openImage;$('image-dialog-image').src=imageUrl(id);$('image-dialog-title').textContent=recordInfo(state.generations.find(g=>g.id===id)||{}).name;$('image-dialog').showModal();}
       if(button.dataset.editPiece)openPiece(state.pieces.find(p=>p.id===button.dataset.editPiece));
@@ -1084,7 +1248,7 @@
           if(!category)throw new Error('Añade una categoría compatible con esta pieza desde Configurar.');
           chooseProduction(optionValue(category));
         }
-        const picker=$('piece-pickers').querySelector(`[data-piece-kind="${piece.kind}"]`);if(picker){picker.value=piece.id;productionPieceChanged(picker);}setTab('production');renderProductionMenu();
+        const picker=$('piece-pickers').querySelector(`[data-piece-kind="${piece.kind}"]`);if(picker){picker.value=piece.id;productionPieceChanged(picker);}setTab('integrator');renderProductionMenu();
       }
       if(button.dataset.favorite){const id=button.dataset.favorite;favorites.has(id)?favorites.delete(id):favorites.add(id);try{localStorage.setItem('anima-studio-favorites',JSON.stringify([...favorites]));}catch{}renderPieceLibrary();renderStyles();}
       if(button.dataset.loadConfig){const g=await api(`/generations/${encodeURIComponent(button.dataset.loadConfig)}`),info=recordInfo(g),calibration=g.calibration||g.metadata?.calibration;loadConfig(info.config);if(calibration){$('style-prompt').value=calibration.style_prompt||'';$('style-negative').value=calibration.style_negative||'';$('test-prompt').value=calibration.test_prompt||'';}else{$('style-prompt').value='';$('style-negative').value=g.negative||g.metadata?.negative||'';$('test-prompt').value=g.prompt||g.metadata?.prompt||'';}notice('Ajustes recuperados de la generación. Revisa el prompt antes de repetir.');}
@@ -1093,12 +1257,23 @@
     setupMask();
   }
   async function init() {
-    for(const id of ['piece-kind','piece-filter'])selectOptions($(id),Object.entries(KINDS).map(([id,name])=>({id,name})),id==='piece-filter'?'Todos':undefined);
+    createPieceLoras();
+    selectOptions($('piece-filter'),Object.entries(KINDS).map(([id,name])=>({id,name})),'Todos');
     if(globalThis.AnimaPose){productionPose=AnimaPose.create($('pose-control-editor'),{onChange:()=>{if(state.sourceAssetId)releaseComposition(false);}});piecePose=AnimaPose.create($('piece-pose-editor'));}
     wireEvents();
+    if(globalThis.AnimaPromptLibrary){
+      const promptFields={style_prompt:'style-prompt',style_negative:'style-negative',test_prompt:'test-prompt'};
+      const promptLibrary=AnimaPromptLibrary.create({api,notice,
+        getFields:()=>Object.fromEntries(Object.entries(promptFields).map(([key,id])=>[key,$(id).value])),
+        setFields:values=>{for(const [key,id] of Object.entries(promptFields)){$(id).value=values[key]??'';$(id).dispatchEvent(new Event('input',{bubbles:true}));}}
+      });
+      void promptLibrary.init();
+    }
     if(globalThis.AnimaStyleBrowser){
       visualStyles=AnimaStyleBrowser.create({getStyles:()=>state.styles.filter(inProject),imageUrl,getFavorites:()=>favorites,onChoose:()=>renderVisualWorkspace()});
-      for(const id of ['cal-style','prod-style','piece-test-style'])visualStyles.attach(id);
+      for(const id of ['cal-style','prod-style'])visualStyles.attach(id);
+      elementStylesBrowser=AnimaStyleBrowser.create({getStyles:()=>pieceStyleChoices().map(choice=>({...choice.style,id:choice.id,name:choice.style.name||choice.name})),imageUrl,getFavorites:()=>new Set(pieceStyleChoices().filter(c=>favorites.has(c.style.id)).map(c=>c.id)),onChoose:applyPieceStyle});
+      elementStylesBrowser.attach('piece-test-style');
     }
     setTab('production');
     window.addEventListener('pagehide',closeSession);

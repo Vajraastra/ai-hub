@@ -66,9 +66,14 @@ or shared backends remain available.
 
 Models and LoRAs are selected through searchable thumbnail galleries. Compatibility comes
 from model headers, including Anima files stored in `checkpoints`; previews and display names
-come from the local library. The workshop opens with element creation, a visual inventory and
-composition from selected designs. See [the workshop guide](apps/anima_studio/README.md) for
+come from the local library. Each of the eight element cards opens an editor fixed to that type.
+Pieces store their own descriptions, negatives and content LoRAs; styles own rendering settings.
+The separate **Integrator** combines selected pieces with the chosen final style. See [the workshop guide](apps/anima_studio/README.md) for
 masters, variants, styles, facial expressions and offline testing.
+
+Named prompt configurations preserve the style prompt, negative prompt and test scene across
+restarts and projects. Apply them while comparing checkpoints and LoRA weights without changing
+the generation settings.
 
 ## Architecture
 

@@ -174,6 +174,24 @@ class ApiChecks(unittest.IsolatedAsyncioTestCase):
         status, _ = await self.request("POST", "/compose", {"project_id": self.one["id"], "format_id": "wide"})
         self.assertEqual(status, 400)
 
+    async def test_piece_editor_cannot_reclassify_an_existing_resource(self):
+        status, original = await self.request("POST", "/pieces", {
+            "name": "Hero", "kind": "character", "project_id": self.one["id"], "prompt": "blue hair"})
+        self.assertEqual(status, 200, original)
+        revisions = self.store.root / "revisions" / "pieces" / original["id"]
+        before = {path.name: path.read_bytes() for path in revisions.glob("*.json")}
+        for changes in ({"kind": "outfit"}, {"piece_type": "outfit"}, {"type": "outfit"}):
+            status, error = await self.request("POST", "/pieces", {
+                "id": original["id"], "kind": "character", "prompt": "changed", **changes})
+            self.assertEqual(status, 400, error)
+            self.assertIn("crea otra pieza", error["detail"])
+            self.assertEqual(self.store.get("pieces", original["id"]), original)
+            self.assertEqual({path.name: path.read_bytes() for path in revisions.glob("*.json")}, before)
+        status, edited = await self.request("POST", "/pieces", {
+            "id": original["id"], "kind": "character", "prompt": "red hair"})
+        self.assertEqual(status, 200, edited)
+        self.assertEqual((edited["kind"], edited["revision"], edited["prompt"]), ("character", 2, "red hair"))
+
     async def test_delete_saved_resources_reports_dependency_then_removes_them(self):
         style = self.store.save("styles", {"name": "Mistake", "project_id": self.one["id"]})
         piece = self.store.save("pieces", {"name": "Hero", "kind": "character", "project_id": self.one["id"]})
@@ -327,6 +345,66 @@ class ApiChecks(unittest.IsolatedAsyncioTestCase):
         status, body = await self.request("GET", f"/images/{record['id']}")
         self.assertEqual(status, 200)
         self.assertEqual(body, png())
+
+    async def test_calibration_records_keep_comparison_settings_for_independent_styles(self):
+        records = []
+        for index, strength in enumerate((.35, .8)):
+            calibration = {"style_prompt": f"painted finish {index}",
+                           "style_negative": "photograph", "test_prompt": "A red-haired knight"}
+            payload = self.payload(purpose="calibration", calibration=calibration,
+                                   prompt="\n".join((calibration["style_prompt"], calibration["test_prompt"])),
+                                   negative=calibration["style_negative"])
+            payload["config"].update(seed="-1" if index == 0 else "18446744073709551615",
+                                     width=128, height=256, steps=17 + index, cfg=3.5 + index,
+                                     sampler="euler", scheduler="normal",
+                                     loras=[{"file": "anima/paint.safetensors", "strength": strength}])
+            with patch.object(routes.pipeline, "generate", self.render):
+                status, job = await self.request("POST", "/generate", payload)
+                self.assertEqual(status, 200, job)
+                records.append(await self.finish(job["job_id"]))
+                await asyncio.gather(*list(routes._tasks))
+                await asyncio.sleep(0)
+            # A later calibration must not mutate an earlier image's captured settings.
+            payload["config"]["loras"][0]["strength"] = 2
+            calibration["style_prompt"] = "changed after generation"
+
+        status, listed = await self.request("GET", "/generations", project_id=self.one["id"])
+        self.assertEqual(status, 200)
+        self.assertEqual({item["id"] for item in listed}, {item["id"] for item in records})
+        by_id = {item["id"]: item for item in listed}
+        styles = []
+        config_keys = ("model", "text_encoder", "vae", "seed", "width", "height",
+                       "steps", "cfg", "sampler", "scheduler", "loras")
+        for index, original in enumerate(records):
+            status, detail = await self.request("GET", f'/generations/{original["id"]}')
+            self.assertEqual(status, 200)
+            self.assertEqual(detail, by_id[original["id"]])
+            self.assertEqual(detail["config"], original["config"])
+            self.assertEqual(detail["calibration"]["style_prompt"], f"painted finish {index}")
+            self.assertEqual(detail["calibration"]["test_prompt"], "A red-haired knight")
+            self.assertEqual(detail["config"]["loras"][0]["strength"], (.35, .8)[index])
+            self.assertEqual(detail["config"]["steps"], 17 + index)
+            self.assertEqual(detail["config"]["cfg"], 3.5 + index)
+            self.assertEqual((detail["config"]["width"], detail["config"]["height"]), (128, 256))
+            self.assertEqual(detail["selected_files"]["model"]["name"], "Anima Base")
+            self.assertEqual(detail["config"]["seed"], detail["seed"])
+            self.assertIsInstance(detail["seed"], str)
+            self.assertNotEqual(detail["seed"], "-1")
+            status, saved = await self.request("POST", "/styles", {
+                "name": f"From sample {index}", "project_id": self.one["id"],
+                "prompt": detail["calibration"]["style_prompt"],
+                "negative": detail["calibration"]["style_negative"],
+                "config": {key: detail["config"][key] for key in config_keys},
+                "sample_ids": [detail["id"]],
+            })
+            self.assertEqual(status, 200, saved)
+            self.assertEqual(saved["prompt"], f"painted finish {index}")
+            self.assertNotIn("A red-haired knight", saved["prompt"])
+            self.assertEqual(saved["config"]["loras"], original["config"]["loras"])
+            self.assertEqual(saved["sample_ids"], [original["id"]])
+            styles.append(saved)
+        self.assertNotEqual(styles[0]["id"], styles[1]["id"])
+        self.assertEqual(styles[1]["config"]["seed"], "18446744073709551615")
 
     async def test_scoped_backend_files_are_reclaimed_after_durable_save_then_delete_removes_record(self):
         created = []

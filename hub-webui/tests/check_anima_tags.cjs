@@ -38,7 +38,7 @@ function harness(fetchOverride, saved='1') {
   return {element,attached,calls,streams,windows,get options(){return options;},get closes(){return closes;}};
 }
 
-test('all seven prompt fields share the Painter corpus and metadata stays separate', async () => {
+test('all prompt fields share the Painter corpus and metadata stays separate', async () => {
   const app=harness();await tick();
   assert.deepEqual(app.attached,['style-prompt','style-negative','test-prompt','prod-prompt','prod-negative','piece-prompt','piece-negative']);
   assert.equal(app.options.getCsv(),'shared-csv');

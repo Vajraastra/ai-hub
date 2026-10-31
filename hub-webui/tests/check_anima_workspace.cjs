@@ -101,25 +101,24 @@ test('untrusted names, identifiers and kinds cannot inject markup into cards, im
   assert.match(html,/%22%20onload%3D%22alert\(4\)/);
 });
 
-test('the creator surface exposes all six primary elements independently of an existing composition', () => {
+test('the creator surface exposes all eight element types before entering a specialized editor', () => {
   const html = Workspace.creators();
-  assert.deepEqual(Workspace.TYPES.map(t=>t.kind),['character','outfit','pose','expression','background','item']);
+  assert.deepEqual(Workspace.TYPES.map(t=>t.kind).sort(),['character','outfit','pose','expression','background','item','personality','scene'].sort());
   for(const kind of Workspace.TYPES.map(t=>t.kind))assert.match(html,new RegExp(`data-create-element="${kind}"`));
-  assert.equal((Workspace.creators(true).match(/ disabled/g)||[]).length,6);
+  assert.equal((Workspace.creators(true).match(/ disabled/g)||[]).length,8);
 });
 
-test('readiness explains the missing target, style and required resource instead of exposing a prompt-only bypass', () => {
+test('readiness permits text or partial elements with a saved style', () => {
   assert.equal(Workspace.readiness().ready,false);
   assert.match(Workspace.readiness().message,/Elige qué imagen/);
-  const missingStyle = Workspace.readiness({category:'characters',profile:'character',pieces:[piece()]});
-  assert.equal(missingStyle.ready,false);
-  assert.match(missingStyle.message,/estilo/);
-  for(const [profile,wrongKind,message] of [
-    ['character','outfit','personaje'],['background','character','fondo'],['item','character','objeto'],
-  ]){
-    const missing = Workspace.readiness({category:profile,profile,hasStyle:true,pieces:[piece({kind:wrongKind})]});
-    assert.equal(missing.ready,false);
-    assert.match(missing.message,new RegExp(message));
+  const missingConfig = Workspace.readiness({category:'characters',profile:'character',pieces:[piece()]});
+  assert.equal(missingConfig.ready,false);
+  assert.match(missingConfig.message,/modelo|ajustes|estilo/);
+  assert.equal(Workspace.readiness({category:'characters',hasConfig:true,additionalPrompt:'identity'}).ready,false);
+  for(const profile of ['character','background','item','card','custom']) {
+    assert.equal(Workspace.readiness({category:profile,profile,hasStyle:true,additionalPrompt:'a new design'}).ready,true);
+    assert.equal(Workspace.readiness({category:profile,profile,hasStyle:true,pieces:[piece({kind:'outfit'})]}).ready,true);
+    assert.equal(Workspace.readiness({category:profile,profile,hasStyle:true,additionalPrompt:'   ',pieces:[]}).ready,false);
   }
   assert.equal(Workspace.readiness({category:'characters',profile:'character',hasStyle:true,pieces:[piece()]}).ready,true);
   assert.equal(Workspace.readiness({category:'backgrounds',profile:'background',hasStyle:true,pieces:[piece({kind:'scene'})]}).ready,true);

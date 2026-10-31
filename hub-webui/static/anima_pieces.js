@@ -16,7 +16,7 @@
   function variant(master) {
     const result={kind:master.kind, name:`${master.name} · variante`, prompt:master.prompt||'', negative:master.negative||'',
       tags:[...(master.tags||[])], project_id:master.project_id??null, master_id:master.id, master_revision:master.revision};
-    for(const key of ['seed','loras','pose_control','generation_snapshot']) if(master[key] !== undefined) result[key]=clone(master[key]);
+    for(const key of ['seed','loras','pose_control','generation_snapshot','definition']) if(master[key] !== undefined) result[key]=clone(master[key]);
     return result;
   }
   function composition(record) {
@@ -26,11 +26,11 @@
     if(typeof storedSeed==='number'&&!Number.isSafeInteger(storedSeed))throw new Error('La generación no conserva una seed exacta válida.');
     const seed=String(storedSeed);
     if(!/^\d+$/.test(seed)||BigInt(seed)>18446744073709551615n)throw new Error('La generación no conserva una seed exacta válida.');
-    if(!snapshot.style?.id)throw new Error('La generación no conserva un estilo para recuperar su composición.');
+    if(!snapshot.style?.id&&!(snapshot.style===null&&snapshot.project&&Array.isArray(snapshot.pieces)&&config.model))throw new Error('La generación no conserva el estilo o los ajustes necesarios para recuperar su composición.');
     const pieces=Array.isArray(snapshot.pieces)?snapshot.pieces:[];
-    return {source_asset_id:record.id,style_id:snapshot.style.id,style_revision:snapshot.style.revision,
+    return {source_asset_id:record.id,style_id:snapshot.style?.id,style_revision:snapshot.style?.revision,
       pieces:clone(pieces),piece_revisions:Object.fromEntries(pieces.map(piece=>[piece.id,piece.revision])),
-      config:clone({...config,seed}),additional_prompt:saved.additional_prompt??'',additional_negative:saved.additional_negative??'',
+      config:clone({...config,seed}),additional_prompt:saved.integration_user_prompt??saved.additional_prompt??'',additional_negative:saved.negative_override!==undefined?'':saved.additional_negative??'',integration_framing:saved.integration_framing,
       additional_known:typeof saved.additional_prompt==='string',category:record.category,
       format_snapshot:saved.format_snapshot?clone(saved.format_snapshot):null};
   }

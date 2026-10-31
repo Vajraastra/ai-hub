@@ -44,6 +44,22 @@ class PieceChecks(unittest.TestCase):
                 self.assertNotIn("seed", piece)
                 self.assertNotIn("master_id", piece)
 
+    def test_existing_piece_type_cannot_change_or_write_a_revision(self):
+        original = self.piece()
+        revisions = self.store.root / "revisions" / "pieces" / original["id"]
+        before = {path.name: path.read_bytes() for path in revisions.glob("*.json")}
+        for field in ("kind", "piece_type", "type"):
+            for value in ("outfit", None):
+                with self.subTest(field=field, value=value), self.assertRaisesRegex(LibraryError, "crea otra pieza"):
+                    self.store.save("pieces", {"id": original["id"], field: value, "prompt": "changed"})
+                self.assertEqual(self.store.get("pieces", original["id"]), original)
+                self.assertEqual({path.name: path.read_bytes() for path in revisions.glob("*.json")}, before)
+        edited = self.store.save("pieces", {"id": original["id"], "prompt": "red hair"})
+        self.assertEqual((edited["kind"], edited["revision"], edited["prompt"]), ("character", 2, "red hair"))
+        for field in ("kind", "piece_type", "type"):
+            edited = self.store.save("pieces", {"id": original["id"], field: "character"})
+            self.assertEqual(edited["kind"], "character")
+
     def test_variant_inherits_pinned_revision_and_is_not_changed_by_master_edit(self):
         master = self.piece(seed=18446744073709551615, tags=["hero"],
                             loras=[{"file": "characters/hero.safetensors", "strength": .7}])
@@ -118,8 +134,9 @@ class PieceChecks(unittest.TestCase):
         for loras in invalid:
             with self.subTest(loras=loras), self.assertRaises(LibraryError):
                 self.piece(loras=loras)
-        with self.assertRaises(LibraryError):
-            self.piece(kind="outfit", loras=[{"file": "hero.safetensors"}])
+        for kind in ("outfit", "pose", "expression", "background", "scene", "item", "personality"):
+            linked = self.piece(kind=kind, loras=[{"file": "specific.safetensors", "strength": 0}])
+            self.assertEqual(linked["loras"], [{"file": "specific.safetensors", "strength": 0.0}])
 
     def test_capture_uses_real_seed_config_and_blocks_not_caller_snapshot(self):
         sample = self.sample()

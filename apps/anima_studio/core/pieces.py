@@ -26,11 +26,11 @@ def seed_text(value):
 
 def piece_loras(value):
     if not isinstance(value, list) or len(value) > 12:
-        raise ValueError("Selecciona hasta 12 LoRAs de personaje.")
+        raise ValueError("Selecciona hasta 12 LoRAs por pieza.")
     result, seen = [], set()
     for item in value:
         if not isinstance(item, dict) or not isinstance(item.get("file"), str):
-            raise ValueError("LoRA de personaje no válido.")
+            raise ValueError("LoRA de pieza no válido.")
         file = item["file"].replace("\\", "/")
         path = PurePosixPath(file)
         if (not file or path.is_absolute() or ".." in path.parts or ":" in file
@@ -40,7 +40,7 @@ def piece_loras(value):
         file = path.as_posix()
         key = file.casefold()
         if key in seen:
-            raise ValueError("No repitas el mismo LoRA de personaje.")
+            raise ValueError("No repitas el mismo LoRA dentro de una pieza.")
         seen.add(key)
         strength = item.get("strength", 1)
         if (isinstance(strength, bool) or not isinstance(strength, (int, float))
@@ -92,6 +92,10 @@ def materialize_piece(library, value, incoming, old, *, imported=False):
     value = copy.deepcopy(value)
     master_id = value.get("master_id") or None
     if old:
+        kind = old.get("kind", old.get("piece_type", old.get("type")))
+        if any(field in incoming and incoming[field] != kind
+               for field in ("kind", "piece_type", "type")):
+            raise ValueError("El tipo de una pieza existente no se puede cambiar; crea otra pieza.")
         if master_id != (old.get("master_id") or None):
             raise ValueError("No se puede cambiar el maestro de una pieza existente; crea una variante.")
         if (master_id and incoming.get("master_revision", old.get("master_revision"))
@@ -159,8 +163,6 @@ def materialize_piece(library, value, incoming, old, *, imported=False):
         value["seed"] = seed_text(value["seed"])
     if "loras" in value:
         value["loras"] = piece_loras(value["loras"])
-        if kind != "character" and value["loras"]:
-            raise ValueError("Sólo el personaje puede vincular LoRAs de identidad.")
     if "pose_control" in value:
         if value["pose_control"] is not None and not isinstance(value["pose_control"], dict):
             raise ValueError("El control de pose debe ser un objeto.")
@@ -173,6 +175,14 @@ def materialize_piece(library, value, incoming, old, *, imported=False):
             value.pop("pose_control", None)
     if "definition" in value and not isinstance(value["definition"], dict):
         raise ValueError("La definición de la pieza debe ser un objeto.")
+    if "definition" in value:
+        # A trial's full negative includes the selected style. It is historical
+        # evidence, never a reusable constraint or default style for this piece.
+        value["definition"].pop("trial_negative", None)
+        for field in ("style_id", "style_revision", "config"):
+            value["definition"].pop(field, None)
+    for field in ("style_id", "style_revision", "config"):
+        value.pop(field, None)
     if "generation_snapshot" in value:
         _check_snapshot(value["generation_snapshot"])
     return value
